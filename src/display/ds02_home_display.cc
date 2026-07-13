@@ -1,0 +1,635 @@
+#include "ds02_home_display.h"
+#include "backgrounds.h"
+#include "fonts.h"
+#include "settings.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "font_awesome.h"
+#include "ui_theme.h"
+
+#include <lvgl.h>
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <cstring>
+#include <string>
+
+#define TAG "Ds02Home"
+
+namespace {
+int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+lv_color_t Color(uint32_t rgb) { return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff); }
+
+constexpr int kSystemBarHeight = 28;
+constexpr int kDockHeight = 56;
+constexpr int kDockBottomMargin = 8;
+constexpr uint64_t kRefreshIntervalUs = 1000000; // 1s
+
+// Filenames live in backgrounds.h (shared with the gallery).
+} // namespace
+
+namespace home {
+
+Ds02HomeDisplay::Ds02HomeDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                                 int width, int height, int /*ox*/, int /*oy*/,
+                                 bool /*mx*/, bool /*my*/, bool /*swap*/)
+    : SpiLcdDisplay(panel_io, panel, width, height, 0, 0, false, false, false) {}
+
+Ds02HomeDisplay::~Ds02HomeDisplay() {
+    if (refresh_timer_) { esp_timer_stop(refresh_timer_); esp_timer_delete(refresh_timer_); }
+}
+
+void Ds02HomeDisplay::SetupUI() {
+    if (setup_ui_called_) return;
+    Display::SetupUI();
+    DisplayLockGuard lock(this);
+
+    root_ = lv_screen_active();
+    lv_obj_clean(root_);
+    lv_obj_set_style_bg_color(root_, Color(0x000000), 0);
+    lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
+
+    CreateStandbyObjects();
+    CreateLauncherObjects();
+    CreateSystemBarObjects();
+    CreateDockObjects();
+
+    Settings s("display", false);
+    background_index_ = (size_t)Clamp(s.GetInt("ds02_background", 0), 0, (int)kBackgroundCount - 1);
+    text_color_ = (uint32_t)s.GetInt("ds02_text_color", (int32_t)0xffffff) & 0xffffff;
+    ApplyBackgroundIndex(background_index_);
+    SetTextColor(text_color_);
+
+    ApplyStandbyState();
+
+    esp_timer_create_args_t args = {
+        .callback = OnRefreshTimer,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "ds02_home",
+        .skip_unhandled_events = true,
+    };
+    esp_timer_create(&args, &refresh_timer_);
+    esp_timer_start_periodic(refresh_timer_, kRefreshIntervalUs);
+
+    RefreshClock();
+    UpdateStatusBar(true);
+
+    // Repaint the whole home screen when the light/dark theme flips.
+    // Ds02HomeDisplay lives for the whole app lifetime, so capturing `this` is safe.
+    jetson::UiTheme::Instance().Subscribe([this]() { RepaintForTheme(); });
+}
+
+void Ds02HomeDisplay::CreateStandbyObjects() {
+    standby_layer_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(standby_layer_);
+    lv_obj_set_size(standby_layer_, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(standby_layer_, Color(0x1b2630), 0);
+    lv_obj_set_style_bg_opa(standby_layer_, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_grad_color(standby_layer_, Color(0x8b7966), 0);
+    lv_obj_set_style_bg_grad_dir(standby_layer_, LV_GRAD_DIR_VER, 0);
+    lv_obj_clear_flag(standby_layer_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(standby_layer_, LV_OBJ_FLAG_CLICKABLE);
+
+    wallpaper_image_obj_ = lv_image_create(standby_layer_);
+    lv_obj_center(wallpaper_image_obj_);
+
+    dim_overlay_ = lv_obj_create(standby_layer_);
+    lv_obj_remove_style_all(dim_overlay_);
+    lv_obj_set_size(dim_overlay_, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(dim_overlay_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(dim_overlay_, 0, 0); // awake by default
+    lv_obj_clear_flag(dim_overlay_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+    // Big clock, top-right corner.
+    time_label_ = lv_label_create(standby_layer_);
+    lv_obj_set_style_text_font(time_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(time_label_, lv_color_white(), 0);
+    lv_obj_align(time_label_, LV_ALIGN_TOP_RIGHT, -16, kSystemBarHeight + 12);
+
+    // Weather + date, bottom-center.
+    weather_label_ = lv_label_create(standby_layer_);
+    lv_obj_set_style_text_font(weather_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(weather_label_, lv_color_white(), 0);
+    lv_label_set_text(weather_label_, "");
+    lv_obj_align(weather_label_, LV_ALIGN_BOTTOM_MID, 0, -(kDockHeight + kDockBottomMargin + 8));
+
+    date_label_ = lv_label_create(standby_layer_);
+    lv_obj_set_style_text_font(date_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(date_label_, lv_color_white(), 0);
+    lv_obj_align(date_label_, LV_ALIGN_BOTTOM_MID, 0, -(kDockHeight + kDockBottomMargin + 40));
+
+    // Chat subtitle (assistant / user messages).
+    chat_label_ = lv_label_create(standby_layer_);
+    lv_obj_set_style_text_font(chat_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(chat_label_, lv_color_white(), 0);
+    lv_obj_set_width(chat_label_, width_ - 64);
+    lv_label_set_long_mode(chat_label_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(chat_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(chat_label_, "");
+    lv_obj_align(chat_label_, LV_ALIGN_BOTTOM_MID, 0, -(kDockHeight + kDockBottomMargin + 80));
+
+    // Swipe up -> launcher, swipe down -> dim.
+    lv_obj_add_event_cb(standby_layer_, OnStandbyGesture, LV_EVENT_GESTURE, this);
+}
+
+void Ds02HomeDisplay::CreateLauncherObjects() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    launcher_layer_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(launcher_layer_);
+    lv_obj_set_size(launcher_layer_, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(launcher_layer_, Color(p.bg), 0);
+    lv_obj_set_style_bg_opa(launcher_layer_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(launcher_layer_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(launcher_layer_, OnStandbyGesture, LV_EVENT_GESTURE, this);
+
+    int orb = Clamp(std::min(width_, height_) * 130 / 480, 90, 140);
+    avatar_sphere_ = lv_obj_create(launcher_layer_);
+    lv_obj_remove_style_all(avatar_sphere_);
+    lv_obj_set_size(avatar_sphere_, orb, orb);
+    lv_obj_set_style_radius(avatar_sphere_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(avatar_sphere_, Color(0x2b6fd6), 0);
+    lv_obj_set_style_bg_opa(avatar_sphere_, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_grad_color(avatar_sphere_, Color(0x0a2a66), 0);
+    lv_obj_set_style_bg_grad_dir(avatar_sphere_, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_border_width(avatar_sphere_, 0, 0);
+    lv_obj_clear_flag(avatar_sphere_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(avatar_sphere_, LV_ALIGN_TOP_MID, 0, 24);
+    CreateSphere(avatar_sphere_, orb);
+
+    // ---- App drawer grid (the DS-02 launcher content) ----
+    struct AppDef { const char *icon; const char *label; int id; };
+    static const AppDef kApps[] = {
+        {LV_SYMBOL_FILE,      "Lịch",     0},
+        {LV_SYMBOL_IMAGE,     "Ảnh nền",  1},
+        {LV_SYMBOL_SETTINGS,  "Cài đặt",  2},
+        {LV_SYMBOL_WIFI,      "WiFi",     3},
+        {LV_SYMBOL_BLUETOOTH, "Bluetooth",4},
+        {LV_SYMBOL_ENVELOPE,  "Chat",     5},
+    };
+    constexpr int kAppCount = 6;
+    constexpr int kCols = 3;
+
+    app_grid_ = lv_obj_create(launcher_layer_);
+    lv_obj_remove_style_all(app_grid_);
+    int grid_w = Clamp(width_ - 64, 360, 640);
+    lv_obj_set_size(app_grid_, grid_w, 240);
+    lv_obj_align(app_grid_, LV_ALIGN_BOTTOM_MID, 0, -16);
+    lv_obj_set_style_pad_all(app_grid_, 0, 0);
+    lv_obj_set_style_pad_row(app_grid_, 16, 0);
+    lv_obj_set_style_pad_column(app_grid_, 16, 0);
+    lv_obj_set_flex_flow(app_grid_, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(app_grid_, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(app_grid_, LV_OBJ_FLAG_SCROLLABLE);
+
+    int cellW = (grid_w - 16 * (kCols - 1)) / kCols;
+    for (int i = 0; i < kAppCount; ++i) {
+        auto *btn = lv_obj_create(app_grid_);
+        lv_obj_remove_style_all(btn);
+        lv_obj_set_size(btn, cellW, 96);
+        lv_obj_set_style_radius(btn, 16, 0);
+        lv_obj_set_style_bg_color(btn, Color(p.row), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(btn, 6, 0);
+
+        auto *icon = lv_label_create(btn);
+        lv_obj_set_style_text_font(icon, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(icon, Color(p.text), 0);
+        lv_label_set_text(icon, kApps[i].icon);
+
+        auto *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_font(lbl, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(lbl, Color(p.text), 0);
+        lv_label_set_text(lbl, kApps[i].label);
+
+        auto *ctx = new AppCtx{this, kApps[i].id};
+        lv_obj_add_event_cb(btn, OnAppButtonClicked, LV_EVENT_CLICKED, ctx);
+        lv_obj_add_event_cb(btn, OnAppDeleted, LV_EVENT_DELETE, ctx);
+    }
+
+    // Slowly rotate the avatar sphere (visible "alive" animation).
+    if (!sphere_timer_) {
+        sphere_timer_ = lv_timer_create(OnSphereRotate, 50, this);
+    }
+}
+
+void Ds02HomeDisplay::OnSphereRotate(lv_timer_t *t) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_timer_get_user_data(t));
+    if (!self->avatar_sphere_) return;
+    self->sphere_angle_ = (self->sphere_angle_ + 6) % 3600; // 0.6 deg/tick -> ~12 deg/s
+    lv_obj_set_style_transform_rotation(self->avatar_sphere_, self->sphere_angle_, 0);
+}
+
+void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
+    auto *ctx = static_cast<AppCtx *>(lv_event_get_user_data(e));
+    auto *self = ctx->self;
+    switch (ctx->id) {
+    case 0: self->OpenCalendar(); break;
+    case 1: self->OpenBackgroundGallery(); break;
+    case 2: self->OpenSettings(); break;
+    case 3: self->OpenWifiSettings(); break;
+    case 4: self->OpenBluetoothSettings(); break;
+    case 5: self->OpenChat(); break;
+    default: break;
+    }
+}
+
+void Ds02HomeDisplay::CreateSphere(lv_obj_t *parent, int size) {
+    // Two "land" blobs to suggest the DS-02 planet avatar.
+    lv_color_t land = Color(0x3fa05a);
+    for (int i = 0; i < 3; ++i) {
+        int r = size * (i == 0 ? 22 : 16) / 100;
+        auto *blob = lv_obj_create(parent);
+        lv_obj_remove_style_all(blob);
+        lv_obj_set_size(blob, r, r);
+        lv_obj_set_style_radius(blob, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(blob, land, 0);
+        lv_obj_set_style_bg_opa(blob, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(blob, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        int dx = (i - 1) * size / 6;
+        int dy = (i == 1 ? size / 8 : -size / 10);
+        lv_obj_align(blob, LV_ALIGN_CENTER, dx, dy);
+    }
+}
+
+void Ds02HomeDisplay::CreateSystemBarObjects() {
+    system_bar_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(system_bar_);
+    lv_obj_set_size(system_bar_, lv_pct(100), kSystemBarHeight);
+    lv_obj_align(system_bar_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(system_bar_, Color(0x000000), 0);
+    lv_obj_set_style_bg_opa(system_bar_, LV_OPA_50, 0);
+    lv_obj_set_style_pad_left(system_bar_, 12, 0);
+    lv_obj_set_style_pad_right(system_bar_, 12, 0);
+    lv_obj_clear_flag(system_bar_, LV_OBJ_FLAG_SCROLLABLE);
+
+    wifi_label_ = lv_label_create(system_bar_);
+    lv_obj_set_style_text_font(wifi_label_, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(wifi_label_, lv_color_white(), 0);
+    lv_label_set_text(wifi_label_, FONT_AWESOME_WIFI);
+    lv_obj_align(wifi_label_, LV_ALIGN_LEFT_MID, 0, 0);
+
+    // Battery icon drawn from rectangles (DS-02 style).
+    battery_icon_root_ = lv_obj_create(system_bar_);
+    lv_obj_remove_style_all(battery_icon_root_);
+    lv_obj_set_size(battery_icon_root_, 28, 16);
+    lv_obj_clear_flag(battery_icon_root_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(battery_icon_root_, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    battery_icon_body_ = lv_obj_create(battery_icon_root_);
+    lv_obj_remove_style_all(battery_icon_body_);
+    lv_obj_set_size(battery_icon_body_, 24, 14);
+    lv_obj_set_pos(battery_icon_body_, 0, 1);
+    lv_obj_set_style_radius(battery_icon_body_, 2, 0);
+    lv_obj_set_style_border_width(battery_icon_body_, 1, 0);
+    lv_obj_set_style_border_color(battery_icon_body_, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(battery_icon_body_, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(battery_icon_body_, LV_OBJ_FLAG_SCROLLABLE);
+
+    battery_icon_fill_ = lv_obj_create(battery_icon_body_);
+    lv_obj_remove_style_all(battery_icon_fill_);
+    lv_obj_set_size(battery_icon_fill_, 18, 10);
+    lv_obj_set_pos(battery_icon_fill_, 2, 1);
+    lv_obj_set_style_radius(battery_icon_fill_, 1, 0);
+    lv_obj_set_style_bg_color(battery_icon_fill_, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(battery_icon_fill_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(battery_icon_fill_, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto *nub = lv_obj_create(battery_icon_root_);
+    lv_obj_remove_style_all(nub);
+    lv_obj_set_size(nub, 2, 6);
+    lv_obj_set_pos(nub, 25, 5);
+    lv_obj_set_style_bg_color(nub, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(nub, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(nub, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Reuse base status/notification labels in the system bar (left area).
+    status_label_ = lv_label_create(system_bar_);
+    lv_obj_set_style_text_font(status_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(status_label_, lv_color_white(), 0);
+    lv_obj_align(status_label_, LV_ALIGN_LEFT_MID, 28, 0);
+    notification_label_ = lv_label_create(system_bar_);
+    lv_obj_set_style_text_font(notification_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(notification_label_, lv_color_white(), 0);
+    lv_obj_align(notification_label_, LV_ALIGN_LEFT_MID, 28, 0);
+    lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void Ds02HomeDisplay::CreateDockObjects() {
+    int dock_width = Clamp(width_ - 80, 420, 640);
+    dock_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(dock_);
+    lv_obj_set_size(dock_, dock_width, kDockHeight);
+    lv_obj_set_style_radius(dock_, kDockHeight / 2, 0);
+    lv_obj_set_style_bg_color(dock_, Color(0x1c1c1e), 0);
+    lv_obj_set_style_bg_opa(dock_, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(dock_, 0, 0);
+    lv_obj_set_style_pad_all(dock_, 6, 0);
+    lv_obj_set_style_pad_column(dock_, 6, 0);
+    lv_obj_set_flex_flow(dock_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(dock_, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(dock_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(dock_, LV_ALIGN_BOTTOM_MID, 0, -kDockBottomMargin);
+
+    const char *icons[kDockItemCount] = {
+        FONT_AWESOME_MICROPHONE, FONT_AWESOME_MUSIC, FONT_AWESOME_GRADUATION_CAP,
+        FONT_AWESOME_GEAR, FONT_AWESOME_BOOK_OPEN, FONT_AWESOME_GLOBE,
+    };
+    for (size_t i = 0; i < kDockItemCount; ++i) {
+        auto *btn = lv_obj_create(dock_);
+        lv_obj_remove_style_all(btn);
+        lv_obj_set_size(btn, kDockHeight - 12, kDockHeight - 12);
+        lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(btn, Color(0x2a2a2e), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+        auto *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_font(lbl, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+        lv_label_set_text(lbl, icons[i]);
+        lv_obj_center(lbl);
+        lv_obj_add_event_cb(btn, OnDockButtonClicked, LV_EVENT_CLICKED, this);
+        dock_buttons_[i] = btn;
+    }
+}
+
+void Ds02HomeDisplay::ApplyStandbyState() {
+    if (!standby_layer_ || !launcher_layer_) return;
+    switch (standby_state_) {
+    case StandbyState::Dim:
+        lv_obj_set_style_bg_opa(dim_overlay_, LV_OPA_60, 0);
+        lv_obj_clear_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
+        break;
+    case StandbyState::Awake:
+        lv_obj_set_style_bg_opa(dim_overlay_, 0, 0);
+        lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
+        break;
+    case StandbyState::Launcher:
+        lv_obj_set_style_bg_opa(dim_overlay_, 0, 0);
+        lv_obj_clear_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
+        break;
+    }
+}
+
+void Ds02HomeDisplay::AdvanceStandbyButtonState() {
+    DisplayLockGuard lock(this);
+    switch (standby_state_) {
+    case StandbyState::Dim: standby_state_ = StandbyState::Awake; break;
+    case StandbyState::Awake: standby_state_ = StandbyState::Launcher; break;
+    case StandbyState::Launcher: standby_state_ = StandbyState::Dim; break;
+    }
+    ApplyStandbyState();
+}
+
+void Ds02HomeDisplay::OnStandbyGesture(lv_event_t *e) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
+    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+    DisplayLockGuard lock(self);
+    if (dir == LV_DIR_TOP) { self->standby_state_ = StandbyState::Launcher; }
+    else if (dir == LV_DIR_BOTTOM) { self->standby_state_ = StandbyState::Awake; }
+    else if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT) { self->standby_state_ = StandbyState::Awake; }
+    self->ApplyStandbyState();
+}
+
+void Ds02HomeDisplay::OnDockButtonClicked(lv_event_t *e) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
+    lv_obj_t *target = lv_event_get_current_target_obj(e);
+    // Gear (index 3) -> WiFi settings; globe (index 5) -> Bluetooth settings.
+    // All other dock buttons cycle the standby state as before.
+    if (self->dock_buttons_[3] && target == self->dock_buttons_[3]) {
+        self->OpenWifiSettings();
+        return;
+    }
+    if (self->dock_buttons_[5] && target == self->dock_buttons_[5]) {
+        self->OpenBluetoothSettings();
+        return;
+    }
+    self->AdvanceStandbyButtonState();
+}
+
+void Ds02HomeDisplay::OpenWifiSettings() {
+    DisplayLockGuard lock(this);
+    if (wifi_view_) return;
+    if (!root_) root_ = lv_screen_active();
+    wifi_view_ = std::make_shared<WifiSettingsView>(
+        root_, width_, height_,
+        [this]() { wifi_view_.reset(); });
+    wifi_view_->Start();
+}
+
+void Ds02HomeDisplay::OpenBluetoothSettings() {
+    DisplayLockGuard lock(this);
+    if (bt_view_) return;
+    if (!root_) root_ = lv_screen_active();
+    bt_view_ = std::make_shared<BluetoothSettingsView>(
+        root_, width_, height_,
+        [this]() { bt_view_.reset(); });
+    bt_view_->Start();
+}
+
+void Ds02HomeDisplay::OpenCalendar() {
+    DisplayLockGuard lock(this);
+    if (calendar_view_) return;
+    if (!root_) root_ = lv_screen_active();
+    calendar_view_ = std::make_shared<CalendarView>(
+        root_, width_, height_,
+        [this]() { calendar_view_.reset(); });
+    calendar_view_->Start();
+}
+
+void Ds02HomeDisplay::OpenBackgroundGallery() {
+    DisplayLockGuard lock(this);
+    if (gallery_view_) return;
+    if (!root_) root_ = lv_screen_active();
+    gallery_view_ = std::make_shared<BackgroundGalleryView>(
+        root_, width_, height_,
+        [this]() { gallery_view_.reset(); });
+    gallery_view_->SetCurrent(background_index_);
+    gallery_view_->SetOnSelect([this](size_t index) { ApplyBackgroundIndexFromGallery(index); });
+    gallery_view_->Start();
+}
+
+void Ds02HomeDisplay::OpenSettings() {
+    DisplayLockGuard lock(this);
+    if (settings_view_) return;
+    if (!root_) root_ = lv_screen_active();
+    settings_view_ = std::make_shared<SettingsView>(
+        root_, width_, height_,
+        [this]() { settings_view_.reset(); });
+    settings_view_->Start();
+}
+
+void Ds02HomeDisplay::OpenChat() {
+    DisplayLockGuard lock(this);
+    if (chat_view_) return;
+    if (!root_) root_ = lv_screen_active();
+    if (!chat_conv_) {
+        chat_conv_ = std::make_shared<jetson::Conversation>();
+        chat_conv_->SetTools(jetson::BuildDefaultToolRegistry());
+    }
+    chat_view_ = std::make_shared<ChatView>(
+        root_, width_, height_, chat_conv_,
+        [this]() { chat_view_.reset(); });
+    chat_view_->Start();
+}
+
+void Ds02HomeDisplay::ApplyBackgroundIndexFromGallery(size_t index) {
+    DisplayLockGuard lock(this);
+    if (ApplyBackgroundIndex(index)) {
+        Settings s("display", false);
+        s.SetInt("ds02_background", (int32_t)index);
+    }
+}
+
+void Ds02HomeDisplay::OnAppDeleted(lv_event_t *e) {
+    auto *ctx = static_cast<AppCtx *>(lv_event_get_user_data(e));
+    delete ctx;
+}
+
+void Ds02HomeDisplay::RepaintForTheme() {
+    DisplayLockGuard lock(this);
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    if (standby_layer_) {
+        lv_obj_set_style_bg_color(standby_layer_, Color(p.grad_top), 0);
+        lv_obj_set_style_bg_grad_color(standby_layer_, Color(p.grad_bottom), 0);
+    }
+    if (launcher_layer_) lv_obj_set_style_bg_color(launcher_layer_, Color(p.bg), 0);
+    if (app_grid_) {
+        uint32_t n = lv_obj_get_child_cnt(app_grid_);
+        for (uint32_t i = 0; i < n; ++i) {
+            auto *btn = lv_obj_get_child(app_grid_, i);
+            lv_obj_set_style_bg_color(btn, Color(p.row), 0);
+            // icon = child 0, label = child 1
+            auto *icon = lv_obj_get_child(btn, 0);
+            auto *lbl = lv_obj_get_child(btn, 1);
+            if (icon) lv_obj_set_style_text_color(icon, Color(p.text), 0);
+            if (lbl) lv_obj_set_style_text_color(lbl, Color(p.text), 0);
+        }
+    }
+    if (system_bar_) lv_obj_set_style_bg_color(system_bar_, Color(p.bar_bg), 0);
+    if (dock_) lv_obj_set_style_bg_color(dock_, Color(p.dock_bg), 0);
+}
+
+const char *Ds02HomeDisplay::GetBackgroundFile(size_t index) const {
+    return home::BackgroundFile(index);
+}
+
+LvglImage *Ds02HomeDisplay::GetBackgroundImage(size_t index) {
+    if (index >= kBackgroundCount) return nullptr;
+    if (background_image_cache_[index]) return background_image_cache_[index].get();
+    std::string path = home::BackgroundsDir() + "/" + home::kBackgroundFiles[index];
+    auto img = LvglImageFromFile(path);
+    if (!img) return nullptr;
+    background_image_cache_[index] = std::move(img);
+    return background_image_cache_[index].get();
+}
+
+bool Ds02HomeDisplay::ApplyBackgroundIndex(size_t index) {
+    background_index_ = index;
+    LvglImage *img = GetBackgroundImage(index);
+    if (!img || !wallpaper_image_obj_) {
+        if (wallpaper_image_obj_) lv_image_set_src(wallpaper_image_obj_, nullptr);
+        return false;
+    }
+    lv_image_set_src(wallpaper_image_obj_, img->image_dsc());
+    // Cover-fit: scale to fill 800x480.
+    int iw = img->image_dsc()->header.w;
+    int ih = img->image_dsc()->header.h;
+    if (iw > 0 && ih > 0) {
+        int scale = std::max(width_ * 256 / iw, height_ * 256 / ih);
+        lv_image_set_scale(wallpaper_image_obj_, (uint16_t)scale);
+    }
+    lv_obj_center(wallpaper_image_obj_);
+    return true;
+}
+
+void Ds02HomeDisplay::SetTextColor(uint32_t color) {
+    text_color_ = color;
+    lv_color_t c = Color(color);
+    for (lv_obj_t *lbl : {time_label_, date_label_, weather_label_, chat_label_}) {
+        if (lbl) lv_obj_set_style_text_color(lbl, c, 0);
+    }
+}
+
+std::string Ds02HomeDisplay::FormatTime(const struct tm &t) {
+    char buf[16];
+    std::strftime(buf, sizeof(buf), "%H:%M", &t);
+    return buf;
+}
+std::string Ds02HomeDisplay::FormatDate(const struct tm &t) {
+    char buf[40];
+    std::strftime(buf, sizeof(buf), "%A, %d %B", &t);
+    return buf;
+}
+
+void Ds02HomeDisplay::RefreshClock() {
+    time_t now = std::time(nullptr);
+    struct tm t = *std::localtime(&now);
+    if (t.tm_year < (2025 - 1900)) return; // time not set yet
+    std::string ts = FormatTime(t);
+    std::string ds = FormatDate(t);
+    if (ts != cached_time_ && time_label_) { lv_label_set_text(time_label_, ts.c_str()); cached_time_ = ts; }
+    if (ds != cached_date_ && date_label_) { lv_label_set_text(date_label_, ds.c_str()); cached_date_ = ds; }
+}
+
+void Ds02HomeDisplay::RefreshBattery() {
+    // Phase 1: no battery ADC on Jetson yet; show a full battery.
+    if (battery_icon_fill_) lv_obj_set_size(battery_icon_fill_, 18, 10);
+}
+
+void Ds02HomeDisplay::UpdateStatusBar(bool /*update_all*/) {
+    DisplayLockGuard lock(this);
+    RefreshClock();
+    RefreshBattery();
+}
+
+void Ds02HomeDisplay::OnRefreshTimer(void *arg) {
+    auto *self = static_cast<Ds02HomeDisplay *>(arg);
+    self->UpdateStatusBar(false);
+}
+
+void Ds02HomeDisplay::SetStatus(const char *status) {
+    DisplayLockGuard lock(this);
+    if (status_label_) {
+        lv_label_set_text(status_label_, status);
+        lv_obj_remove_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
+        if (notification_label_) lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void Ds02HomeDisplay::ShowNotification(const char *notification, int duration_ms) {
+    LvglDisplay::ShowNotification(notification, duration_ms);
+}
+
+void Ds02HomeDisplay::SetChatMessage(const char *role, const char *content) {
+    DisplayLockGuard lock(this);
+    if (!chat_label_) return;
+    if (role && std::strcmp(role, "system") == 0) { lv_label_set_text(chat_label_, ""); return; }
+    lv_label_set_text(chat_label_, content ? content : "");
+}
+
+void Ds02HomeDisplay::SetEmotion(const char * /*emotion*/) {
+    // Phase 1: no emotion GIF; the launcher sphere is static.
+}
+
+void Ds02HomeDisplay::SetTheme(Theme *theme) { Display::SetTheme(theme); }
+
+void Ds02HomeDisplay::SetPowerSaveMode(bool on) {
+    DisplayLockGuard lock(this);
+    standby_state_ = on ? StandbyState::Dim : StandbyState::Awake;
+    ApplyStandbyState();
+}
+
+void Ds02HomeDisplay::ShowOnboardSplash(int /*duration_ms*/) {
+    // Phase 1: skip the onboard splash (logo asset not bundled).
+}
+
+} // namespace home

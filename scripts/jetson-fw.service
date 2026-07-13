@@ -1,0 +1,19 @@
+[Unit]
+Description=Jetson Nano AI Firmware (DS-02 UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/jetson-fw
+ExecStart=/opt/jetson-fw/jetson_fw
+Restart=on-failure
+RestartSec=3
+# DRM/KMS needs root or the 'video'/'render' groups.
+User=root
+Environment=JETSON_FW_LOG=/var/log/jetson-fw.log
+StandardOutput=append:/var/log/jetson-fw.log
+StandardError=append:/var/log/jetson-fw.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,60 @@
+#ifndef LCD_DISPLAY_H
+#define LCD_DISPLAY_H
+
+#include "lvgl_display.h"
+#include "lvgl_font.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "font_awesome.h"
+
+#include <atomic>
+#include <memory>
+
+#define PREVIEW_IMAGE_DURATION_MS 5000
+
+class LcdDisplay : public LvglDisplay {
+protected:
+    esp_lcd_panel_io_handle_t panel_io_ = nullptr;
+    esp_lcd_panel_handle_t panel_ = nullptr;
+
+    lv_obj_t *top_bar_ = nullptr;
+    lv_obj_t *status_bar_ = nullptr;
+    lv_obj_t *content_ = nullptr;
+    lv_obj_t *container_ = nullptr;
+    lv_obj_t *side_bar_ = nullptr;
+    lv_obj_t *bottom_bar_ = nullptr;
+    lv_obj_t *preview_image_ = nullptr;
+    lv_obj_t *emoji_label_ = nullptr;
+    lv_obj_t *emoji_image_ = nullptr;
+    lv_obj_t *emoji_box_ = nullptr;
+    lv_obj_t *chat_message_label_ = nullptr;
+
+    void InitializeLcdThemes();
+    virtual bool Lock(int timeout_ms = 0) override;
+    virtual void Unlock() override;
+
+protected:
+    LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width, int height);
+
+public:
+    virtual ~LcdDisplay();
+    virtual void SetEmotion(const char *emotion) override;
+    virtual void SetChatMessage(const char *role, const char *content) override;
+    virtual void ClearChatMessages() override;
+    virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
+    virtual void SetupUI() override;
+    virtual void SetTheme(Theme *theme) override;
+    void SetHideSubtitle(bool hide);
+
+private:
+    bool hide_subtitle_ = false;
+};
+
+class SpiLcdDisplay : public LcdDisplay {
+public:
+    SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                  int width, int height, int offset_x, int offset_y,
+                  bool mirror_x, bool mirror_y, bool swap_xy);
+};
+
+#endif
