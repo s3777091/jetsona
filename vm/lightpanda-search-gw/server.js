@@ -3,57 +3,66 @@
 //   GET /search?q=<query>   with header  Authorization: Bearer <GATEWAY_TOKEN>
 //   -> {"query":"...","results":[{"title","url","snippet"}, ...]}
 //
-// Why direct fetch (not LightPanda): DuckDuckGo Lite is *static server-rendered
-// HTML* — no JS needed — and LightPanda's renderer drops the results <table>
-// (verified: it loads the page but returns 0 `a.result-link`, only 2 anchors).
-// So we fetch lite.duckduckgo.com directly and parse with cheerio. The existing
-// `lightpanda` container is left untouched; it stays available for any future
-// JS-heavy scraping the agent might need.
+// Source = Bing HTML results (li.b_algo). Bing is server-rendered and lenient
+// enough to serve results to a server IP from the VM (DuckDuckGo Lite started
+// rate-limiting/blocking the VM IP mid-deploy, so it was unreliable). LightPanda
+// was the original plan but its renderer drops DDG's results <table>; Bing's
+// div-based layout parses fine with cheerio directly, so no browser is needed.
+// The existing `lightpanda` container is left untouched for any future JS use.
 //
-// Runs in the `xiaozhi_default` docker network (harmless; keeps it next to the
-// rest of the stack). The Jetson firmware GETs this endpoint.
+// Runs in the `xiaozhi_default` docker network. The Jetson firmware GETs this.
 const http = require('http');
 const url = require('url');
 const cheerio = require('cheerio');
 
 const TOKEN = process.env.GATEWAY_TOKEN || 'changeme';
 const PORT   = parseInt(process.env.PORT || '9233', 10);
-const UA     = 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 ' +
+const UA     = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
                '(KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 
-function unwrapDdgHref(href) {
-  // DDG sometimes wraps organic/redirect links as
-  // //duckduckgo.com/l/?uddg=<encoded-url>; unwrap to the real target.
-  if (!href) return '';
-  const m = href.match(/[?&]uddg=([^&]+)/);
-  if (m) {
-    try { return decodeURIComponent(m[1]); } catch (_) { return href; }
-  }
-  if (href.startsWith('//')) return 'https:' + href;
+function b64urlDecode(s) {
+  // Bing's `u` param is base64url without padding; restore padding.
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  try { return Buffer.from(s, 'base64').toString('utf-8'); } catch (_) { return ''; }
+}
+
+function unwrapBingHref(href) {
+  // Organic results come back as https://www.bing.com/ck/a?!&&p=...&u=a1<base64url>
+  // where the base64url (after a leading 2-char marker like "a1") is the real URL.
+  try {
+    const uu = new URL(href);
+    if (uu.hostname.endsWith('bing.com') && uu.pathname === '/ck/a') {
+      const u = uu.searchParams.get('u');
+      if (u && /^a[0-9]/.test(u)) {
+        const real = b64urlDecode(u.slice(2));
+        if (/^https?:\/\//.test(real)) return real;
+      }
+    }
+  } catch (_) {}
   return href;
 }
 
 async function search(query) {
-  const u = 'https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(query);
-  const r = await fetch(u, { headers: { 'User-Agent': UA, 'Accept': 'text/html' }, redirect: 'follow' });
-  if (!r.ok) throw new Error(`DDG lite HTTP ${r.status}`);
+  const u = 'https://www.bing.com/search?q=' + encodeURIComponent(query) +
+            '&setlang=en&count=20';
+  const r = await fetch(u, { headers: { 'User-Agent': UA, 'Accept-Language': 'en' }, redirect: 'follow' });
+  if (!r.ok) throw new Error(`Bing HTTP ${r.status}`);
   const html = await r.text();
   const $ = cheerio.load(html);
   const out = [];
-  // DDG Lite: each result row has an <a class="result-link">; the snippet sits
-  // in a sibling <td class="result-snippet"> within the same result <tr>.
-  $('a.result-link').each((_, el) => {
-    const $a = $(el);
+  $('li.b_algo').each((_, el) => {
+    const $li = $(el);
+    const $a = $li.find('h2 a').first();
     const title = $a.text().trim();
-    const href = unwrapDdgHref($a.attr('href') || '');
-    if (!title || !/^https?:/i.test(href)) return;
-    // Walk up to the enclosing result row, then find its snippet.
-    const $row = $a.closest('tr');
-    const snippet = $row.find('td.result-snippet').text().trim()
-      || $row.find('.result-snippet').text().trim();
+    const raw = $a.attr('href') || '';
+    if (!title) return;
+    const href = unwrapBingHref(raw);
+    if (!/^https?:/i.test(href)) return;
+    const snippet = $li.find('.b_caption p').first().text().trim()
+      || $li.find('p').first().text().trim();
     out.push({ title, url: href, snippet });
   });
-  // De-dupe by url (DDG sometimes lists the same domain twice).
   const seen = new Set();
   const dedup = [];
   for (const r of out) {
