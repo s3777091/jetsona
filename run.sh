@@ -25,7 +25,7 @@ set +a
 BIN="$HERE/build/jetson_fw"
 if [ ! -x "$BIN" ]; then
     echo "run.sh: $BIN not found. Build first:" >&2
-    echo "  cd $HERE && mkdir -p build && cd build && cmake .. && make -j4" >&2
+    echo "  bash $HERE/scripts/build.sh" >&2
     exit 1
 fi
 

@@ -45,5 +45,4 @@ else
 fi
 
 echo "==> Done. Build with:"
-echo "    cd $JETSON_DIR && mkdir -p build && cd build"
-echo "    cmake .. -DJETSON_DISPLAY_BACKEND=DRM && make -j4"
+echo "    bash $JETSON_DIR/scripts/build.sh"

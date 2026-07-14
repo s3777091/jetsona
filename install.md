@@ -88,12 +88,14 @@ Trong folder `~/work/jetson`:
 ```bash
 chmod +x scripts/*.sh
 ./scripts/fetch_deps.sh        # cài thư viện build + clone LVGL (~5-10 phút)
-mkdir -p build && cd build
-cmake .. -DJETSON_DISPLAY_BACKEND=DRM
-make -j4                       # biên dịch (~3-5 phút)
+bash ./scripts/build.sh        # tự tìm đúng CMakeLists.txt rồi build (~3-5 phút)
 ```
 
 Xong có file `~/work/jetson/build/jetson_fw`. **Paste bất kỳ lỗi compiler nào ra để sửa.**
+
+> Có thể gọi script bằng đường dẫn tuyệt đối từ bất kỳ thư mục nào, ví dụ
+> `bash ~/xiaozhi-esp32-server/scripts/build.sh`. Không chạy `cmake .` hoặc
+> `cmake ..` tại `~`, vì CMake sẽ tìm nhầm `CMakeLists.txt` trong thư mục home.
 
 ---
 

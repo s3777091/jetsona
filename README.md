@@ -65,14 +65,23 @@ libopus-dev libasound2-dev nlohmann-json-dev` and clones LVGL 9.2.2 into
 ## Build
 
 ```bash
-cd jetson
-mkdir -p build && cd build
-cmake .. -DJETSON_DISPLAY_BACKEND=DRM
-make -j4
+bash ./scripts/build.sh
 ```
 
 Produces `build/jetson_fw`. A POST_BUILD step copies `assets/` next to the
 binary so the default relative assets path works when run from `build/`.
+
+`scripts/build.sh` resolves the source directory from its own location, so it
+also works when called from outside the repository or when the clone directory
+has a different name. For example:
+
+```bash
+bash ~/xiaozhi-esp32-server/scripts/build.sh
+```
+
+Do not run `cmake .` or `cmake ..` from `~`: that makes CMake search the home
+directory instead of this repository and produces the "does not appear to
+contain CMakeLists.txt" error.
 
 ### CMake options
 
@@ -97,8 +106,7 @@ status), and the bottom dock. Touch works: tap a dock button to cycle
 ### SDL fallback (if Tegra DRM mode-set misbehaves)
 
 ```bash
-cmake .. -DJETSON_DISPLAY_BACKEND=SDL
-make -j4
+JETSON_DISPLAY_BACKEND=SDL bash ./scripts/build.sh
 SDL_VIDEODRIVER=kmsdrm ./build/jetson_fw
 ```
 
