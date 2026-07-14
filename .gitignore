@@ -1,0 +1,50 @@
+# --- Secrets / env ---
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# --- Build artifacts (CMake) ---
+build/
+cmake-build-*/
+out/
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.exe
+
+# Firmware binary
+jetson_fw
+/jetson_fw
+
+# --- CMake generated files ---
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+*.cmake
+!CMakeLists.txt
+!**/CMakeLists.txt
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# --- Runtime / logs ---
+*.log
+jetson-fw.log
+~/.jetson-fw/
+
+# --- Packaging ---
+*.tar.gz
+jetson.tar.gz

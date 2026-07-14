@@ -11,13 +11,16 @@ Làm theo đúng thứ tự 6 bước.
 - Tải: https://github.com/balena-io/etcher/releases/tag/v2.1.6
 - Chọn file **`balenaEtcher-win32-x64-2.1.6.zip`** → tải về, giải nén, chạy `balenaEtcher.exe`.
 
-### 2. JetPack image cho Jetson Nano 4GB (hệ điều hành — Ubuntu 18.04 + driver NVIDIA)
-- Trang chính thức: https://developer.nvidia.com/embedded/learn/get-started-jetson-nano-devkit#prepare
-- Cuộn xuống mục **"Prepare for setup" → "Write Image to the microSD Card"** → bấm link **"Download the SD card image"**.
+### 2. JetPack image cho Jetson Nano 4GB B01 (hệ điều hành — Ubuntu 18.04 + driver NVIDIA)
+- Trang chính thức (cần tài khoản NVIDIA miễn phí): https://developer.nvidia.com/jetson-nano-sd-card-image
+- **Link tải trực tiếp file .zip (đã verify, JetPack 4.6.1 — bản Nano 4GB):**
+  https://developer.download.nvidia.com/embedded/L4T/r32_Release_v7.1/JP_4.6.1_b110_SD_Card/Jeston_Nano/jetson-nano-jp461-sd-card-image.zip
 - Chọn đúng: **Jetson Nano 4GB (B01)**. **Không** chọn bản 2GB.
-- Cần tài khoản NVIDIA (miễn phí) — đăng ký 1 lần nếu chưa có.
-- Ra file zip ~600MB (ví dụ `jp46-...-sd-card-image.zip`). **Không cần giải nén**, Etcher đọc được luôn.
-- Trang thay thế nếu link trên khó: https://developer.nvidia.com/jetpack-sdk-464 → mục **"SD Card Image Method" → "Jetson Nano Developer Kits" → "Download the SD Card Image"**.
+- File zip ~600MB. **Không cần giải nén**, Etcher đọc được luôn.
+- Trang hướng dẫn gốc (cuộn xuống **"Prepare for setup" → "Write Image to the microSD Card" → "Download the SD card image"**):
+  https://developer.nvidia.com/embedded/learn/get-started-jetson-nano-devkit#prepare
+- **JetPack 4.6.4 (bản cuối cùng cho Nano, L4T 32.7.4)** nếu muốn bản mới nhất:
+  https://developer.nvidia.com/jetpack-sdk-464 → mục **"SD Card Image Method" → "Jetson Nano Developer Kits" → "Download the SD Card Image"**.
 
 > JetPack 4.6.x là bản cuối cùng hỗ trợ Jetson Nano (L4T 32.7.x, Ubuntu 18.04, CUDA 10.2). Thẻ 32GB là đủ.
 
@@ -137,7 +140,9 @@ Rebuild khi sửa code: build lại rồi `sudo ./scripts/install.sh` lần nữ
 
 ## Sources
 
-- balenaEtcher releases: https://github.com/balena-io/etcher/releases/tag/v2.1.6
+- balenaEtcher releases (v2.1.6 — bản Windows portable, không cần cài): https://github.com/balena-io/etcher/releases/tag/v2.1.6
+- JetPack SD card image (trang chính thức, cần tài khoản NVIDIA): https://developer.nvidia.com/jetson-nano-sd-card-image
+- JetPack 4.6.1 — tải trực tiếp file .zip (Nano 4GB): https://developer.download.nvidia.com/embedded/L4T/r32_Release_v7.1/JP_4.6.1_b110_SD_Card/Jeston_Nano/jetson-nano-jp461-sd-card-image.zip
 - Getting Started with Jetson Nano Developer Kit: https://developer.nvidia.com/embedded/learn/get-started-jetson-nano-devkit#prepare
-- JetPack SDK 4.6.4: https://developer.nvidia.com/jetpack-sdk-464
+- JetPack SDK 4.6.4 (bản cuối cùng cho Nano): https://developer.nvidia.com/jetpack-sdk-464
 - How to Install JetPack 4.6.1 (docs): https://archive.docs.nvidia.com/jetson/jetpack/4.6.1/install-jetpack/index.html
