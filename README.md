@@ -161,6 +161,15 @@ namespaces. Set `JETSON_SETTINGS_FILE` to relocate it.
   entry — pairing goes through bluetoothctl's default-agent). Requires a **USB
   Bluetooth dongle** and `bluez` installed (`apt install bluez`). See
   `src/net/bluetooth_manager.*` and `src/display/bluetooth_settings_view.*`.
+- **On-screen Terminal:** the launcher app drawer has a "Terminal" tile (tap it)
+  that opens an interactive root shell over a pseudo-terminal (`forkpty` +
+  `/bin/sh -i`). It runs `sudo`, pipes, redirects, and any program that reads
+  stdin (e.g. a `sudo` password prompt) — the firmware service runs as root, so
+  every command has full privileges. Output scrolls in a black panel; type a
+  command in the input box and press **Gui**/**Enter** (on-screen keyboard) to
+  run it. See `src/display/terminal_view.*`. Build note: `forkpty` needs
+  `libutil` on older glibc (JetPack 4.x / Ubuntu 18.04); `CMakeLists.txt` links
+  it when present.
 - Linux shims for the full ESP-IDF API surface the ported code uses.
 - File-backed `Settings`, `Board` singleton, `Application` event loop,
   dummy audio codec + network stub.

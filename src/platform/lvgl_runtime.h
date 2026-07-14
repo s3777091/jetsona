@@ -40,6 +40,7 @@ private:
 
     lv_display_t *createDisplayDrm(int width, int height);
     lv_display_t *createDisplaySdl(int width, int height);
+    lv_display_t *createDisplayWayland(int width, int height);
     void openTouch();
 
     lv_display_t *display_ = nullptr;

@@ -54,6 +54,31 @@ lv_display_t *LvglRuntime::createDisplaySdl(int width, int height) {
 #endif
 }
 
+/* Wayland backend: the firmware runs as a Wayland client under a compositor
+ * (weston with the KMS/DRM backend). lv_wayland_window_create registers the
+ * display plus its own pointer + keyboard indev from Wayland seat events, so
+ * we must NOT also open evdev here (that would double-register touch). */
+lv_display_t *LvglRuntime::createDisplayWayland(int width, int height) {
+#if defined(JETSON_DISPLAY_BACKEND_WAYLAND)
+    lv_display_t *disp = lv_wayland_window_create(
+        (uint32_t)width, (uint32_t)height, (char *)"Jetson FW", nullptr);
+    if (!disp) {
+        ESP_LOGE(TAG, "lv_wayland_window_create failed - is weston running and "
+                      "WAYLAND_DISPLAY exported in its env?");
+        return nullptr;
+    }
+    lv_wayland_window_set_fullscreen(disp, true);
+    ESP_LOGI(TAG, "Wayland window %dx%d (fullscreen) under compositor", width, height);
+    return disp;
+#else
+    (void)width;
+    (void)height;
+    ESP_LOGE(TAG, "Firmware built without Wayland backend. Rebuild with "
+                 "-DJETSON_DISPLAY_BACKEND=WAYLAND");
+    return nullptr;
+#endif
+}
+
 void LvglRuntime::openTouch() {
     /* Scan /dev/input/event* and register the first usable device as a
      * pointer (the 7" HDMI LCD B touch screen). */
@@ -82,6 +107,8 @@ bool LvglRuntime::Init(int width, int height) {
 
 #if defined(JETSON_DISPLAY_BACKEND_SDL)
     display_ = createDisplaySdl(width, height);
+#elif defined(JETSON_DISPLAY_BACKEND_WAYLAND)
+    display_ = createDisplayWayland(width, height);
 #else
     display_ = createDisplayDrm(width, height);
 #endif
@@ -90,7 +117,12 @@ bool LvglRuntime::Init(int width, int height) {
         return false;
     }
 
+    /* The Wayland driver registers its own pointer + keyboard indev from the
+     * compositor's seat events; opening evdev on top of that would
+     * double-register touch. Only open evdev for the DRM/SDL direct paths. */
+#if !defined(JETSON_DISPLAY_BACKEND_WAYLAND)
     openTouch();
+#endif
 
     running_ = true;
     tick_thread_ = std::thread([this]() {

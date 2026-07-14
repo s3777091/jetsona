@@ -16,8 +16,8 @@ add_compile_options(-Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused
 # ----------------------------------------------------------------------------
 # Options
 # ----------------------------------------------------------------------------
-set(JETSON_DISPLAY_BACKEND "DRM" CACHE STRING "Display backend: DRM (KMS, default) or SDL (fallback)")
-set_property(CACHE JETSON_DISPLAY_BACKEND PROPERTY STRINGS DRM SDL)
+set(JETSON_DISPLAY_BACKEND "DRM" CACHE STRING "Display backend: DRM (KMS, default), SDL (fallback), or WAYLAND (runs as a weston client)")
+set_property(CACHE JETSON_DISPLAY_BACKEND PROPERTY STRINGS DRM SDL WAYLAND)
 
 set(JETSON_DISPLAY_WIDTH  800 CACHE STRING "HDMI panel width")
 set(JETSON_DISPLAY_HEIGHT 480 CACHE STRING "HDMI panel height")
@@ -56,6 +56,29 @@ if(JETSON_DISPLAY_BACKEND STREQUAL "SDL")
     endif()
 endif()
 
+# WAYLAND backend: the firmware runs as a Wayland client under a compositor
+# (weston with the KMS/DRM backend). Needs libwayland-client, xkbcommon and the
+# wayland-protocols. weston itself is a runtime (not build) dependency.
+if(JETSON_DISPLAY_BACKEND STREQUAL "WAYLAND")
+    if(PkgConfig_FOUND)
+        pkg_check_modules(WAYLAND_CLIENT IMPORTED_TARGET wayland-client)
+        pkg_check_modules(XKBCOMMON    IMPORTED_TARGET xkbcommon)
+        pkg_check_modules(WAYLAND_PROTOCOLS IMPORTED_TARGET wayland-protocols)
+    endif()
+    if(NOT WAYLAND_CLIENT_FOUND)
+        message(WARNING "wayland-client not found via pkg-config; assuming libwayland-dev is installed.")
+        set(WAYLAND_CLIENT_LIBRARIES wayland-client)
+        set(WAYLAND_CLIENT_INCLUDE_DIRS "")
+    endif()
+    if(NOT XKBCOMMON_FOUND)
+        message(WARNING "xkbcommon not found via pkg-config; assuming libxkbcommon-dev is installed.")
+        set(XKBCOMMON_LIBRARIES xkbcommon)
+        set(XKBCOMMON_INCLUDE_DIRS "")
+    endif()
+    set(WAYLAND_LIBS ${WAYLAND_CLIENT_LIBRARIES} ${XKBCOMMON_LIBRARIES})
+    set(WAYLAND_INCS ${WAYLAND_CLIENT_INCLUDE_DIRS} ${XKBCOMMON_INCLUDE_DIRS})
+endif()
+
 # ----------------------------------------------------------------------------
 # LVGL (vendored)
 # ----------------------------------------------------------------------------
@@ -77,6 +100,14 @@ if(JETSON_DISPLAY_BACKEND STREQUAL "SDL")
     target_compile_definitions(lvgl PUBLIC LV_USE_SDL=1)
     target_include_directories(lvgl PRIVATE ${SDL2_INCLUDE_DIRS})
     target_link_libraries(lvgl PUBLIC ${SDL2_LIBRARIES})
+endif()
+
+# Enable Wayland client driver inside LVGL when chosen. The driver registers its
+# own pointer + keyboard indev, so evdev is not used under WAYLAND.
+if(JETSON_DISPLAY_BACKEND STREQUAL "WAYLAND")
+    target_compile_definitions(lvgl PUBLIC LV_USE_WAYLAND=1)
+    target_include_directories(lvgl PRIVATE ${WAYLAND_INCS})
+    target_link_libraries(lvgl PUBLIC ${WAYLAND_LIBS})
 endif()
 
 # ----------------------------------------------------------------------------
@@ -117,8 +148,19 @@ target_link_libraries(jetson_fw PRIVATE
     ${DRM_LIBRARIES}
     CURL::libcurl)
 
+# forkpty() lives in libutil on older glibc (e.g. JetPack 4.x / Ubuntu 18.04,
+# glibc 2.27). On glibc >= 2.34 it is part of libc, so the library is optional.
+find_library(UTIL_LIBRARY util)
+if(UTIL_LIBRARY)
+    target_link_libraries(jetson_fw PRIVATE ${UTIL_LIBRARY})
+endif()
+
 if(JETSON_DISPLAY_BACKEND STREQUAL "SDL")
     target_link_libraries(jetson_fw PRIVATE ${SDL2_LIBRARIES})
+endif()
+
+if(JETSON_DISPLAY_BACKEND STREQUAL "WAYLAND")
+    target_link_libraries(jetson_fw PRIVATE ${WAYLAND_LIBS})
 endif()
 
 # Copy assets next to the binary so the default relative ASSETS_DIR works.

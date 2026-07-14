@@ -4,6 +4,7 @@
 #include "fonts.h"
 #include "settings.h"
 #include "font_awesome.h"
+#include "ina219.h"
 #include "esp_log.h"
 
 #include <cstdlib>
@@ -44,12 +45,17 @@ const char *Board::GetNetworkStateIcon() {
 }
 
 bool Board::GetBatteryLevel(int &level, bool &charging, bool &discharging) {
-    /* The Waveshare UPS module exposes battery via I2C; not wired in phase 1.
-     * Report a full battery so the UI icon is sensible. */
+    /* Reads the Waveshare UPS Module (B) battery via the INA219 on I2C.
+     * Lazy singleton so the I2C fd lives as long as the Board. If the read
+     * fails (no /dev/i2c, wrong address, UPS disconnected) fall back to a full
+     * battery so the status-bar icon stays sensible instead of going blank. */
+    static Ina219 ina;
+    if (ina.Read(level, charging, discharging)) return true;
+
     level = 100;
     charging = true;
     discharging = false;
-    return true;
+    return false;
 }
 
 std::string Board::GetUuid() {

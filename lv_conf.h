@@ -190,6 +190,15 @@
 #define LV_USE_OPENGLES         0
 #define LV_USE_QNX              0
 
+/* Wayland client driver (src/drivers/wayland). Used when the firmware runs as
+ * a Wayland client under a compositor (weston) instead of owning the DRM
+ * device directly. Enabled by CMake via -DJETSON_DISPLAY_BACKEND=WAYLAND, which
+ * passes LV_USE_WAYLAND=1 to the LVGL target. Default 0 keeps the wayland
+ * sources compiled as no-ops in DRM/SDL builds. */
+#ifndef LV_USE_WAYLAND
+#define LV_USE_WAYLAND 0
+#endif
+
 /* SDL backend is pulled in only when JETSON_DISPLAY_BACKEND=SDL via CMake. */
 #ifdef LV_USE_SDL
 /* allow external override */

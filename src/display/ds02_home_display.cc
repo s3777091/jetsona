@@ -1,5 +1,6 @@
 #include "ds02_home_display.h"
 #include "backgrounds.h"
+#include "board.h"
 #include "fonts.h"
 #include "settings.h"
 #include "esp_log.h"
@@ -168,8 +169,9 @@ void Ds02HomeDisplay::CreateLauncherObjects() {
         {LV_SYMBOL_WIFI,      "WiFi",     3},
         {LV_SYMBOL_BLUETOOTH, "Bluetooth",4},
         {LV_SYMBOL_ENVELOPE,  "Chat",     5},
+        {LV_SYMBOL_KEYBOARD,  "Terminal", 6},
     };
-    constexpr int kAppCount = 6;
+    constexpr int kAppCount = 7;
     constexpr int kCols = 3;
 
     app_grid_ = lv_obj_create(launcher_layer_);
@@ -236,6 +238,7 @@ void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
     case 3: self->OpenWifiSettings(); break;
     case 4: self->OpenBluetoothSettings(); break;
     case 5: self->OpenChat(); break;
+    case 6: self->OpenTerminal(); break;
     default: break;
     }
 }
@@ -308,6 +311,14 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
     lv_obj_set_style_bg_color(nub, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(nub, LV_OPA_COVER, 0);
     lv_obj_clear_flag(nub, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Percentage label just to the left of the battery icon (e.g. "87%").
+    battery_percent_label_ = lv_label_create(system_bar_);
+    lv_obj_set_style_text_font(battery_percent_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
+    lv_label_set_text(battery_percent_label_, "100%");
+    lv_obj_align(battery_percent_label_, LV_ALIGN_RIGHT_MID, -32, 0);
+    lv_obj_clear_flag(battery_percent_label_, LV_OBJ_FLAG_SCROLLABLE);
 
     // Reuse base status/notification labels in the system bar (left area).
     status_label_ = lv_label_create(system_bar_);
@@ -481,6 +492,16 @@ void Ds02HomeDisplay::OpenChat() {
     chat_view_->Start();
 }
 
+void Ds02HomeDisplay::OpenTerminal() {
+    DisplayLockGuard lock(this);
+    if (terminal_view_) return;
+    if (!root_) root_ = lv_screen_active();
+    terminal_view_ = std::make_shared<TerminalView>(
+        root_, width_, height_,
+        [this]() { terminal_view_.reset(); });
+    terminal_view_->Start();
+}
+
 void Ds02HomeDisplay::ApplyBackgroundIndexFromGallery(size_t index) {
     DisplayLockGuard lock(this);
     if (ApplyBackgroundIndex(index)) {
@@ -581,8 +602,34 @@ void Ds02HomeDisplay::RefreshClock() {
 }
 
 void Ds02HomeDisplay::RefreshBattery() {
-    // Phase 1: no battery ADC on Jetson yet; show a full battery.
-    if (battery_icon_fill_) lv_obj_set_size(battery_icon_fill_, 18, 10);
+    // Battery comes from the INA219 over I2C (Board::GetBatteryLevel). The two
+    // 1 Hz timers call this ~2x/s; throttle the I2C read to once per ~5 s and
+    // cache the result so the bus isn't hammered while the LVGL lock is held.
+    constexpr auto kBatteryReadInterval = std::chrono::seconds(5);
+    auto now = std::chrono::steady_clock::now();
+    if (!battery_read_done_ || (now - last_battery_read_ >= kBatteryReadInterval)) {
+        int level = 100; bool charging = false, discharging = false;
+        Board::GetInstance().GetBatteryLevel(level, charging, discharging);
+        cached_battery_level_ = Clamp(level, 0, 100);
+        cached_battery_charging_ = charging;
+        cached_battery_discharging_ = discharging;
+        last_battery_read_ = now;
+        battery_read_done_ = true;
+    }
+
+    int level = cached_battery_level_;
+    if (battery_icon_fill_) {
+        // Fill width 0..18 px maps to 0..100 %; the body is 24 px wide with a
+        // 2 px inset on each side, so 18 px == full.
+        lv_obj_set_size(battery_icon_fill_, 18 * level / 100, 10);
+    }
+    if (battery_percent_label_) {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "%d%%", level);
+        lv_label_set_text(battery_percent_label_, buf);
+    }
+    (void)cached_battery_charging_;
+    (void)cached_battery_discharging_;
 }
 
 void Ds02HomeDisplay::UpdateStatusBar(bool /*update_all*/) {

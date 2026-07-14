@@ -8,9 +8,11 @@
 #include "background_gallery_view.h"
 #include "settings_view.h"
 #include "chat_view.h"
+#include "terminal_view.h"
 #include "conversation.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <ctime>
 #include <functional>
@@ -48,6 +50,7 @@ public:
     void OpenBackgroundGallery();
     void OpenSettings();
     void OpenChat();
+    void OpenTerminal();
     void ApplyBackgroundIndexFromGallery(size_t index);
 
     static constexpr size_t kBackgroundCount = 10;
@@ -97,6 +100,14 @@ private:
     lv_obj_t *battery_icon_root_ = nullptr;
     lv_obj_t *battery_icon_body_ = nullptr;
     lv_obj_t *battery_icon_fill_ = nullptr;
+    lv_obj_t *battery_percent_label_ = nullptr;
+    // Battery is read from I2C (INA219); throttle to one read per ~5 s and
+    // cache the result so the two 1 Hz refresh timers don't hammer the bus.
+    std::chrono::steady_clock::time_point last_battery_read_{};
+    int  cached_battery_level_ = 100;
+    bool cached_battery_charging_ = false;
+    bool cached_battery_discharging_ = false;
+    bool battery_read_done_ = false;
     lv_obj_t *time_label_ = nullptr;
     lv_obj_t *date_label_ = nullptr;
     lv_obj_t *weather_label_ = nullptr;
@@ -118,6 +129,7 @@ private:
     std::shared_ptr<BackgroundGalleryView> gallery_view_;
     std::shared_ptr<SettingsView> settings_view_;
     std::shared_ptr<ChatView> chat_view_;
+    std::shared_ptr<TerminalView> terminal_view_;
     std::shared_ptr<jetson::Conversation> chat_conv_;
 
     lv_timer_t *sphere_timer_ = nullptr;

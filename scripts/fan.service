@@ -1,0 +1,16 @@
+[Unit]
+Description=Jetson Nano cooling fan (GPIO pin 40) — always on at boot
+# Enable ONLY after rewiring the 12V fan through a MOSFET module and setting
+# the correct FAN_GPIO in /etc/default/jetson-fan. See scripts/fan.sh header.
+ConditionPathExists=/etc/default/jetson-fan
+Before=jetson-fw.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/jetson-fan
+ExecStart=/opt/jetson-fw/fan.sh on
+RemainAfterExit=yes
+ExecStop=/opt/jetson-fw/fan.sh off
+
+[Install]
+WantedBy=multi-user.target

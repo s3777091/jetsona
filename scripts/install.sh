@@ -18,6 +18,11 @@ sudo cp "$BUILD_DIR/jetson_fw" /opt/jetson-fw/
 sudo cp -r "$JETSON_DIR/assets" /opt/jetson-fw/
 sudo cp "$JETSON_DIR/scripts/jetson-fw.service" /etc/systemd/system/
 
+# Cooling fan helper (NOT auto-enabled — requires MOSFET rewiring first).
+sudo cp "$JETSON_DIR/scripts/fan.sh"        /opt/jetson-fw/
+sudo chmod +x /opt/jetson-fw/fan.sh
+sudo cp "$JETSON_DIR/scripts/fan.service"   /etc/systemd/system/
+
 echo "==> Enabling systemd service"
 sudo systemctl daemon-reload
 sudo systemctl enable jetson-fw
