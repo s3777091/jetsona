@@ -101,7 +101,7 @@ void Ds02HomeDisplay::CreateStandbyObjects() {
     lv_obj_set_size(dim_overlay_, lv_pct(100), lv_pct(100));
     lv_obj_set_style_bg_color(dim_overlay_, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(dim_overlay_, 0, 0); // awake by default
-    lv_obj_clear_flag(dim_overlay_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(dim_overlay_, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     // Big clock, top-right corner.
     time_label_ = lv_label_create(standby_layer_);
@@ -156,7 +156,7 @@ void Ds02HomeDisplay::CreateLauncherObjects() {
     lv_obj_set_style_bg_grad_color(avatar_sphere_, Color(0x0a2a66), 0);
     lv_obj_set_style_bg_grad_dir(avatar_sphere_, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_border_width(avatar_sphere_, 0, 0);
-    lv_obj_clear_flag(avatar_sphere_, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(avatar_sphere_, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     lv_obj_align(avatar_sphere_, LV_ALIGN_TOP_MID, 0, 24);
     CreateSphere(avatar_sphere_, orb);
 
@@ -254,7 +254,7 @@ void Ds02HomeDisplay::CreateSphere(lv_obj_t *parent, int size) {
         lv_obj_set_style_radius(blob, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(blob, land, 0);
         lv_obj_set_style_bg_opa(blob, LV_OPA_COVER, 0);
-        lv_obj_clear_flag(blob, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(blob, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
         int dx = (i - 1) * size / 6;
         int dy = (i == 1 ? size / 8 : -size / 10);
         lv_obj_align(blob, LV_ALIGN_CENTER, dx, dy);

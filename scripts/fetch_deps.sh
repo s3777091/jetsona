@@ -5,14 +5,26 @@ set -e
 
 echo "==> Installing build tools + libs (apt)"
 sudo apt-get update
+# NOTE: bionic arm64 has no libegl-dev/libgles2-dev (virtual names) and no
+# nlohmann-json3-dev. Use the concrete mesa dev packages; nlohmann v3 is
+# installed as a single header below (the code uses v3-only .contains()).
 sudo apt-get install -y \
     build-essential git pkg-config \
-    libdrm-dev libgbm-dev libegl-dev libgles2-dev \
+    libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev \
     libsdl2-dev libsdl2-ttf-dev \
     libcurl4-openssl-dev libopus-dev libasound2-dev \
-    nlohmann-json3-dev \
     bluez bluez-tools rfkill \
     network-manager
+
+# nlohmann json v3 single-header -> /usr/local/include (GCC searches it before
+# /usr/include, so this shadows bionic's v2.1.1 nlohmann-json-dev header).
+NLOHJSON_HPP=/usr/local/include/nlohmann/json.hpp
+if [ ! -f "$NLOHJSON_HPP" ]; then
+    echo "==> Installing nlohmann json v3.11.3 single-header to /usr/local/include"
+    sudo mkdir -p /usr/local/include/nlohmann
+    sudo wget -qO "$NLOHJSON_HPP" \
+        https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp
+fi
 
 # Ubuntu 18.04 (Bionic) ships CMake 3.10.2 in apt, but CMakeLists.txt needs >=3.13.
 # Install a modern CMake from the Kitware PPA when the system one is too old.

@@ -5,6 +5,7 @@
 #include <lvgl.h>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 

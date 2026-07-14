@@ -16,8 +16,8 @@ add_compile_options(-Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused
 # ----------------------------------------------------------------------------
 # Options
 # ----------------------------------------------------------------------------
-set(JETSON_DISPLAY_BACKEND "DRM" CACHE STRING "Display backend: DRM (KMS, default), SDL (fallback), or WAYLAND (runs as a weston client)")
-set_property(CACHE JETSON_DISPLAY_BACKEND PROPERTY STRINGS DRM SDL WAYLAND)
+set(JETSON_DISPLAY_BACKEND "DRM" CACHE STRING "Display backend: DRM (KMS, default), SDL (fallback), FBDEV (Linux framebuffer /dev/fb0), or WAYLAND (weston client)")
+set_property(CACHE JETSON_DISPLAY_BACKEND PROPERTY STRINGS DRM SDL FBDEV WAYLAND)
 
 set(JETSON_DISPLAY_WIDTH  800 CACHE STRING "HDMI panel width")
 set(JETSON_DISPLAY_HEIGHT 480 CACHE STRING "HDMI panel height")
@@ -88,6 +88,17 @@ set(LV_CONF_BUILD_DISABLE_DEMOS ON CACHE BOOL "" FORCE)
 set(LV_CONF_BUILD_DISABLE_THORVG_INTERNAL ON CACHE BOOL "" FORCE)
 
 add_subdirectory(third_party/lvgl)
+
+# LVGL's custom.cmake globs every src/*.S unconditionally. The two blend
+# assembly files are 32-bit ARM only (helium = Cortex-M MVE, neon = armv7a)
+# and won't assemble on aarch64; they also #include a header before their
+# #if guard, leaking C `typedef` lines to the assembler. With
+# LV_DRAW_SW_ASM_NONE (set in lv_conf.h) neither is needed, so skip them.
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl/src/draw/sw/blend/helium/lv_blend_helium.S
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl/src/draw/sw/blend/neon/lv_blend_neon.S
+    DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl
+    PROPERTIES HEADER_FILE_ONLY TRUE)
 
 # Link libdrm into LVGL (the DRM driver #includes <xf86drm.h>, <drm/drm.h>).
 if(DRM_FOUND)

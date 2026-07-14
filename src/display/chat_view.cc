@@ -179,7 +179,7 @@ void ChatView::DoSend() {
     {
         LvLockGuard lk;
         if (conv_->busy()) return;
-        char *txt = lv_textarea_get_text(input_);
+        const char *txt = lv_textarea_get_text(input_);
         text = txt ? txt : "";
         if (text.empty()) return;
         lv_textarea_set_text(input_, "");

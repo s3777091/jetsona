@@ -7,8 +7,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef struct _lv_display_t lv_display_t;
-typedef struct _lv_indev_t lv_indev_t;
+typedef struct lv_display_t lv_display_t;
+typedef struct lv_indev_t lv_indev_t;
 #ifdef __cplusplus
 }
 #endif
@@ -39,6 +39,7 @@ private:
     LvglRuntime &operator=(const LvglRuntime &) = delete;
 
     lv_display_t *createDisplayDrm(int width, int height);
+    lv_display_t *createDisplayFbdev(int width, int height);
     lv_display_t *createDisplaySdl(int width, int height);
     lv_display_t *createDisplayWayland(int width, int height);
     void openTouch();

@@ -83,6 +83,8 @@ static inline esp_err_t esp_timer_create(const esp_timer_create_args_t *args,
     return ESP_OK;
 }
 
+static inline esp_err_t esp_timer_stop(esp_timer_handle_t t);  // fwd decl
+
 static inline esp_err_t esp_timer_start_periodic(esp_timer_handle_t t, uint64_t us) {
     if (!t) return ESP_ERR_INVALID_ARG;
     if (t->active.load()) esp_timer_stop(t);

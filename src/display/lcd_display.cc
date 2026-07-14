@@ -16,8 +16,8 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     display_ = jetson::LvglRuntime::Instance().display();
     /* Adopt the panel's actual resolution if the backend chose one. */
     if (display_) {
-        int32_t w = lv_display_get_hor_res(display_);
-        int32_t h = lv_display_get_ver_res(display_);
+        int32_t w = lv_display_get_horizontal_resolution(display_);
+        int32_t h = lv_display_get_vertical_resolution(display_);
         if (w > 0) width_ = (int)w;
         if (h > 0) height_ = (int)h;
     }

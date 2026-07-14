@@ -90,7 +90,7 @@ void WifiSettingsView::BuildUi() {
     auto *back_lbl = lv_label_create(back_btn_);
     lv_obj_set_style_text_font(back_lbl, &BUILTIN_ICON_FONT, 0);
     lv_obj_set_style_text_color(back_lbl, lv_color_white(), 0);
-    lv_label_set_text(back_lbl_, LV_SYMBOL_LEFT);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
     lv_obj_center(back_lbl);
 
     title_label_ = lv_label_create(header);

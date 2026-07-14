@@ -37,7 +37,28 @@ lv_display_t *LvglRuntime::createDisplayDrm(int width, int height) {
     if (!card) card = "/dev/dri/card0";
     lv_linux_drm_set_file(disp, card, -1);
     ESP_LOGI(TAG, "DRM display on %s (%dx%d)", card,
-             (int)lv_display_get_hor_res(disp), (int)lv_display_get_ver_res(disp));
+             (int)lv_display_get_horizontal_resolution(disp), (int)lv_display_get_vertical_resolution(disp));
+    return disp;
+}
+
+lv_display_t *LvglRuntime::createDisplayFbdev(int width, int height) {
+    (void)width;
+    (void)height;
+    /* Linux framebuffer path (e.g. /dev/fb0). Use this on the stock JetPack
+     * 4.6.1 kernel, which has no DRM/KMS (NVIDIA tegrafb + nvidia_drv X driver).
+     * The display's resolution comes from the framebuffer's fixed/virtual screen
+     * info, so the requested width/height are advisory. */
+    lv_display_t *disp = lv_linux_fbdev_create();
+    if (!disp) {
+        ESP_LOGE(TAG, "lv_linux_fbdev_create failed");
+        return nullptr;
+    }
+    const char *fb = std::getenv("JETSON_FB_DEVICE");
+    if (!fb) fb = "/dev/fb0";
+    lv_linux_fbdev_set_file(disp, fb);
+    lv_linux_fbdev_set_force_refresh(disp, true);
+    ESP_LOGI(TAG, "FBDEV display on %s (%dx%d)", fb,
+             (int)lv_display_get_horizontal_resolution(disp), (int)lv_display_get_vertical_resolution(disp));
     return disp;
 }
 
@@ -109,6 +130,8 @@ bool LvglRuntime::Init(int width, int height) {
     display_ = createDisplaySdl(width, height);
 #elif defined(JETSON_DISPLAY_BACKEND_WAYLAND)
     display_ = createDisplayWayland(width, height);
+#elif defined(JETSON_DISPLAY_BACKEND_FBDEV)
+    display_ = createDisplayFbdev(width, height);
 #else
     display_ = createDisplayDrm(width, height);
 #endif

@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "llm_client.h"  // ToolDef (used by ToolRegistry::Definitions)
+
 namespace jetson {
 
 /* One tool the agent can call. Execute() receives the raw JSON arguments

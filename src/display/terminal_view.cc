@@ -238,7 +238,7 @@ void TerminalView::DoSend() {
     std::string text;
     {
         LvLockGuard lk;
-        char *txt = lv_textarea_get_text(input_);
+        const char *txt = lv_textarea_get_text(input_);
         text = txt ? txt : "";
         lv_textarea_set_text(input_, "");
     }

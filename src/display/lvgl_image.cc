@@ -22,13 +22,10 @@ static bool isGif(const void *d) {
 
 LvglRawImage::LvglRawImage(void *data, size_t size) : data_(data), size_(size) {
     std::memset(&image_dsc_, 0, sizeof(image_dsc_));
-    image_dsc_.header.always_zero = 0;
-    image_dsc_.header.w = 0;
-    image_dsc_.header.h = 0;
-    image_dsc_.header.cf = LV_IMG_CF_RAW;
+    image_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
+    image_dsc_.header.cf = LV_COLOR_FORMAT_RAW;  // PNG/JPG/GIF decoders identify format by signature
     image_dsc_.data_size = (uint32_t)size;
     image_dsc_.data = (const uint8_t *)data;
-    image_dsc_.flags = LV_IMAGE_FLAGS_ALLOCATED;
 }
 
 LvglRawImage::~LvglRawImage() {
@@ -39,7 +36,8 @@ bool LvglRawImage::IsGif() const { return isGif(data_); }
 
 LvglAllocatedImage::LvglAllocatedImage(void *data, size_t size) : data_(data) {
     std::memset(&image_dsc_, 0, sizeof(image_dsc_));
-    image_dsc_.header.cf = LV_IMG_CF_TRUE_COLOR;
+    image_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
+    image_dsc_.header.cf = LV_COLOR_FORMAT_NATIVE;
     image_dsc_.data_size = (uint32_t)size;
     image_dsc_.data = (const uint8_t *)data;
 }
@@ -47,9 +45,10 @@ LvglAllocatedImage::LvglAllocatedImage(void *data, size_t size) : data_(data) {
 LvglAllocatedImage::LvglAllocatedImage(void *data, size_t size, int width, int height,
                                        int /*stride*/, int color_format) : data_(data) {
     std::memset(&image_dsc_, 0, sizeof(image_dsc_));
+    image_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
     image_dsc_.header.w = (uint32_t)width;
     image_dsc_.header.h = (uint32_t)height;
-    image_dsc_.header.cf = (lv_img_color_format_t)color_format;
+    image_dsc_.header.cf = (lv_color_format_t)color_format;
     image_dsc_.data_size = (uint32_t)size;
     image_dsc_.data = (const uint8_t *)data;
 }

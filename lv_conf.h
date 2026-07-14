@@ -28,7 +28,7 @@
    OS / HAL
 ====================*/
 /* LVGL thread-safety via pthreads: lv_lock()/lv_unlock() available. */
-#define LV_USE_OS   LV_OS_PTHREADS
+#define LV_USE_OS   LV_OS_PTHREAD
 
 /*====================
    RENDERING
@@ -182,7 +182,7 @@
    LINUX DRIVERS
 ====================*/
 #define LV_USE_LINUX_DRM        1
-#define LV_USE_LINUX_FBDEV      0
+#define LV_USE_LINUX_FBDEV      1
 #define LV_USE_TFT_ESPI         0
 #define LV_USE_EVDEV            1
 #define LV_USE_LIBINPUT         0

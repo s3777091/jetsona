@@ -5,7 +5,7 @@
 #include <cstring>
 #include <string>
 
-#include "libs/tiny_ttf/lv_tiny_ttf.h"
+// tiny_ttf is pulled in via <lvgl.h> (already included by fonts.h).
 
 #define TAG "fonts"
 

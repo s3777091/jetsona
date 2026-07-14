@@ -39,6 +39,9 @@ struct ChatResult {
     std::string error;
     std::string content;              // assistant text (empty if tool_calls)
     std::vector<ToolCall> tool_calls; // non-empty when the model wants tools
+    // Raw assistant-message JSON (role+content+tool_calls) the server returned,
+    // replayed verbatim in the next request so the server can correlate them.
+    std::string tool_calls_json;
     bool HasToolCalls() const { return !tool_calls.empty(); }
 };
 
