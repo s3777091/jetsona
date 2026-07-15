@@ -28,7 +28,11 @@ set(JETSON_ASSETS_DIR "assets" CACHE STRING "Runtime assets directory (relative 
 # Find host libs
 # ----------------------------------------------------------------------------
 find_package(Threads REQUIRED)
-find_package(DL)
+
+# dlopen/dlclose: on glibc >= 2.34 libdl is part of libc, so the standalone
+# libdl may not exist. find_library (not find_package) avoids the noisy
+# "no FindDL.cmake" warning and leaves the link line empty when not needed.
+find_library(DL_LIBRARY dl)
 
 # libcurl: HTTP client for the in-process LLM (Ollama cloud chat completions).
 find_package(CURL REQUIRED)
@@ -155,7 +159,7 @@ target_compile_definitions(jetson_fw PRIVATE
 target_link_libraries(jetson_fw PRIVATE
     lvgl::lvgl
     Threads::Threads
-    ${DL_LIBRARIES}
+    ${DL_LIBRARY}
     ${DRM_LIBRARIES}
     CURL::libcurl)
 
