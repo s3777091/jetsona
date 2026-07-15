@@ -266,7 +266,7 @@ void CalendarView::BuildBody() {
         lv_obj_set_style_bg_color(dot, Color(p.accent), 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
         lv_obj_align(dot, LV_ALIGN_BOTTOM_MID, 0, -4);
-        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(dot, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
         auto *ctx = new DayCtx{this, 0};
         day_ctxs_[i] = ctx;
         lv_obj_add_event_cb(cell, OnDayClicked, LV_EVENT_CLICKED, ctx);
