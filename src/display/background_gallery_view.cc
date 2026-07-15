@@ -43,7 +43,12 @@ BackgroundGalleryView::~BackgroundGalleryView() {
 }
 
 std::string BackgroundGalleryView::AssetPath(size_t index) {
-    return BackgroundsDir() + "/" + kBackgroundFiles[index];
+    // Load the small pre-rendered thumbnail (400x240) instead of the full
+    // 800x480 wallpaper. Decoding 10 full-res PNGs at gallery-open made the
+    // Jetson stall for seconds; the thumbnails decode near-instantly. The
+    // selected wallpaper is still applied from the full-size file by the home
+    // screen, so visual quality on the actual background is unchanged.
+    return BackgroundsDir() + "/thumbs/" + kBackgroundFiles[index];
 }
 
 void BackgroundGalleryView::BuildBody() {
@@ -82,13 +87,13 @@ void BackgroundGalleryView::BuildBody() {
 
         auto img = LvglImageFromFile(AssetPath(i));
         if (img) {
-            int iw = img->image_dsc()->header.w;
-            int ih = img->image_dsc()->header.h;
-            if (iw > 0 && ih > 0) {
-                // Fit by height so the whole image shows (letterboxed).
-                int scale = imgH * 256 / ih;
-                lv_image_set_scale(img_obj, (uint16_t)scale);
-            }
+            // Thumbnails are a fixed 400x240 on disk. The LvglRawImage header
+            // leaves w/h at 0 (lazy decode), so we can't read dims from the dsc
+            // -- use the known thumbnail size and fit-to-width so the strip
+            // fills the cell, with clip_corner cropping the vertical overflow.
+            constexpr int kThumbW = 400;
+            int scale = cellW * 256 / kThumbW;
+            lv_image_set_scale(img_obj, (uint16_t)scale);
             lv_image_set_src(img_obj, img->image_dsc());
             images_[i] = std::move(img);
         }
