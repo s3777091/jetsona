@@ -443,7 +443,8 @@ void StatusBar::OnDropY(void *var, int32_t v) {
 }
 
 void StatusBar::OnDropHidden(lv_anim_t *a) {
-    lv_obj_add_flag(static_cast<lv_obj_t *>(lv_anim_get_var(a)), LV_OBJ_FLAG_HIDDEN);
+    // lv_anim_t::var is a public field (there is no lv_anim_get_var accessor).
+    if (a && a->var) lv_obj_add_flag(static_cast<lv_obj_t *>(a->var), LV_OBJ_FLAG_HIDDEN);
 }
 
 } // namespace home
