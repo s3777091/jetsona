@@ -20,134 +20,176 @@ using jetson::ui::LvglLockGuard;
 namespace {
 int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-// Short Vietnamese weekday, libc tm_wday convention (0 = Sunday).
-const char *kShortWday[7] = {"CN", "T2", "T3", "T4", "T5", "T6", "T7"};
-
-constexpr int kPillW = 560;
-constexpr int kPillH = 30;
-constexpr int kGap = 14;       // column gap inside the pill
+// The screen is 800x480, so these keep the resting island clearly separated
+// from the left/right status clusters while leaving enough room for Vietnamese
+// notification text when it expands.
+constexpr int kPillW = 132;
+constexpr int kPillH = 36;
+constexpr int kExpandedW = 470;
+constexpr int kExpandedH = 82;
+constexpr int kTopInset = 3;
 constexpr int kAutoCloseMs = 6000;
 } // namespace
 
 StatusBar::StatusBar(lv_obj_t *parent) {
     if (!parent) parent = lv_layer_top();
 
-    // ---- Island pill (centered top) ----
-    pill_ = lv_obj_create(parent);
-    lv_obj_remove_style_all(pill_);
-    lv_obj_set_size(pill_, kPillW, kPillH);
-    lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, 3);
-    lv_obj_set_style_bg_color(pill_, Color(0x000000), 0);
-    lv_obj_set_style_bg_opa(pill_, LV_OPA_60, 0);
-    lv_obj_set_style_radius(pill_, 15, 0);
-    lv_obj_set_style_pad_left(pill_, 14, 0);
-    lv_obj_set_style_pad_right(pill_, 14, 0);
-    lv_obj_set_style_pad_top(pill_, 2, 0);
-    lv_obj_set_style_pad_bottom(pill_, 2, 0);
-    lv_obj_set_flex_flow(pill_, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(pill_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(pill_, kGap, 0);
-    lv_obj_clear_flag(pill_, LV_OBJ_FLAG_SCROLLABLE);
+    // ---- Transparent iPhone-like status row ----
+    // Status information belongs beside the sensor cutout, never inside it.
+    status_strip_ = lv_obj_create(parent);
+    lv_obj_remove_style_all(status_strip_);
+    lv_obj_set_size(status_strip_, lv_pct(100), 42);
+    lv_obj_set_pos(status_strip_, 0, 0);
+    lv_obj_clear_flag(status_strip_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // Flat children -- direct flex items of the pill (no nested content-sized
-    // clusters; LVGL resolves these reliably in one pass). Order, left to
-    // right, matches a real iPhone status row: clock group on the left,
-    // connectivity group on the right, split by a flex-grow spacer.
     auto add_icon = [&](lv_obj_t **out, const char *glyph, lv_event_cb_t cb) {
-        auto *l = lv_label_create(pill_);
+        auto *l = lv_label_create(status_strip_);
         lv_obj_set_style_text_font(l, &BUILTIN_ICON_FONT, 0);
         lv_obj_set_style_text_color(l, lv_color_white(), 0);
         lv_label_set_text(l, glyph);
         lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(l, 8);
         if (cb) lv_obj_add_event_cb(l, cb, LV_EVENT_CLICKED, this);
         *out = l;
     };
 
-    // Clock group (left): weekday + date + time.
-    datetime_label_ = lv_label_create(pill_);
-    lv_obj_set_style_text_font(datetime_label_, &BUILTIN_TEXT_FONT, 0);
+    // A real iPhone status row shows only the time here; the long date that
+    // previously made this look like a desktop menu bar is intentionally gone.
+    datetime_label_ = lv_label_create(status_strip_);
+    lv_obj_set_style_text_font(datetime_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(datetime_label_, lv_color_white(), 0);
     lv_label_set_text(datetime_label_, "--:--");
+    lv_obj_align(datetime_label_, LV_ALIGN_LEFT_MID, 14, 0);
 
-    // Flex-grow spacer pushes the connectivity group to the pill's right edge.
-    auto *spacer = lv_obj_create(pill_);
-    lv_obj_remove_style_all(spacer);
-    lv_obj_set_flex_grow(spacer, 1);
-    lv_obj_clear_flag(spacer, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Connectivity group (right).
     add_icon(&wifi_label_, LV_SYMBOL_WIFI, OnWifiClick);
+    lv_obj_align(wifi_label_, LV_ALIGN_RIGHT_MID, -190, 0);
     add_icon(&bt_label_, LV_SYMBOL_BLUETOOTH, OnBtClick);
+    lv_obj_align(bt_label_, LV_ALIGN_RIGHT_MID, -154, 0);
 
-    // Battery: drawn-rect icon + percent/"AC" label (display-only).
-    battery_percent_label_ = lv_label_create(pill_);
-    lv_obj_set_style_text_font(battery_percent_label_, &BUILTIN_TEXT_FONT, 0);
+    battery_percent_label_ = lv_label_create(status_strip_);
+    lv_obj_set_style_text_font(battery_percent_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
     lv_label_set_text(battery_percent_label_, "100%");
+    lv_obj_align(battery_percent_label_, LV_ALIGN_RIGHT_MID, -107, 0);
 
-    battery_icon_root_ = lv_obj_create(pill_);
+    battery_icon_root_ = lv_obj_create(status_strip_);
     lv_obj_remove_style_all(battery_icon_root_);
-    lv_obj_set_size(battery_icon_root_, 28, 16);
-    lv_obj_clear_flag(battery_icon_root_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(battery_icon_root_, 27, 16);
+    lv_obj_align(battery_icon_root_, LV_ALIGN_RIGHT_MID, -72, 0);
+    lv_obj_clear_flag(battery_icon_root_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     battery_icon_body_ = lv_obj_create(battery_icon_root_);
     lv_obj_remove_style_all(battery_icon_body_);
-    lv_obj_set_size(battery_icon_body_, 24, 14);
+    lv_obj_set_size(battery_icon_body_, 23, 14);
     lv_obj_set_pos(battery_icon_body_, 0, 1);
-    lv_obj_set_style_radius(battery_icon_body_, 2, 0);
+    lv_obj_set_style_radius(battery_icon_body_, 3, 0);
     lv_obj_set_style_border_width(battery_icon_body_, 1, 0);
     lv_obj_set_style_border_color(battery_icon_body_, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(battery_icon_body_, LV_OPA_TRANSP, 0);
-    lv_obj_clear_flag(battery_icon_body_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(battery_icon_body_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     battery_icon_fill_ = lv_obj_create(battery_icon_body_);
     lv_obj_remove_style_all(battery_icon_fill_);
-    lv_obj_set_size(battery_icon_fill_, 18, 10);
+    lv_obj_set_size(battery_icon_fill_, 17, 10);
     lv_obj_set_pos(battery_icon_fill_, 2, 1);
-    lv_obj_set_style_radius(battery_icon_fill_, 1, 0);
+    lv_obj_set_style_radius(battery_icon_fill_, 2, 0);
     lv_obj_set_style_bg_color(battery_icon_fill_, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(battery_icon_fill_, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(battery_icon_fill_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(battery_icon_fill_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     auto *nub = lv_obj_create(battery_icon_root_);
     lv_obj_remove_style_all(nub);
     lv_obj_set_size(nub, 2, 6);
-    lv_obj_set_pos(nub, 25, 5);
+    lv_obj_set_pos(nub, 24, 5);
+    lv_obj_set_style_radius(nub, 1, 0);
     lv_obj_set_style_bg_color(nub, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(nub, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(nub, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(nub,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // Input language indicator (display-only, refreshed each tick).
-    lang_label_ = lv_label_create(pill_);
-    lv_obj_set_style_text_font(lang_label_, &BUILTIN_TEXT_FONT, 0);
+    lang_label_ = lv_label_create(status_strip_);
+    lv_obj_set_style_text_font(lang_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(lang_label_, lv_color_white(), 0);
     lv_label_set_text(lang_label_, "EN");
+    lv_obj_align(lang_label_, LV_ALIGN_RIGHT_MID, -43, 0);
 
-    // Power/lock icon -> drops the power menu (toggle on tap).
     add_icon(&power_label_, LV_SYMBOL_POWER, OnPowerClick);
+    lv_obj_align(power_label_, LV_ALIGN_RIGHT_MID, -12, 0);
 
-    // ---- Notification drop panel (below pill center) ----
-    notif_panel_ = lv_obj_create(parent);
-    lv_obj_remove_style_all(notif_panel_);
-    lv_obj_set_width(notif_panel_, 440);
-    lv_obj_set_height(notif_panel_, LV_SIZE_CONTENT);
-    lv_obj_align_to(notif_panel_, pill_, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
-    lv_obj_set_style_bg_color(notif_panel_, Color(0x000000), 0);
-    lv_obj_set_style_bg_opa(notif_panel_, LV_OPA_60, 0);
-    lv_obj_set_style_radius(notif_panel_, 14, 0);
-    lv_obj_set_style_pad_all(notif_panel_, 10, 0);
-    lv_obj_clear_flag(notif_panel_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_opa(notif_panel_, LV_OPA_0, 0);
-    lv_obj_add_flag(notif_panel_, LV_OBJ_FLAG_HIDDEN);
+    // ---- Resting Dynamic Island (centered, solid black) ----
+    pill_ = lv_obj_create(parent);
+    lv_obj_remove_style_all(pill_);
+    lv_obj_set_size(pill_, kPillW, kPillH);
+    lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
+    lv_obj_set_style_bg_color(pill_, Color(0x000000), 0);
+    lv_obj_set_style_bg_opa(pill_, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(pill_, 44, 0);
+    lv_obj_set_style_border_width(pill_, 1, 0);
+    lv_obj_set_style_border_color(pill_, Color(0x253142), 0);
+    lv_obj_set_style_border_opa(pill_, LV_OPA_40, 0);
+    lv_obj_set_style_shadow_color(pill_, lv_color_black(), 0);
+    lv_obj_set_style_shadow_width(pill_, 12, 0);
+    lv_obj_set_style_shadow_opa(pill_, LV_OPA_30, 0);
+    lv_obj_clear_flag(pill_, LV_OBJ_FLAG_SCROLLABLE);
 
-    notif_label_ = lv_label_create(notif_panel_);
-    lv_obj_set_width(notif_label_, 420);
-    lv_obj_set_style_text_font(notif_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(notif_label_, lv_color_white(), 0);
-    lv_label_set_long_mode(notif_label_, LV_LABEL_LONG_WRAP);
-    lv_obj_center(notif_label_);
-    lv_obj_add_event_cb(notif_panel_, OnNotifDeleted, LV_EVENT_DELETE, this);
+    // A very subtle lens highlight keeps the resting capsule from reading as a
+    // generic rounded rectangle. It disappears whenever content expands.
+    sensor_dot_ = lv_obj_create(pill_);
+    lv_obj_remove_style_all(sensor_dot_);
+    lv_obj_set_size(sensor_dot_, 9, 9);
+    lv_obj_align(sensor_dot_, LV_ALIGN_RIGHT_MID, -14, 0);
+    lv_obj_set_style_radius(sensor_dot_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(sensor_dot_, Color(0x101b2d), 0);
+    lv_obj_set_style_bg_opa(sensor_dot_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sensor_dot_, 1, 0);
+    lv_obj_set_style_border_color(sensor_dot_, Color(0x284d72), 0);
+    lv_obj_set_style_border_opa(sensor_dot_, LV_OPA_50, 0);
+    lv_obj_clear_flag(sensor_dot_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    // Expanded content is already laid out inside the pill, but kept hidden
+    // until the pill has started to bloom. This avoids a separate toast panel.
+    island_content_ = lv_obj_create(pill_);
+    lv_obj_remove_style_all(island_content_);
+    lv_obj_set_size(island_content_, lv_pct(100), lv_pct(100));
+    lv_obj_clear_flag(island_content_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
+    lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
+
+    island_icon_bg_ = lv_obj_create(island_content_);
+    lv_obj_remove_style_all(island_icon_bg_);
+    lv_obj_set_size(island_icon_bg_, 44, 44);
+    lv_obj_align(island_icon_bg_, LV_ALIGN_LEFT_MID, 15, 0);
+    lv_obj_set_style_radius(island_icon_bg_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(island_icon_bg_, Color(0x1677ff), 0);
+    lv_obj_set_style_bg_opa(island_icon_bg_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(island_icon_bg_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    island_icon_ = lv_label_create(island_icon_bg_);
+    lv_obj_set_style_text_font(island_icon_, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(island_icon_, lv_color_white(), 0);
+    lv_label_set_text(island_icon_, LV_SYMBOL_BELL);
+    lv_obj_center(island_icon_);
+
+    island_title_ = lv_label_create(island_content_);
+    lv_obj_set_style_text_font(island_title_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(island_title_, Color(0x69b7ff), 0);
+    lv_obj_set_pos(island_title_, 72, 10);
+    lv_label_set_text(island_title_, "THÔNG BÁO");
+
+    island_message_ = lv_label_create(island_content_);
+    lv_obj_set_size(island_message_, kExpandedW - 92, 28);
+    lv_obj_set_style_text_font(island_message_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(island_message_, lv_color_white(), 0);
+    lv_obj_set_pos(island_message_, 72, 39);
+    lv_label_set_long_mode(island_message_, LV_LABEL_LONG_DOT);
+    lv_label_set_text(island_message_, "");
 
     // ---- Power menu drop (below pill center, on layer_top; no full-screen
     // backdrop -- a full-screen clickable on layer_top intercepted mouse input,
@@ -192,9 +234,9 @@ void StatusBar::BuildPowerMenu() {
         lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 12, 0);
         lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, this);
     };
-    add_item("Khoa", OnPowerLock);
-    add_item("Khoi dong lai", OnPowerReboot);
-    add_item("Tat may", OnPowerShutdown);
+    add_item("Khóa", OnPowerLock);
+    add_item("Khởi động lại", OnPowerReboot);
+    add_item("Tắt máy", OnPowerShutdown);
 }
 
 StatusBar::~StatusBar() {
@@ -202,24 +244,38 @@ StatusBar::~StatusBar() {
     if (timer_) { lv_timer_del(timer_); timer_ = nullptr; }
     if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
     if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
-    // Siblings of pill_ on the same layer are not deleted with pill_; delete
-    // them explicitly. OnDeleted / OnNotifDeleted / OnPowerMenuDeleted null the
-    // pointers if the layer already tore them down.
+    // Siblings on the same top layer are not deleted with pill_; delete them
+    // explicitly. Delete callbacks null pointers if the layer tore down first.
     if (power_menu_) { lv_obj_del(power_menu_); power_menu_ = nullptr; }
-    if (notif_panel_) { lv_obj_del(notif_panel_); notif_panel_ = nullptr; }
     if (pill_) { lv_obj_del(pill_); pill_ = nullptr; }
+    if (status_strip_) { lv_obj_del(status_strip_); status_strip_ = nullptr; }
 }
 
 void StatusBar::Hide() {
-    if (pill_) lv_obj_add_flag(pill_, LV_OBJ_FLAG_HIDDEN);
-    // Also hide any open drop so nothing floats above the lock screen.
-    if (notif_panel_ && !lv_obj_has_flag(notif_panel_, LV_OBJ_FLAG_HIDDEN))
-        AnimateDrop(notif_panel_, false);
+    visible_ = false;
+    if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
+    if (pill_) {
+        lv_anim_delete(pill_, OnIslandWidth);
+        lv_anim_delete(pill_, OnIslandHeight);
+        lv_obj_set_size(pill_, kPillW, kPillH);
+        lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
+        lv_obj_add_flag(pill_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (island_content_) {
+        lv_anim_delete(island_content_, OnIslandContentOpa);
+        lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
+        lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (sensor_dot_) lv_obj_clear_flag(sensor_dot_, LV_OBJ_FLAG_HIDDEN);
+    if (status_strip_) lv_obj_add_flag(status_strip_, LV_OBJ_FLAG_HIDDEN);
+    island_expanded_ = false;
     if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN))
         HidePowerMenu();
 }
 
 void StatusBar::Show() {
+    visible_ = true;
+    if (status_strip_) lv_obj_clear_flag(status_strip_, LV_OBJ_FLAG_HIDDEN);
     if (pill_) lv_obj_clear_flag(pill_, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -236,11 +292,7 @@ void StatusBar::RefreshClock() {
     bool h24 = Settings("display").GetBool("clock_24h", true);
     char ts[16];
     std::strftime(ts, sizeof(ts), h24 ? "%H:%M" : "%I:%M", &t);
-    char out[64];
-    std::snprintf(out, sizeof(out), "%s  %02d/%02d/%04d  %s",
-                  kShortWday[t.tm_wday], t.tm_mday, t.tm_mon + 1,
-                  t.tm_year + 1900, ts);
-    std::string s(out);
+    std::string s(ts);
     if (s != cached_datetime_ && datetime_label_) {
         lv_label_set_text(datetime_label_, s.c_str());
         cached_datetime_ = s;
@@ -265,7 +317,7 @@ void StatusBar::RefreshBattery() {
         int level = cached_battery_level_;
         if (battery_icon_fill_) {
             lv_obj_clear_flag(battery_icon_fill_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_size(battery_icon_fill_, 18 * level / 100, 10);
+            lv_obj_set_size(battery_icon_fill_, std::max(1, 17 * level / 100), 10);
         }
         if (battery_percent_label_) {
             char buf[8];
@@ -274,7 +326,7 @@ void StatusBar::RefreshBattery() {
         }
         if (level <= 20 && !low_warned_) {
             low_warned_ = true;
-            ShowNotification("Pin yeu -- sac ngay");
+            ShowNotification("Pin yếu — hãy sạc thiết bị");
         } else if (level > 25) {
             low_warned_ = false;
         }
@@ -291,6 +343,109 @@ void StatusBar::RefreshLang() {
         lv_label_set_text(lang_label_, disp.c_str());
         cached_lang_ = disp;
     }
+}
+
+void StatusBar::AnimateIslandSize(int width, int height, bool collapsing) {
+    if (!pill_) return;
+    lv_obj_update_layout(pill_);
+    const int from_w = lv_obj_get_width(pill_);
+    const int from_h = lv_obj_get_height(pill_);
+    lv_anim_delete(pill_, OnIslandWidth);
+    lv_anim_delete(pill_, OnIslandHeight);
+
+    lv_anim_t w;
+    lv_anim_init(&w);
+    lv_anim_set_var(&w, pill_);
+    lv_anim_set_exec_cb(&w, OnIslandWidth);
+    lv_anim_set_values(&w, from_w, width);
+    lv_anim_set_time(&w, collapsing ? 260 : 340);
+    lv_anim_set_delay(&w, collapsing ? 60 : 0);
+    lv_anim_set_path_cb(&w, collapsing ? lv_anim_path_ease_in_out
+                                       : lv_anim_path_overshoot);
+    lv_anim_start(&w);
+
+    lv_anim_t h;
+    lv_anim_init(&h);
+    lv_anim_set_var(&h, pill_);
+    lv_anim_set_exec_cb(&h, OnIslandHeight);
+    lv_anim_set_values(&h, from_h, height);
+    lv_anim_set_time(&h, collapsing ? 260 : 300);
+    lv_anim_set_delay(&h, collapsing ? 60 : 0);
+    lv_anim_set_path_cb(&h, collapsing ? lv_anim_path_ease_in_out
+                                       : lv_anim_path_overshoot);
+    if (collapsing) {
+        lv_anim_set_completed_cb(&h, OnIslandCollapsed);
+        lv_anim_set_user_data(&h, this);
+    }
+    lv_anim_start(&h);
+}
+
+void StatusBar::ShowIslandMessage(const char *title, const char *text,
+                                  const char *icon, uint32_t accent,
+                                  int duration_ms) {
+    if (!visible_ || !pill_ || !island_content_) return;
+    if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN))
+        HidePowerMenu();
+
+    if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
+    lv_label_set_text(island_title_, title ? title : "");
+    lv_label_set_text(island_message_, text ? text : "");
+    lv_label_set_text(island_icon_, icon ? icon : LV_SYMBOL_BELL);
+    lv_obj_set_style_bg_color(island_icon_bg_, Color(accent), 0);
+    lv_obj_set_style_text_color(island_title_, Color(accent), 0);
+    lv_obj_set_style_border_color(pill_, Color(accent), 0);
+    lv_obj_set_style_border_opa(pill_, LV_OPA_40, 0);
+
+    if (sensor_dot_) lv_obj_add_flag(sensor_dot_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
+    lv_anim_delete(island_content_, OnIslandContentOpa);
+    lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
+    AnimateIslandSize(kExpandedW, kExpandedH, false);
+
+    lv_anim_t content;
+    lv_anim_init(&content);
+    lv_anim_set_var(&content, island_content_);
+    lv_anim_set_exec_cb(&content, OnIslandContentOpa);
+    lv_anim_set_values(&content, 0, 255);
+    lv_anim_set_delay(&content, 90);
+    lv_anim_set_time(&content, 190);
+    lv_anim_set_path_cb(&content, lv_anim_path_ease_out);
+    lv_anim_start(&content);
+
+    island_expanded_ = true;
+    const int ms = std::max(1200, duration_ms);
+    notif_timer_ = lv_timer_create(OnNotifTimer, ms, this);
+    lv_timer_set_repeat_count(notif_timer_, 1);
+}
+
+void StatusBar::CollapseIsland(bool animated) {
+    if (!pill_ || !island_content_) return;
+    if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
+
+    lv_anim_delete(island_content_, OnIslandContentOpa);
+    if (!animated) {
+        lv_anim_delete(pill_, OnIslandWidth);
+        lv_anim_delete(pill_, OnIslandHeight);
+        lv_obj_set_size(pill_, kPillW, kPillH);
+        lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
+        lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
+        lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
+        if (sensor_dot_) lv_obj_clear_flag(sensor_dot_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_border_color(pill_, Color(0x253142), 0);
+        island_expanded_ = false;
+        return;
+    }
+    if (!island_expanded_) return;
+
+    lv_anim_t content;
+    lv_anim_init(&content);
+    lv_anim_set_var(&content, island_content_);
+    lv_anim_set_exec_cb(&content, OnIslandContentOpa);
+    lv_anim_set_values(&content, lv_obj_get_style_opa(island_content_, 0), 0);
+    lv_anim_set_time(&content, 120);
+    lv_anim_set_path_cb(&content, lv_anim_path_ease_in);
+    lv_anim_start(&content);
+    AnimateIslandSize(kPillW, kPillH, true);
 }
 
 void StatusBar::AnimateDrop(lv_obj_t *obj, bool show) {
@@ -322,22 +477,19 @@ void StatusBar::AnimateDrop(lv_obj_t *obj, bool show) {
 }
 
 void StatusBar::ShowNotification(const char *text, int duration_ms) {
-    if (!notif_panel_) return;
-    // The drop slot is shared with the power menu; close the menu first.
-    if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN)) HidePowerMenu();
-    lv_label_set_text(notif_label_, text ? text : "");
-    AnimateDrop(notif_panel_, true);
-    if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
-    int ms = duration_ms < 800 ? 800 : duration_ms;
-    notif_timer_ = lv_timer_create(OnNotifTimer, ms, this);
-    lv_timer_set_repeat_count(notif_timer_, 1);
+    ShowIslandMessage("THÔNG BÁO", text, LV_SYMBOL_BELL, 0x69b7ff,
+                      duration_ms);
+}
+
+void StatusBar::ShowWelcome(int duration_ms) {
+    ShowIslandMessage("XIN CHÀO", "Chào mừng bạn đến với Ekko Land",
+                      LV_SYMBOL_HOME, 0x62e6a7, duration_ms);
 }
 
 void StatusBar::ShowPowerMenu() {
     if (!power_menu_) return;
-    if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
-    if (notif_panel_ && !lv_obj_has_flag(notif_panel_, LV_OBJ_FLAG_HIDDEN))
-        AnimateDrop(notif_panel_, false);
+    CollapseIsland(false);
+    lv_obj_align_to(power_menu_, pill_, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
     AnimateDrop(power_menu_, true);
     if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
     power_menu_timer_ = lv_timer_create(OnPowerMenuTimer, kAutoCloseMs, this);
@@ -360,7 +512,7 @@ void StatusBar::OnNotifTimer(lv_timer_t *t) {
     LvglLockGuard lock;
     self->notif_timer_ = nullptr;
     lv_timer_del(t);
-    self->AnimateDrop(self->notif_panel_, false);
+    self->CollapseIsland(true);
 }
 
 void StatusBar::OnPowerMenuTimer(lv_timer_t *t) {
@@ -378,11 +530,6 @@ void StatusBar::OnDeleted(lv_event_t *e) {
     if (self->notif_timer_) { lv_timer_del(self->notif_timer_); self->notif_timer_ = nullptr; }
     if (self->power_menu_timer_) { lv_timer_del(self->power_menu_timer_); self->power_menu_timer_ = nullptr; }
     self->pill_ = nullptr;
-}
-
-void StatusBar::OnNotifDeleted(lv_event_t *e) {
-    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
-    if (self) self->notif_panel_ = nullptr;
 }
 
 void StatusBar::OnPowerMenuDeleted(lv_event_t *e) {
@@ -431,6 +578,37 @@ void StatusBar::OnPowerShutdown(lv_event_t *e) {
     LvglLockGuard lock;
     self->HidePowerMenu();
     if (self->shutdown_action_) self->shutdown_action_();
+}
+
+void StatusBar::OnIslandWidth(void *var, int32_t v) {
+    auto *obj = static_cast<lv_obj_t *>(var);
+    lv_obj_set_width(obj, v);
+    lv_obj_align(obj, LV_ALIGN_TOP_MID, 0, kTopInset);
+}
+
+void StatusBar::OnIslandHeight(void *var, int32_t v) {
+    auto *obj = static_cast<lv_obj_t *>(var);
+    lv_obj_set_height(obj, v);
+    lv_obj_align(obj, LV_ALIGN_TOP_MID, 0, kTopInset);
+}
+
+void StatusBar::OnIslandContentOpa(void *var, int32_t v) {
+    lv_obj_set_style_opa(static_cast<lv_obj_t *>(var), (lv_opa_t)v, 0);
+}
+
+void StatusBar::OnIslandCollapsed(lv_anim_t *a) {
+    auto *self = static_cast<StatusBar *>(lv_anim_get_user_data(a));
+    if (!self || !self->pill_) return;
+    lv_obj_set_size(self->pill_, kPillW, kPillH);
+    lv_obj_align(self->pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
+    if (self->island_content_) {
+        lv_obj_set_style_opa(self->island_content_, LV_OPA_0, 0);
+        lv_obj_add_flag(self->island_content_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (self->sensor_dot_)
+        lv_obj_clear_flag(self->sensor_dot_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_border_color(self->pill_, Color(0x253142), 0);
+    self->island_expanded_ = false;
 }
 
 void StatusBar::OnDropOpa(void *var, int32_t v) {
