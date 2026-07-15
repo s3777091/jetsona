@@ -24,9 +24,9 @@ namespace home {
 
 /* Compact DS-02 home display for the Jetson 800x480 HDMI panel.
  * Reproduces the DS-02 standby (wallpaper + clock + system bar + dock) and
- * launcher (avatar sphere) look with touch interaction. This is the phase-1
- * UI; the full upstream ds02_home_display (calendar / settings / app drawer /
- * background gallery) drops in here later. */
+ * app drawer (swipe-up grid of app icons) with touch interaction. The dock
+ * carries the backed apps (calendar / gallery / settings / wifi / bt / chat /
+ * terminal); the drawer is the upcoming app set. */
 class Ds02HomeDisplay : public SpiLcdDisplay {
 public:
     Ds02HomeDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
@@ -60,7 +60,8 @@ public:
 private:
     enum class StandbyState { Dim, Awake, Launcher };
 
-    static constexpr size_t kDockItemCount = 6;
+    static constexpr size_t kDockItemCount = 7;
+    static constexpr size_t kDrawerItemCount = 8;
 
     struct AppCtx {
         Ds02HomeDisplay *self;
@@ -68,11 +69,10 @@ private:
     };
 
     void CreateStandbyObjects();
-    void CreateLauncherObjects();
+    void CreateDrawerObjects();
     void CreateSystemBarObjects();
     void CreateDockObjects();
     void SetDockActive(int index);
-    void CreateSphere(lv_obj_t *parent, int size);
     void RefreshClock();
     void RefreshBattery();
     void ApplyStandbyState();
@@ -86,7 +86,6 @@ private:
     static void OnAppButtonClicked(lv_event_t *e);
     static void OnAppDeleted(lv_event_t *e);
     static void OnStandbyGesture(lv_event_t *e);
-    static void OnSphereRotate(lv_timer_t *t);
     static void OnSplashOpa(void *var, int32_t v);
     static void OnSplashBar(void *var, int32_t v);
     static void OnSplashGone(lv_anim_t *a);
@@ -119,12 +118,12 @@ private:
     lv_obj_t *weather_label_ = nullptr;
     lv_obj_t *chat_label_ = nullptr;
     lv_obj_t *launcher_layer_ = nullptr;
-    lv_obj_t *avatar_sphere_ = nullptr;
     lv_obj_t *dock_ = nullptr;
     std::array<lv_obj_t *, kDockItemCount> dock_buttons_ = {};
     std::array<lv_obj_t *, kDockItemCount> dock_indicators_ = {};
     std::array<std::unique_ptr<LvglImage>, kDockItemCount> dock_icon_cache_ = {};
     int dock_active_index_ = -1;
+    std::array<std::unique_ptr<LvglImage>, kDrawerItemCount> drawer_icon_cache_ = {};
 
     std::array<std::unique_ptr<LvglImage>, kBackgroundCount> background_image_cache_ = {};
     size_t background_index_ = 0;
@@ -141,13 +140,12 @@ private:
     std::shared_ptr<TerminalView> terminal_view_;
     std::shared_ptr<jetson::Conversation> chat_conv_;
 
-    lv_timer_t *sphere_timer_ = nullptr;
-    int sphere_angle_ = 0;
     lv_obj_t *app_grid_ = nullptr;
 
     /* Full-screen boot splash shown on top of the home UI for ~duration_ms.
      * Fades out then self-destructs (see ShowOnboardSplash). */
     lv_obj_t *splash_ = nullptr;
+    std::unique_ptr<LvglImage> splash_logo_;
 };
 
 } // namespace home

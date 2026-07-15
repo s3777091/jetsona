@@ -123,7 +123,7 @@ void Ds02HomeDisplay::SetupUI() {
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
 
     CreateStandbyObjects();
-    CreateLauncherObjects();
+    CreateDrawerObjects();
     CreateSystemBarObjects();
     CreateDockObjects();
 
@@ -209,7 +209,7 @@ void Ds02HomeDisplay::CreateStandbyObjects() {
     lv_obj_add_event_cb(standby_layer_, OnStandbyGesture, LV_EVENT_GESTURE, this);
 }
 
-void Ds02HomeDisplay::CreateLauncherObjects() {
+void Ds02HomeDisplay::CreateDrawerObjects() {
     const auto &p = jetson::UiTheme::Instance().Palette();
     launcher_layer_ = lv_obj_create(root_);
     lv_obj_remove_style_all(launcher_layer_);
@@ -220,51 +220,38 @@ void Ds02HomeDisplay::CreateLauncherObjects() {
     lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(launcher_layer_, OnStandbyGesture, LV_EVENT_GESTURE, this);
 
-    int orb = Clamp(std::min(width_, height_) * 130 / 480, 90, 140);
-    avatar_sphere_ = lv_obj_create(launcher_layer_);
-    lv_obj_remove_style_all(avatar_sphere_);
-    lv_obj_set_size(avatar_sphere_, orb, orb);
-    lv_obj_set_style_radius(avatar_sphere_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(avatar_sphere_, Color(0x2b6fd6), 0);
-    lv_obj_set_style_bg_opa(avatar_sphere_, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_grad_color(avatar_sphere_, Color(0x0a2a66), 0);
-    lv_obj_set_style_bg_grad_dir(avatar_sphere_, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_border_width(avatar_sphere_, 0, 0);
-    lv_obj_clear_flag(avatar_sphere_, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-    lv_obj_align(avatar_sphere_, LV_ALIGN_TOP_MID, 0, 24);
-    CreateSphere(avatar_sphere_, orb);
-
     // ---- App drawer grid (the DS-02 launcher content) ----
     struct AppDef { const char *icon; const char *label; int id; };
-    static const AppDef kApps[] = {
-        {LV_SYMBOL_FILE,      "Lịch",     0},
-        {LV_SYMBOL_IMAGE,     "Ảnh nền",  1},
-        {LV_SYMBOL_SETTINGS,  "Cài đặt",  2},
-        {LV_SYMBOL_WIFI,      "WiFi",     3},
-        {LV_SYMBOL_BLUETOOTH, "Bluetooth",4},
-        {LV_SYMBOL_ENVELOPE,  "Chat",     5},
-        {LV_SYMBOL_KEYBOARD,  "Terminal", 6},
+    static const AppDef kApps[kDrawerItemCount] = {
+        {"assets/icon_2/drawer/agent.png",      "Agent",      0},
+        {"assets/icon_2/drawer/chromium.png",    "Chromium",   1},
+        {"assets/icon_2/drawer/git.png",         "Git",        2},
+        {"assets/icon_2/drawer/minion.png",      "Minion",     3},
+        {"assets/icon_2/drawer/nightowl.png",    "NightOwl",   4},
+        {"assets/icon_2/drawer/photos.png",      "Ảnh",        5},
+        {"assets/icon_2/drawer/teamspeak.png",   "TeamSpeak",  6},
+        {"assets/icon_2/drawer/translate.png",   "Dịch",       7},
     };
-    constexpr int kAppCount = 7;
-    constexpr int kCols = 3;
+    constexpr int kCols = 4;
 
     app_grid_ = lv_obj_create(launcher_layer_);
     lv_obj_remove_style_all(app_grid_);
-    int grid_w = Clamp(width_ - 64, 360, 640);
-    lv_obj_set_size(app_grid_, grid_w, 240);
-    lv_obj_align(app_grid_, LV_ALIGN_BOTTOM_MID, 0, -16);
-    lv_obj_set_style_pad_all(app_grid_, 0, 0);
+    int grid_w = Clamp(width_ - 48, 360, 640);
+    int grid_h = Clamp(height_ - 80, 320, 420);
+    lv_obj_set_size(app_grid_, grid_w, grid_h);
+    lv_obj_align(app_grid_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_pad_all(app_grid_, 12, 0);
     lv_obj_set_style_pad_row(app_grid_, 16, 0);
     lv_obj_set_style_pad_column(app_grid_, 16, 0);
     lv_obj_set_flex_flow(app_grid_, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(app_grid_, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(app_grid_, LV_OBJ_FLAG_SCROLLABLE);
 
-    int cellW = (grid_w - 16 * (kCols - 1)) / kCols;
-    for (int i = 0; i < kAppCount; ++i) {
+    int cellW = (grid_w - 16 * (kCols - 1) - 24) / kCols;
+    for (size_t i = 0; i < kDrawerItemCount; ++i) {
         auto *btn = lv_obj_create(app_grid_);
         lv_obj_remove_style_all(btn);
-        lv_obj_set_size(btn, cellW, 96);
+        lv_obj_set_size(btn, cellW, 104);
         lv_obj_set_style_radius(btn, 16, 0);
         lv_obj_set_style_bg_color(btn, Color(p.row), 0);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
@@ -274,10 +261,21 @@ void Ds02HomeDisplay::CreateLauncherObjects() {
         lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_row(btn, 6, 0);
 
-        auto *icon = lv_label_create(btn);
-        lv_obj_set_style_text_font(icon, &BUILTIN_ICON_FONT, 0);
-        lv_obj_set_style_text_color(icon, Color(p.text), 0);
-        lv_label_set_text(icon, kApps[i].icon);
+        drawer_icon_cache_[i] = LvglImageFromFile(kApps[i].icon);
+        if (drawer_icon_cache_[i]) {
+            auto *icon = lv_image_create(btn);
+            lv_image_set_src(icon, drawer_icon_cache_[i]->image_dsc());
+            int iw = drawer_icon_cache_[i]->image_dsc()->header.w;
+            if (iw > 0) lv_image_set_scale(icon, (uint16_t)(52 * 256 / iw)); // ~52 px on the tile
+            lv_obj_center(icon);
+            lv_obj_clear_flag(icon, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+        } else {
+            auto *fallback = lv_label_create(btn);
+            lv_obj_set_style_text_font(fallback, &BUILTIN_ICON_FONT, 0);
+            lv_obj_set_style_text_color(fallback, Color(p.text), 0);
+            lv_label_set_text(fallback, LV_SYMBOL_IMAGE);
+            lv_obj_center(fallback);
+        }
 
         auto *lbl = lv_label_create(btn);
         lv_obj_set_style_text_font(lbl, &BUILTIN_TEXT_FONT, 0);
@@ -288,51 +286,14 @@ void Ds02HomeDisplay::CreateLauncherObjects() {
         lv_obj_add_event_cb(btn, OnAppButtonClicked, LV_EVENT_CLICKED, ctx);
         lv_obj_add_event_cb(btn, OnAppDeleted, LV_EVENT_DELETE, ctx);
     }
-
-    // Slowly rotate the avatar sphere (visible "alive" animation).
-    if (!sphere_timer_) {
-        sphere_timer_ = lv_timer_create(OnSphereRotate, 50, this);
-    }
-}
-
-void Ds02HomeDisplay::OnSphereRotate(lv_timer_t *t) {
-    auto *self = static_cast<Ds02HomeDisplay *>(lv_timer_get_user_data(t));
-    if (!self->avatar_sphere_) return;
-    self->sphere_angle_ = (self->sphere_angle_ + 6) % 3600; // 0.6 deg/tick -> ~12 deg/s
-    lv_obj_set_style_transform_rotation(self->avatar_sphere_, self->sphere_angle_, 0);
 }
 
 void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
     auto *ctx = static_cast<AppCtx *>(lv_event_get_user_data(e));
     auto *self = ctx->self;
-    switch (ctx->id) {
-    case 0: self->OpenCalendar(); break;
-    case 1: self->OpenBackgroundGallery(); break;
-    case 2: self->OpenSettings(); break;
-    case 3: self->OpenWifiSettings(); break;
-    case 4: self->OpenBluetoothSettings(); break;
-    case 5: self->OpenChat(); break;
-    case 6: self->OpenTerminal(); break;
-    default: break;
-    }
-}
-
-void Ds02HomeDisplay::CreateSphere(lv_obj_t *parent, int size) {
-    // Two "land" blobs to suggest the DS-02 planet avatar.
-    lv_color_t land = Color(0x3fa05a);
-    for (int i = 0; i < 3; ++i) {
-        int r = size * (i == 0 ? 22 : 16) / 100;
-        auto *blob = lv_obj_create(parent);
-        lv_obj_remove_style_all(blob);
-        lv_obj_set_size(blob, r, r);
-        lv_obj_set_style_radius(blob, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(blob, land, 0);
-        lv_obj_set_style_bg_opa(blob, LV_OPA_COVER, 0);
-        lv_obj_clear_flag(blob, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-        int dx = (i - 1) * size / 6;
-        int dy = (i == 1 ? size / 8 : -size / 10);
-        lv_obj_align(blob, LV_ALIGN_CENTER, dx, dy);
-    }
+    // Drawer apps are the upcoming app set; none has a backing view yet, so a
+    // tap just announces "coming soon" rather than launching anything.
+    self->ShowNotification("Sắp ra mắt", 1500);
 }
 
 void Ds02HomeDisplay::CreateSystemBarObjects() {
@@ -433,19 +394,21 @@ void Ds02HomeDisplay::CreateDockObjects() {
     lv_obj_align(dock_, LV_ALIGN_BOTTOM_MID, 0, -kDockBottomMargin);
 
     static const char *kIconFiles[kDockItemCount] = {
-        "assets/icons/microphone.png", "assets/icons/music.png",
-        "assets/icons/study.png", "assets/icons/settings.png",
-        "assets/icons/book.png", "assets/icons/internet.png",
+        "assets/icon_2/dock/calendar.png", "assets/icon_2/dock/folder.png",
+        "assets/icon_2/dock/music.png", "assets/icon_2/dock/reminders.png",
+        "assets/icon_2/dock/settings.png", "assets/icon_2/dock/siri.png",
+        "assets/icon_2/dock/terminal.png",
     };
     static const char *kFallbackIcons[kDockItemCount] = {
-        FONT_AWESOME_MICROPHONE, FONT_AWESOME_MUSIC, FONT_AWESOME_GRADUATION_CAP,
-        FONT_AWESOME_GEAR, FONT_AWESOME_BOOK_OPEN, FONT_AWESOME_GLOBE,
+        FONT_AWESOME_BOOK_OPEN, FONT_AWESOME_BOOK, FONT_AWESOME_MUSIC,
+        FONT_AWESOME_MICROPHONE_LINES, FONT_AWESOME_GEAR,
+        FONT_AWESOME_MICROPHONE, FONT_AWESOME_TERMINAL,
     };
     static constexpr uint32_t kTileColors[kDockItemCount] = {
-        0x7357d9, 0xe04f5f, 0xe2aa36, 0x66707d, 0x29a58d, 0x3282d8,
+        0x7357d9, 0xe04f5f, 0xe2aa36, 0x66707d, 0x29a58d, 0x3282d8, 0x3a3a3a,
     };
     static constexpr uint32_t kTileGradients[kDockItemCount] = {
-        0x3e2c91, 0x8f2535, 0x8a5c14, 0x343a43, 0x126354, 0x184c91,
+        0x3e2c91, 0x8f2535, 0x8a5c14, 0x343a43, 0x126354, 0x184c91, 0x181818,
     };
 
     for (size_t i = 0; i < kDockItemCount; ++i) {
@@ -482,7 +445,8 @@ void Ds02HomeDisplay::CreateDockObjects() {
         if (dock_icon_cache_[i]) {
             auto *icon = lv_image_create(btn);
             lv_image_set_src(icon, dock_icon_cache_[i]->image_dsc());
-            lv_image_set_scale(icon, 146); // 72 px asset -> ~41 px on the dock.
+            int iw = dock_icon_cache_[i]->image_dsc()->header.w;
+            if (iw > 0) lv_image_set_scale(icon, (uint16_t)(41 * 256 / iw)); // ~41 px on the dock.
             lv_obj_center(icon);
             lv_obj_clear_flag(icon, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
         } else {
@@ -594,17 +558,19 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     self->SetDockActive(focused);
     BounceDockButton(target);
 
-    // Gear (index 3) -> WiFi settings; globe (index 5) -> Bluetooth settings.
-    // All other dock buttons cycle the standby state as before.
-    if (self->dock_buttons_[3] && target == self->dock_buttons_[3]) {
-        self->OpenWifiSettings();
-        return;
+    // Dock icons (in file order): calendar, folder, music, reminders, settings,
+    // siri, terminal -> the 7 backed apps. music/reminders carry WiFi/BT since
+    // they have no app of their own (matches the old gear/globe wiring).
+    switch (focused) {
+    case 0: self->OpenCalendar(); break;
+    case 1: self->OpenBackgroundGallery(); break;
+    case 2: self->OpenWifiSettings(); break;
+    case 3: self->OpenBluetoothSettings(); break;
+    case 4: self->OpenSettings(); break;
+    case 5: self->OpenChat(); break;
+    case 6: self->OpenTerminal(); break;
+    default: self->AdvanceStandbyButtonState(); break;
     }
-    if (self->dock_buttons_[5] && target == self->dock_buttons_[5]) {
-        self->OpenBluetoothSettings();
-        return;
-    }
-    self->AdvanceStandbyButtonState();
 }
 
 void Ds02HomeDisplay::OpenWifiSettings() {
@@ -845,7 +811,7 @@ void Ds02HomeDisplay::SetChatMessage(const char *role, const char *content) {
 }
 
 void Ds02HomeDisplay::SetEmotion(const char * /*emotion*/) {
-    // Phase 1: no emotion GIF; the launcher sphere is static.
+    // Phase 1: no emotion GIF yet.
 }
 
 void Ds02HomeDisplay::SetTheme(Theme *theme) { Display::SetTheme(theme); }
@@ -876,19 +842,21 @@ void Ds02HomeDisplay::ShowOnboardSplash(int duration_ms) {
     // Swallow taps while the splash is up so the dock isn't poked mid-boot.
     lv_obj_add_flag(splash_, LV_OBJ_FLAG_CLICKABLE);
 
-    // Planet avatar (same mark as the home screen) as the logo.
-    const int kSphere = 130;
-    auto *sphere_host = lv_obj_create(splash_);
-    lv_obj_remove_style_all(sphere_host);
-    lv_obj_set_size(sphere_host, kSphere, kSphere);
-    lv_obj_align(sphere_host, LV_ALIGN_CENTER, 0, -54);
-    lv_obj_set_style_bg_color(sphere_host, Color(0x2a6fb0), 0);
-    lv_obj_set_style_bg_opa(sphere_host, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(sphere_host, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(sphere_host, 2, 0);
-    lv_obj_set_style_border_color(sphere_host, Color(0x6fb3e0), 0);
-    lv_obj_clear_flag(sphere_host, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-    CreateSphere(sphere_host, kSphere);
+    // App logo (assets/icon_2/app/logo.png) as the boot mark.
+    splash_logo_ = LvglImageFromFile("assets/icon_2/app/logo.png");
+    if (splash_logo_) {
+        auto *logo = lv_image_create(splash_);
+        lv_image_set_src(logo, splash_logo_->image_dsc());
+        int iw = splash_logo_->image_dsc()->header.w;
+        int ih = splash_logo_->image_dsc()->header.h;
+        const int kLogoTarget = 130;
+        if (iw > 0 && ih > 0) {
+            int scale = std::min(kLogoTarget * 256 / iw, kLogoTarget * 256 / ih);
+            lv_image_set_scale(logo, (uint16_t)scale);
+        }
+        lv_obj_align(logo, LV_ALIGN_CENTER, 0, -54);
+        lv_obj_clear_flag(logo, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    }
 
     // Wordmark + accent underline.
     auto *title = lv_label_create(splash_);
@@ -967,6 +935,8 @@ void Ds02HomeDisplay::OnSplashGone(lv_anim_t *a) {
     // Deferred delete: safe from within an anim completed callback.
     lv_obj_del_async(self->splash_);
     self->splash_ = nullptr;
+    // splash_logo_ is intentionally kept alive until the async delete runs: the
+    // lv_image inside splash_ still references its dsc until the subtree is gone.
 }
 
 } // namespace home
