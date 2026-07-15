@@ -13,8 +13,8 @@ constexpr size_t kBackgroundCount = 10;
 
 inline const char *const kBackgroundFiles[kBackgroundCount] = {
     "abtract.png", "anime_light.png", "cat_dog_chill.png", "europe.png",
-    "haivan.png", "jp_temple.png", "morning_beach.png", "night_light.png",
-    "romance_anime.png", "sa_mac.png",
+    "haivan.png", "linh_ung_pagoda.png", "morning_beach.png", "night_light.png",
+    "rong_river.png", "sa_mac.png",
 };
 
 inline const char *BackgroundFile(size_t index) {
