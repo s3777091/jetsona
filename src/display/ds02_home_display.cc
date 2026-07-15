@@ -317,9 +317,14 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
 void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
     auto *ctx = static_cast<AppCtx *>(lv_event_get_user_data(e));
     auto *self = ctx->self;
-    // Drawer apps are the upcoming app set; none has a backing view yet, so a
-    // tap just announces "coming soon" rather than launching anything.
-    self->ShowNotification("Sắp ra mắt", 1500);
+    // Most drawer apps are the upcoming app set with no backing view yet, so a
+    // tap just announces "coming soon". The "Ảnh" tile (id 5) opens the
+    // wallpaper gallery, which moved here from the dock so the dock's folder
+    // icon can open the drawer itself.
+    switch (ctx->id) {
+    case 5: self->OpenBackgroundGallery(); break;
+    default: self->ShowNotification("Sắp ra mắt", 1500); break;
+    }
 }
 
 void Ds02HomeDisplay::CreateSystemBarObjects() {
@@ -584,11 +589,12 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     BounceDockButton(target);
 
     // Dock icons (in file order): calendar, folder, music, reminders, settings,
-    // siri, terminal -> the 7 backed apps. music/reminders carry WiFi/BT since
-    // they have no app of their own (matches the old gear/globe wiring).
+    // siri, terminal. The folder icon opens the swipe-up app drawer (so it is
+    // reachable with a USB mouse even before touch works). music/reminders carry
+    // WiFi/BT; the wallpaper gallery moved into the drawer's "Ảnh" tile.
     switch (focused) {
     case 0: self->OpenCalendar(); break;
-    case 1: self->OpenBackgroundGallery(); break;
+    case 1: self->standby_state_ = StandbyState::Launcher; self->ApplyStandbyState(); break;
     case 2: self->OpenWifiSettings(); break;
     case 3: self->OpenBluetoothSettings(); break;
     case 4: self->OpenSettings(); break;
