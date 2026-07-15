@@ -14,7 +14,7 @@
 namespace home {
 
 /* macOS System Settings-style hub: a sidebar of categories + a detail pane
- * that rebuilds on selection. Categories: Appearance (theme), Display
+ * that rebuilds on selection. Categories: Display
  * (brightness 15..100 via a software scrim), Sound (volume, UI-only), WiFi
  * (radio toggle + scan + per-network info/login/forget modal), Bluetooth
  * (power toggle + scan + per-device connect/disconnect/forget modal), Keyboard
@@ -47,18 +47,18 @@ private:
     jetson::IBluetoothManager &bluetooth_;
 
     enum class Cat {
-        Appearance, Display, Sound, Wifi, Bluetooth, Keyboard, DateTime, Power, About
+        Display, Sound, Wifi, Bluetooth, Keyboard, DateTime, Power, About
     };
 
     struct SideCtx { SettingsView *self; Cat cat; };
-    struct WifiRowCtx { SettingsView *self; std::string ssid; bool secured; bool in_use; int signal; };
+    struct WifiRowCtx { SettingsView *self; jetson::WifiNetwork network; };
     struct BtRowCtx { SettingsView *self; std::string addr; };
     struct OptCtx { SettingsView *self; std::string value; }; // timezone / sleep option
 
     // Layout.
     lv_obj_t *sidebar_ = nullptr;
     lv_obj_t *detail_ = nullptr;
-    Cat current_ = Cat::Appearance;
+    Cat current_ = Cat::Display;
     std::vector<lv_obj_t *> side_rows_;
 
     // WiFi pane.
@@ -94,6 +94,7 @@ private:
     TelexInput *pin_a_ = nullptr;           // PIN set: first field
     TelexInput *pin_b_ = nullptr;           // PIN set: confirm field
     std::string modal_ssid_;
+    jetson::WifiNetwork modal_wifi_;
     std::string modal_bt_addr_;
     bool modal_bt_connected_ = false;
     std::function<void()> modal_yes_;       // confirm-modal action
@@ -115,7 +116,6 @@ private:
     lv_obj_t *MakeSlider(lv_obj_t *parent, int minv, int maxv, int val, lv_event_cb_t cb);
     lv_obj_t *MakeButton(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb);
 
-    void BuildAppearance();
     void BuildDisplay();
     void BuildSound();
     void BuildWifi();
@@ -131,6 +131,8 @@ private:
     void WifiRenderList();
     void WifiCreateRow(const jetson::WifiNetwork &n);
     void WifiOpenModal(const WifiRowCtx &info);
+    void WifiLoadDetails();
+    void WifiOpenDetails(const jetson::WifiDetails &details);
     void WifiDoConnect(const std::string &ssid, const std::string &pw);
     void WifiDoForget(const std::string &ssid);
 
@@ -183,6 +185,7 @@ private:
     static void OnModalClose(lv_event_t *e);
     static void OnModalConnect(lv_event_t *e);
     static void OnModalForget(lv_event_t *e);
+    static void OnModalInfo(lv_event_t *e);
     static void OnModalBtAction(lv_event_t *e);
     static void OnModalBtRemove(lv_event_t *e);
     static void OnModalConfirmYes(lv_event_t *e);

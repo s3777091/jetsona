@@ -9,6 +9,7 @@
 #include <cstring>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 #define TAG "Wifi"
 
@@ -37,6 +38,76 @@ void splitLast(const std::string &s, char sep, std::string &head, std::string &l
 int toInt(const std::string &s) {
     if (s.empty()) return 0;
     try { return std::stoi(s); } catch (...) { return 0; }
+}
+
+void trimTrailingWhitespace(std::string &s) {
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' ||
+                          s.back() == ' ' || s.back() == '\t')) {
+        s.pop_back();
+    }
+}
+
+// nmcli terse output escapes separators as `\:`. Split while removing the
+// escape marker so SSIDs/profile names containing ':' remain intact.
+std::vector<std::string> splitNmcliFields(const std::string &line) {
+    std::vector<std::string> fields(1);
+    bool escaped = false;
+    for (char c : line) {
+        if (escaped) {
+            fields.back().push_back(c);
+            escaped = false;
+        } else if (c == '\\') {
+            escaped = true;
+        } else if (c == ':') {
+            fields.emplace_back();
+        } else {
+            fields.back().push_back(c);
+        }
+    }
+    if (escaped) fields.back().push_back('\\');
+    return fields;
+}
+
+using SavedProfiles = std::unordered_map<std::string, std::string>; // SSID -> profile name
+
+SavedProfiles loadSavedWifiProfiles() {
+    SavedProfiles profiles;
+    std::string out;
+    if (RunShellCommand("nmcli -w 5 -t --escape yes -f NAME,TYPE connection show", out) != 0)
+        return profiles;
+
+    std::istringstream iss(out);
+    std::string line;
+    while (std::getline(iss, line)) {
+        auto fields = splitNmcliFields(line);
+        if (fields.size() < 2 ||
+            (fields[1] != "wifi" && fields[1] != "802-11-wireless")) {
+            continue;
+        }
+
+        const std::string &profile = fields[0];
+        std::string ssid;
+        std::string ssidOut;
+        if (RunShellCommand("nmcli -w 5 -g 802-11-wireless.ssid connection show " +
+                            QuoteShellArgument(profile), ssidOut) == 0) {
+            trimTrailingWhitespace(ssidOut);
+            ssid = std::move(ssidOut);
+        }
+        // Profiles created by older firmware builds always use this prefix.
+        // Keep the fallback for NetworkManager versions that cannot print the
+        // setting through `-g`.
+        if (ssid.empty() && profile.rfind("jetson-fw-", 0) == 0)
+            ssid = profile.substr(std::strlen("jetson-fw-"));
+        if (ssid.empty()) ssid = profile;
+        profiles.emplace(std::move(ssid), profile);
+    }
+    return profiles;
+}
+
+void appendCsv(std::string &dst, const std::string &value) {
+    if (value.empty() || value == "--") return;
+    if (!dst.empty()) dst += ", ";
+    dst += value;
 }
 
 } // namespace
@@ -136,18 +207,17 @@ std::vector<WifiNetwork> WifiManager::Scan() {
         ESP_LOGI(TAG, "rescan done");
     }
 
-    // --escape no so SSID text is literal; we parse from the right to tolerate
-    // SSIDs that contain ':'. --rescan no: we just rescanned above, don't
-    // trigger another (throttled) request.
+    // Keep escaping enabled and parse it below. This lets both SSIDs and BSSIDs
+    // contain ':' without making the terse output ambiguous.
     std::string out;
-    int rc = RunShellCommand("nmcli -w 10 -t --escape no -f IN-USE,SSID,SIGNAL,SECURITY "
+    int rc = RunShellCommand("nmcli -w 10 -t --escape yes -f IN-USE,SSID,SIGNAL,SECURITY,BSSID "
                     "device wifi list --rescan no", out);
     if (rc != 0) {
         last_error_ = "scan failed: " + out;
         ESP_LOGW(TAG, "AP list failed (rc=%d), retrying with rescan: %s",
                  rc, out.c_str());
         // Fall back to letting nmcli rescan itself.
-        rc = RunShellCommand("nmcli -w 20 -t --escape no -f IN-USE,SSID,SIGNAL,SECURITY "
+        rc = RunShellCommand("nmcli -w 20 -t --escape yes -f IN-USE,SSID,SIGNAL,SECURITY,BSSID "
                              "device wifi list --rescan yes", out);
         if (rc != 0) {
             last_error_ = "scan failed: " + out;
@@ -162,24 +232,16 @@ std::vector<WifiNetwork> WifiManager::Scan() {
     while (std::getline(iss, line)) {
         if (line.empty()) continue;
 
-        // Field 1: IN-USE ("*" or empty).
-        std::string inUseField, rest;
-        splitFirst(line, ':', inUseField, rest);
-        if (rest.empty()) continue;
-
-        // rest = SSID:SIGNAL:SECURITY  (SSID may contain ':').
-        std::string before, security;
-        splitLast(rest, ':', before, security);
-        std::string ssid, signalStr;
-        splitLast(before, ':', ssid, signalStr);
-
-        if (ssid.empty() || ssid == "--") continue; // hidden / empty SSID
+        auto fields = splitNmcliFields(line);
+        if (fields.size() < 5 || fields[1].empty() || fields[1] == "--") continue;
 
         WifiNetwork n;
-        n.ssid = ssid;
-        n.signal = toInt(signalStr);
-        n.in_use = (inUseField.find('*') != std::string::npos);
-        n.secured = !security.empty() && security != "--";
+        n.ssid = fields[1];
+        n.signal = toInt(fields[2]);
+        n.in_use = (fields[0].find('*') != std::string::npos);
+        n.security = fields[3];
+        n.secured = !n.security.empty() && n.security != "--";
+        n.bssid = fields[4] == "--" ? "" : fields[4];
         // NetworkManager reports one row per access point/BSSID.  Collapse
         // duplicate SSIDs while preserving the strongest signal and active
         // state, otherwise a busy scan can show many identical rows.
@@ -189,19 +251,28 @@ std::vector<WifiNetwork> WifiManager::Scan() {
             nets.push_back(std::move(n));
         } else {
             auto &saved = nets[existing->second];
+            const bool preferMetadata = n.in_use || (!saved.in_use && n.signal > saved.signal);
             saved.signal = std::max(saved.signal, n.signal);
             saved.in_use = saved.in_use || n.in_use;
             saved.secured = saved.secured || n.secured;
+            if (preferMetadata) {
+                saved.security = std::move(n.security);
+                saved.bssid = std::move(n.bssid);
+            }
         }
     }
+
+    const SavedProfiles profiles = loadSavedWifiProfiles();
+    for (auto &net : nets) net.known = profiles.find(net.ssid) != profiles.end();
 
     std::sort(nets.begin(), nets.end(), [](const WifiNetwork &a, const WifiNetwork &b) {
         if (a.in_use != b.in_use) return a.in_use; // connected first
         return a.signal > b.signal;                // then by signal desc
     });
     for (const auto &net : nets) {
-        ESP_LOGI(TAG, "AP ssid='%s' signal=%d secure=%d active=%d",
-                 net.ssid.c_str(), net.signal, net.secured ? 1 : 0, net.in_use ? 1 : 0);
+        ESP_LOGI(TAG, "AP ssid='%s' signal=%d secure=%d active=%d known=%d",
+                 net.ssid.c_str(), net.signal, net.secured ? 1 : 0,
+                 net.in_use ? 1 : 0, net.known ? 1 : 0);
     }
     last_error_.clear();
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -211,9 +282,110 @@ std::vector<WifiNetwork> WifiManager::Scan() {
     return nets;
 }
 
+WifiDetails WifiManager::Details(const std::string &ssid) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    WifiDetails details;
+    details.ssid = ssid;
+
+    const SavedProfiles profiles = loadSavedWifiProfiles();
+    auto saved = profiles.find(ssid);
+    details.known = saved != profiles.end();
+
+    // Read cached AP metadata only; opening the info sheet must be quick and
+    // must not start another visible rescan.
+    std::string aps;
+    if (RunShellCommand(
+            "nmcli -w 5 -t --escape yes -f IN-USE,SSID,BSSID,SIGNAL,SECURITY,CHAN,FREQ,RATE "
+            "device wifi list --rescan no", aps) == 0) {
+        std::istringstream iss(aps);
+        std::string line;
+        int bestSignal = -1;
+        while (std::getline(iss, line)) {
+            auto f = splitNmcliFields(line);
+            if (f.size() < 8 || f[1] != ssid) continue;
+            const bool active = f[0].find('*') != std::string::npos;
+            const int signal = toInt(f[3]);
+            if (!active && details.connected) continue;
+            if (!active && signal < bestSignal) continue;
+            details.connected = active;
+            details.bssid = f[2] == "--" ? "" : f[2];
+            details.signal = signal;
+            details.security = f[4] == "--" ? "Mở" : f[4];
+            details.channel = f[5] == "--" ? "" : f[5];
+            details.frequency = f[6] == "--" ? "" : f[6] + " MHz";
+            details.rate = f[7] == "--" ? "" : f[7];
+            bestSignal = signal;
+        }
+    }
+
+    if (details.known) {
+        std::string secret;
+        if (RunShellCommand("nmcli -w 5 -s -g 802-11-wireless-security.psk connection show " +
+                            QuoteShellArgument(saved->second), secret) == 0) {
+            trimTrailingWhitespace(secret);
+            if (secret != "--") details.password = std::move(secret);
+        }
+    }
+
+    if (details.connected) {
+        std::string devices;
+        if (RunShellCommand("nmcli -w 5 -t --escape yes -f DEVICE,TYPE,STATE,CONNECTION "
+                            "device status", devices) == 0) {
+            std::istringstream iss(devices);
+            std::string line;
+            while (std::getline(iss, line)) {
+                auto f = splitNmcliFields(line);
+                if (f.size() >= 4 && f[1] == "wifi" && f[2] == "connected") {
+                    details.interface_name = f[0];
+                    break;
+                }
+            }
+        }
+
+        if (!details.interface_name.empty()) {
+            std::string deviceInfo;
+            if (RunShellCommand(
+                    "nmcli -w 5 -t --escape no -f GENERAL.HWADDR,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS "
+                    "device show " + QuoteShellArgument(details.interface_name), deviceInfo) == 0) {
+                std::istringstream iss(deviceInfo);
+                std::string line;
+                while (std::getline(iss, line)) {
+                    std::string key, value;
+                    splitFirst(line, ':', key, value);
+                    if (key == "GENERAL.HWADDR") details.adapter_address = value;
+                    else if (key.rfind("IP4.ADDRESS", 0) == 0 && details.ip_address.empty())
+                        details.ip_address = value;
+                    else if (key == "IP4.GATEWAY") details.gateway = value;
+                    else if (key.rfind("IP4.DNS", 0) == 0) appendCsv(details.dns, value);
+                }
+            }
+        }
+    }
+
+    last_error_.clear();
+    return details;
+}
+
 bool WifiManager::Connect(const std::string &ssid, const std::string &password) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!Available()) return false;
+    const SavedProfiles profiles = loadSavedWifiProfiles();
+    auto saved = profiles.find(ssid);
+    if (password.empty() && saved != profiles.end()) {
+        std::string out;
+        ESP_LOGI(TAG, "activating saved WiFi profile for '%s'", ssid.c_str());
+        const int rc = RunShellCommand("nmcli -w 25 connection up id " +
+                                       QuoteShellArgument(saved->second), out);
+        if (rc != 0) {
+            last_error_ = "connect failed: " + out;
+            ESP_LOGE(TAG, "saved connection '%s' failed (rc=%d): %s",
+                     ssid.c_str(), rc, out.c_str());
+            return false;
+        }
+        last_error_.clear();
+        return true;
+    }
+
     std::string name = "jetson-fw-" + ssid;
     std::string cmd = "nmcli device wifi connect " + QuoteShellArgument(ssid) +
                       " name " + QuoteShellArgument(name);
@@ -264,8 +436,12 @@ bool WifiManager::Disconnect() {
 bool WifiManager::Forget(const std::string &ssid) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::string out;
+    const SavedProfiles profiles = loadSavedWifiProfiles();
+    auto saved = profiles.find(ssid);
+    const std::string profile = saved == profiles.end() ? "jetson-fw-" + ssid
+                                                        : saved->second;
     int rc = RunShellCommand("nmcli -w 10 connection delete " +
-                             QuoteShellArgument("jetson-fw-" + ssid), out);
+                             QuoteShellArgument(profile), out);
     if (rc != 0) {
         // try by SSID directly
         rc = RunShellCommand("nmcli -w 10 connection delete " + QuoteShellArgument(ssid), out);

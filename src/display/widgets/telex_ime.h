@@ -62,6 +62,7 @@ public:
     void SetPassword(bool on) { password_ = on; Refresh(); }
     void SetMaxLen(size_t n) { ime_.SetMaxLen(n); }
     void SetPlaceholder(const char *text);
+    void SetFont(const lv_font_t *font);
     void Clear() { ime_.Clear(); Refresh(); }
     const std::string &Text() const { return ime_.Text(); }
     void Focus();
@@ -72,12 +73,18 @@ private:
     std::string placeholder_;
     TelexIme ime_;
     bool password_ = false;
+    bool focused_ = false;
+    bool cursor_visible_ = false;
+    lv_timer_t *cursor_timer_ = nullptr;
 
     void Refresh();  // repaint label_ from ime_.Text() (or dots if password_)
 
     static void OnKey(lv_event_t *e);
     static void OnClicked(lv_event_t *e);
+    static void OnFocused(lv_event_t *e);
+    static void OnDefocused(lv_event_t *e);
     static void OnDeleted(lv_event_t *e);
+    static void OnCursorTimer(lv_timer_t *timer);
 };
 
 } // namespace home

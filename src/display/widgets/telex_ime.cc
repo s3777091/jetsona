@@ -194,6 +194,8 @@ TelexInput::TelexInput(lv_obj_t *parent, int w, int h) {
 
     lv_obj_add_event_cb(root_, OnKey, LV_EVENT_KEY, this);
     lv_obj_add_event_cb(root_, OnClicked, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(root_, OnFocused, LV_EVENT_FOCUSED, this);
+    lv_obj_add_event_cb(root_, OnDefocused, LV_EVENT_DEFOCUSED, this);
     lv_obj_add_event_cb(root_, OnDeleted, LV_EVENT_DELETE, this);
 
     if (auto *g = jetson::LvglRuntime::Instance().keypad_group()) {
@@ -203,13 +205,21 @@ TelexInput::TelexInput(lv_obj_t *parent, int w, int h) {
 }
 
 TelexInput::~TelexInput() {
-    // root_ is either already being destroyed (OnDeleted -> delete this) or the
-    // parent took it down; do not touch LVGL here.
+    if (cursor_timer_) {
+        lv_timer_del(cursor_timer_);
+        cursor_timer_ = nullptr;
+    }
+    // root_ is already being destroyed (OnDeleted -> delete this), so do not
+    // touch the object tree here.
 }
 
 void TelexInput::SetPlaceholder(const char *text) {
     placeholder_ = text ? text : "";
     Refresh();
+}
+
+void TelexInput::SetFont(const lv_font_t *font) {
+    if (label_ && font) lv_obj_set_style_text_font(label_, font, 0);
 }
 
 void TelexInput::Focus() {
@@ -225,9 +235,12 @@ void TelexInput::Refresh() {
         display = ime_.Text();
     }
     if (display.empty() && !placeholder_.empty()) {
-        lv_label_set_text(label_, placeholder_.c_str());
+        display = placeholder_;
+        if (focused_ && cursor_visible_) display += "  |";
+        lv_label_set_text(label_, display.c_str());
         lv_obj_set_style_text_color(label_, Color(0x6e6e6e), 0);
     } else {
+        if (focused_ && cursor_visible_) display += " |";
         lv_label_set_text(label_, display.c_str());
         lv_obj_set_style_text_color(label_, Color(0xe6e6e6), 0);
     }
@@ -238,11 +251,13 @@ void TelexInput::OnKey(lv_event_t *e) {
     uint32_t key = lv_event_get_key(e);
     if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
         self->ime_.Backspace();
+        self->cursor_visible_ = true;
         self->Refresh();
     } else if (key == LV_KEY_ENTER) {
         lv_obj_send_event(self->root_, LV_EVENT_READY, nullptr);
     } else if (key >= 0x20 && key < 0x7F) {
         self->ime_.Feed((char)key);
+        self->cursor_visible_ = true;
         self->Refresh();
     }
 }
@@ -252,9 +267,38 @@ void TelexInput::OnClicked(lv_event_t *e) {
     if (self->root_) lv_group_focus_obj(self->root_);
 }
 
+void TelexInput::OnFocused(lv_event_t *e) {
+    auto *self = static_cast<TelexInput *>(lv_event_get_user_data(e));
+    self->focused_ = true;
+    self->cursor_visible_ = true;
+    if (!self->cursor_timer_)
+        self->cursor_timer_ = lv_timer_create(OnCursorTimer, 500, self);
+    self->Refresh();
+}
+
+void TelexInput::OnDefocused(lv_event_t *e) {
+    auto *self = static_cast<TelexInput *>(lv_event_get_user_data(e));
+    self->focused_ = false;
+    self->cursor_visible_ = false;
+    if (self->cursor_timer_) {
+        lv_timer_del(self->cursor_timer_);
+        self->cursor_timer_ = nullptr;
+    }
+    self->Refresh();
+}
+
 void TelexInput::OnDeleted(lv_event_t *e) {
     auto *self = static_cast<TelexInput *>(lv_event_get_user_data(e));
+    self->root_ = nullptr;
+    self->label_ = nullptr;
     delete self;
+}
+
+void TelexInput::OnCursorTimer(lv_timer_t *timer) {
+    auto *self = static_cast<TelexInput *>(lv_timer_get_user_data(timer));
+    if (!self || !self->focused_) return;
+    self->cursor_visible_ = !self->cursor_visible_;
+    self->Refresh();
 }
 
 } // namespace home

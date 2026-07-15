@@ -15,7 +15,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
+#include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -131,7 +133,6 @@ void SettingsView::BuildShell() {
 
     struct Entry { Cat cat; const char *glyph; const char *label; };
     const Entry cats[] = {
-        {Cat::Appearance, LV_SYMBOL_IMAGE, "Giao diện"},
         {Cat::Display, LV_SYMBOL_EYE_OPEN, "Hiển thị"},
         {Cat::Sound, LV_SYMBOL_VOLUME_MAX, "Âm thanh"},
         {Cat::Wifi, LV_SYMBOL_WIFI, "WiFi"},
@@ -160,7 +161,7 @@ void SettingsView::BuildShell() {
     lv_obj_set_scroll_dir(detail_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(detail_, LV_SCROLLBAR_MODE_ACTIVE);
 
-    ShowCategory(Cat::Appearance);
+    ShowCategory(Cat::Display);
 }
 
 void SettingsView::AddSidebarRow(Cat cat, const char *glyph, const char *label) {
@@ -215,7 +216,6 @@ void SettingsView::ShowCategory(Cat c) {
     current_ = c;
     ClearDetail();
     switch (c) {
-        case Cat::Appearance: BuildAppearance(); break;
         case Cat::Display: BuildDisplay(); break;
         case Cat::Sound: BuildSound(); break;
         case Cat::Wifi: BuildWifi(); break;
@@ -325,18 +325,6 @@ lv_obj_t *SettingsView::MakeButton(lv_obj_t *parent, const char *text, uint32_t 
 // Panes
 // =========================================================================
 
-void SettingsView::BuildAppearance() {
-    SectionTitle("Giao diện");
-    const auto &p = jetson::UiTheme::Instance().Palette();
-    MakeRow("Chủ đề", "Tối (dark)");
-    auto *note = lv_label_create(detail_);
-    lv_obj_set_style_text_font(note, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(note, Color(p.sub_text), 0);
-    lv_obj_set_width(note, lv_pct(100));
-    lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(note, "Giao diện cố định tối. Chế độ sáng đã bỏ.");
-}
-
 void SettingsView::BuildDisplay() {
     SectionTitle("Độ sáng");
     int v = Settings("display", true).GetInt("brightness", 100);
@@ -371,19 +359,11 @@ void SettingsView::BuildSound() {
 
 void SettingsView::BuildWifi() {
     SectionTitle("WiFi");
-    // Toggle + rescan row.
+    // Toggling the switch on enables the radio and automatically rescans, so a
+    // separate "Quét lại" button is unnecessary.
     auto *top = MakeRow("Bật WiFi", nullptr);
     wifi_switch_ = MakeSwitch(top, false, OnWifiSwitch);
     WifiRefreshSwitch();
-
-    auto *btns = lv_obj_create(detail_);
-    lv_obj_remove_style_all(btns);
-    lv_obj_set_width(btns, lv_pct(100));
-    lv_obj_set_height(btns, 44);
-    lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(btns, 8, 0);
-    lv_obj_clear_flag(btns, LV_OBJ_FLAG_SCROLLABLE);
-    MakeButton(btns, "Quét lại", 0x2b6fd6, OnWifiRescan);
 
     // Network list.
     wifi_list_ = lv_obj_create(detail_);
@@ -547,7 +527,9 @@ void SettingsView::BuildAbout() {
     if (statvfs("/", &st) == 0) {
         unsigned long long total = (unsigned long long)st.f_blocks * st.f_frsize;
         unsigned long long freeb = (unsigned long long)st.f_bavail * st.f_frsize;
-        storage = "Lưu trữ: " + FormatBytes(freeb) + " / " + FormatBytes(total) + " trống";
+        unsigned long long used = (total > freeb) ? (total - freeb) : 0;
+        storage = "Lưu trữ: " + FormatBytes(used) + " / " + FormatBytes(total) +
+                 " (" + FormatBytes(freeb) + " trống)";
     }
     auto *s = lv_label_create(detail_);
     lv_obj_set_style_text_font(s, &BUILTIN_TEXT_FONT, 0);
@@ -556,13 +538,29 @@ void SettingsView::BuildAbout() {
     lv_label_set_long_mode(s, LV_LABEL_LONG_WRAP);
     lv_label_set_text(s, storage.c_str());
 
-    // Memory (sysinfo).
+    // Memory. sysinfo()'s freeram excludes buffer/cache, so on Linux it reports a
+    // tiny "free" number that looks wrong (e.g. 150 MB on a 4 GB board with ~3 GB
+    // actually usable). /proc/meminfo's MemAvailable is the real figure the kernel
+    // considers reclaimable, so read that instead. Values are in kB.
     std::string mem = "RAM: —";
-    struct sysinfo si;
-    if (sysinfo(&si) == 0) {
-        unsigned long long total = (unsigned long long)si.totalram * si.mem_unit;
-        unsigned long long freeb = (unsigned long long)si.freeram * si.mem_unit;
-        mem = "RAM: " + FormatBytes(freeb) + " / " + FormatBytes(total) + " trống";
+    unsigned long long mem_total_kb = 0, mem_avail_kb = 0;
+    {
+        std::ifstream mf("/proc/meminfo");
+        std::string line;
+        while (std::getline(mf, line)) {
+            if (line.rfind("MemTotal:", 0) == 0)
+                mem_total_kb = std::strtoull(line.c_str() + 9, nullptr, 10);
+            else if (line.rfind("MemAvailable:", 0) == 0)
+                mem_avail_kb = std::strtoull(line.c_str() + 13, nullptr, 10);
+            if (mem_total_kb && mem_avail_kb) break;
+        }
+    }
+    if (mem_total_kb > 0) {
+        unsigned long long total = mem_total_kb * 1024ULL;
+        unsigned long long avail = mem_avail_kb * 1024ULL;
+        unsigned long long used = (total > avail) ? (total - avail) : 0;
+        mem = "RAM: " + FormatBytes(used) + " / " + FormatBytes(total) +
+              " (" + FormatBytes(avail) + " trống)";
     }
     auto *m = lv_label_create(detail_);
     lv_obj_set_style_text_font(m, &BUILTIN_TEXT_FONT, 0);
@@ -624,7 +622,7 @@ void SettingsView::WifiRenderList() {
         auto *e = lv_label_create(wifi_list_);
         lv_obj_set_style_text_font(e, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(e, Color(p.sub_text), 0);
-        lv_label_set_text(e, "Không có mạng. Bấm \"Quét lại\".");
+        lv_label_set_text(e, "Không có mạng. Bật/tắt WiFi để quét lại.");
         return;
     }
     for (const auto &n : wifi_nets_) WifiCreateRow(n);
@@ -677,7 +675,7 @@ void SettingsView::WifiCreateRow(const jetson::WifiNetwork &n) {
         lv_label_set_text(tag, "•");
     }
 
-    auto *ctx = new WifiRowCtx{this, n.ssid, n.secured, n.in_use, n.signal};
+    auto *ctx = new WifiRowCtx{this, n};
     lv_obj_add_event_cb(row, OnWifiRowClicked, LV_EVENT_CLICKED, ctx);
     lv_obj_add_event_cb(row, OnWifiRowDeleted, LV_EVENT_DELETE, ctx);
 }

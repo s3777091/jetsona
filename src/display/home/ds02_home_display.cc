@@ -182,10 +182,12 @@ void Ds02HomeDisplay::SetupUI() {
     CreateSystemBarObjects();
     CreateDockObjects();
 
-    // Brightness scrim: created LAST on root_ so it sits above the menu bar
-    // and dock (but below any app overlay opened afterwards). Non-clickable so
-    // it never eats pointer events.
-    brightness_overlay_ = lv_obj_create(root_);
+    // Brightness is emulated with a scrim because the HDMI panel has no
+    // controllable backlight. Put it on LVGL's top layer so it also covers
+    // full-screen app views (including Settings itself); a root_ child would
+    // sit behind every app opened later and make the slider appear broken.
+    // The system layer remains above it, keeping the mouse cursor visible.
+    brightness_overlay_ = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(brightness_overlay_);
     lv_obj_set_size(brightness_overlay_, lv_pct(100), lv_pct(100));
     lv_obj_set_pos(brightness_overlay_, 0, 0);
@@ -448,7 +450,9 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
     lv_obj_clear_flag(nub, LV_OBJ_FLAG_SCROLLABLE);
 
     add_icon(&volume_label_, FONT_AWESOME_VOLUME_HIGH, OnMenuVolume);
-    add_icon(&power_label_, FONT_AWESOME_POWER, OnMenuPower);
+    // The power/settings button that used to sit here was removed: it opened
+    // Settings, which is already reachable from the dock's settings icon, so it
+    // was redundant next to the clock. Reboot/shutdown live in Settings > Nguồn.
 
     // Clock (rightmost item in the pill).
     time_label_ = lv_label_create(system_bar_);

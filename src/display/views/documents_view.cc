@@ -38,6 +38,82 @@ bool IsDirectory(const std::string &path) {
     return !path.empty() && ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+// ---- File-type badge -----------------------------------------------------
+// Instead of a generic white tile, each file gets a coloured rounded badge
+// with a short label keyed off the extension (.js -> yellow "JS", .py -> blue
+// "PY", .pdf -> red "PDF", ...). This is rendered with plain LVGL objects so it
+// needs no image assets and stays crisp on the dark theme. `label` is at most
+// 4 chars; `dark_text` tells the caller to use dark text on a light badge.
+struct FileBadge { uint32_t color; std::string label; };
+
+FileBadge BadgeFor(const std::string &name) {
+    auto dot = name.find_last_of('.');
+    std::string e = (dot == std::string::npos || dot == 0) ? "" : name.substr(dot + 1);
+    std::string ext;
+    ext.reserve(e.size());
+    for (unsigned char c : e) ext.push_back((char)std::tolower(c));
+
+    // Images.
+    if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" ||
+        ext == "bmp" || ext == "svg" || ext == "webp" || ext == "ico" ||
+        ext == "tiff" || ext == "tif") return {0x34A853, "IMG"};
+    // Video.
+    if (ext == "mp4" || ext == "mkv" || ext == "mov" || ext == "avi" ||
+        ext == "webm" || ext == "m4v" || ext == "flv" || ext == "wmv")
+        return {0x8E44AD, "VID"};
+    // Audio.
+    if (ext == "mp3" || ext == "wav" || ext == "flac" || ext == "ogg" ||
+        ext == "aac" || ext == "m4a" || ext == "wma") return {0xE67E22, "AUD"};
+    // Archives.
+    if (ext == "zip" || ext == "tar" || ext == "gz" || ext == "rar" ||
+        ext == "7z" || ext == "xz" || ext == "bz2" || ext == "tgz")
+        return {0xF39C12, "ZIP"};
+    // Documents.
+    if (ext == "pdf") return {0xE5392A, "PDF"};
+    if (ext == "doc" || ext == "docx") return {0x2B579A, "DOC"};
+    if (ext == "xls" || ext == "xlsx") return {0x217346, "XLS"};
+    if (ext == "ppt" || ext == "pptx") return {0xD24726, "PPT"};
+    if (ext == "txt" || ext == "log" || ext == "conf" || ext == "ini" ||
+        ext == "cfg") return {0x84848a, "TXT"};
+    // Code.
+    if (ext == "js" || ext == "mjs" || ext == "cjs" || ext == "jsx")
+        return {0xF7DF1E, "JS"};
+    if (ext == "ts" || ext == "tsx") return {0x3178C6, "TS"};
+    if (ext == "py" || ext == "pyw" || ext == "pyc") return {0x3776AB, "PY"};
+    if (ext == "c") return {0x5C6BC0, "C"};
+    if (ext == "h") return {0x5C6BC0, "H"};
+    if (ext == "cc" || ext == "cpp" || ext == "cxx" || ext == "hpp" || ext == "hxx")
+        return {0x00599C, "C++"};
+    if (ext == "rs") return {0xDEA584, "RS"};
+    if (ext == "go") return {0x00ADD8, "GO"};
+    if (ext == "java") return {0xE76F00, "JAVA"};
+    if (ext == "jar") return {0xE76F00, "JAR"};
+    if (ext == "html" || ext == "htm") return {0xE34F26, "HTML"};
+    if (ext == "css" || ext == "scss" || ext == "sass") return {0x2965F1, "CSS"};
+    if (ext == "json") return {0x3a3a3a, "JSON"};
+    if (ext == "xml") return {0x0060AF, "XML"};
+    if (ext == "md" || ext == "markdown") return {0x519ABA, "MD"};
+    if (ext == "csv") return {0x1B8E2B, "CSV"};
+    if (ext == "yml" || ext == "yaml") return {0xCB171E, "YML"};
+    if (ext == "sh" || ext == "bash" || ext == "zsh") return {0x4EAA25, "SH"};
+    if (ext == "iso" || ext == "img" || ext == "bin") return {0x6b7280, "BIN"};
+
+    // Unknown: show the real (uppercased) extension on a neutral chip.
+    std::string up;
+    for (unsigned char c : e) {
+        up.push_back((char)std::toupper(c));
+        if (up.size() == 4) break;
+    }
+    if (up.empty()) up = "FILE";
+    return {0x6b7280, std::move(up)};
+}
+
+// Pick dark text on light badges (e.g. JS yellow) so the label stays readable.
+bool LightBadge(uint32_t rgb) {
+    int r = (rgb >> 16) & 0xff, g = (rgb >> 8) & 0xff, b = rgb & 0xff;
+    return (r * 299 + g * 587 + b * 114) / 1000 > 150;
+}
+
 // The service often runs as root, so HOME points at /root even though the real
 // desktop files live in /home/<user>.  Prefer an explicit override, then the
 // login user, and finally the first real home directory on the device.
@@ -246,20 +322,25 @@ void DocumentsView::BuildGrid() {
             lv_obj_clear_flag(tab, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
                                                    LV_OBJ_FLAG_CLICKABLE));
         } else {
-            // File: a light tile with the uppercase extension centered.
+            // File: a coloured badge keyed off the extension (.js -> yellow "JS",
+            // .py -> blue "PY", .pdf -> red "PDF", ...) so the type is recognisable
+            // at a glance, instead of a generic white tile.
+            const FileBadge fb = BadgeFor(e.name);
             auto *tile = lv_obj_create(glyph);
             lv_obj_remove_style_all(tile);
-            lv_obj_set_size(tile, 46, 54);
-            lv_obj_set_style_radius(tile, 6, 0);
-            lv_obj_set_style_bg_color(tile, lv_color_white(), 0);
+            lv_obj_set_size(tile, 56, 54);
+            lv_obj_set_style_radius(tile, 8, 0);
+            lv_obj_set_style_bg_color(tile, Color(fb.color), 0);
             lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
             lv_obj_align(tile, LV_ALIGN_CENTER, 0, 0);
             lv_obj_clear_flag(tile, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
                                                     LV_OBJ_FLAG_CLICKABLE));
             auto *ext = lv_label_create(tile);
-            lv_obj_set_style_text_font(ext, &BUILTIN_TEXT_FONT, 0);
-            lv_obj_set_style_text_color(ext, Color(0x84848a), 0);
-            lv_label_set_text(ext, ExtUpper(e.name).c_str());
+            // 24px icon font keeps 4-char labels (HTML/JSON/JAVA) inside the chip.
+            lv_obj_set_style_text_font(ext, &BUILTIN_ICON_FONT, 0);
+            lv_obj_set_style_text_color(ext,
+                LightBadge(fb.color) ? Color(0x222222) : lv_color_white(), 0);
+            lv_label_set_text(ext, fb.label.c_str());
             lv_obj_center(ext);
         }
 

@@ -21,6 +21,27 @@ struct WifiNetwork {
     int signal = 0;      // 0..100 (nmcli SIGNAL)
     bool secured = false; // has WPA/WEP/etc.
     bool in_use = false;  // currently connected
+    bool known = false;   // NetworkManager has a saved connection profile
+    std::string security; // WPA2/WPA3/WEP/etc. as reported by NetworkManager
+    std::string bssid;    // strongest/current access-point address
+};
+
+struct WifiDetails {
+    std::string ssid;
+    int signal = 0;
+    bool connected = false;
+    bool known = false;
+    std::string security;
+    std::string bssid;
+    std::string interface_name;
+    std::string adapter_address;
+    std::string ip_address;
+    std::string gateway;
+    std::string dns;
+    std::string channel;
+    std::string frequency;
+    std::string rate;
+    std::string password; // populated only by an explicit Details() request
 };
 
 class IWifiManager {
@@ -32,6 +53,9 @@ public:
     virtual bool Enable(bool on) = 0;
     virtual std::string ActiveSsid() const = 0;
     virtual std::vector<WifiNetwork> Scan() = 0;
+    // Potentially shells out several times and may reveal a stored password;
+    // call only from a worker after the user explicitly opens WiFi details.
+    virtual WifiDetails Details(const std::string &ssid) { return WifiDetails{ssid}; }
     virtual bool Connect(const std::string &ssid, const std::string &password) = 0;
     virtual bool Disconnect() = 0;
     virtual bool Forget(const std::string &ssid) = 0;
@@ -55,6 +79,8 @@ public:
 
     // Scan and return networks sorted by signal desc. Blocking (~1-2s).
     std::vector<WifiNetwork> Scan() override;
+
+    WifiDetails Details(const std::string &ssid) override;
 
     // Connect to an SSID. password may be empty for open networks.
     // Returns true on success; sets LastError() on failure.

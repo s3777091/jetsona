@@ -12,6 +12,7 @@
 namespace jetson {
 
 lv_font_t *g_builtin_text_font = nullptr;
+lv_font_t *g_builtin_small_text_font = nullptr;
 lv_font_t *g_builtin_icon_font = nullptr;
 
 static std::string joinPath(const char *dir, const char *file) {
@@ -46,6 +47,14 @@ void InitBuiltinFonts(const char *assets_dir) {
         ESP_LOGW(TAG, "tiny_ttf failed for %s, falling back to montserrat_28", text_path.c_str());
         g_builtin_text_font = (lv_font_t *)&lv_font_montserrat_28;
     }
+    // Compact dialogs use a separate face instance: tiny_ttf stores the size
+    // on the lv_font_t, so resizing the main font would shrink the whole UI.
+    g_builtin_small_text_font = lv_tiny_ttf_create_file(text_path.c_str(), 18);
+    if (!g_builtin_small_text_font) {
+        ESP_LOGW(TAG, "tiny_ttf small font failed for %s, falling back to montserrat_18",
+                 text_path.c_str());
+        g_builtin_small_text_font = (lv_font_t *)&lv_font_montserrat_18;
+    }
     /* The icon font MUST contain the LVGL symbol glyphs (LV_SYMBOL_WIFI /
      * SETTINGS / BLUETOOTH / IMAGE / LEFT / REFRESH ...). The bundled arial.ttf
      * and NotoSans do NOT carry that Font Awesome symbol block, so loading the
@@ -53,7 +62,8 @@ void InitBuiltinFonts(const char *assets_dir) {
      * Use LVGL's built-in montserrat, which ships with the symbol range baked in.
      * (Vietnamese diacritics in labels use the text font above, not this one.) */
     g_builtin_icon_font = (lv_font_t *)&lv_font_montserrat_24;
-    ESP_LOGI(TAG, "fonts ready (text=%s, icon=montserrat_24)", text_path.c_str());
+    ESP_LOGI(TAG, "fonts ready (text=%s, compact=18, icon=montserrat_24)",
+             text_path.c_str());
 }
 
 } // namespace jetson

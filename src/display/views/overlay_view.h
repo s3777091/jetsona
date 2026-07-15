@@ -2,8 +2,9 @@
 
 /* Base for full-screen overlay views (calendar / background gallery / settings)
  * sharing the same shell: an overlay covering the screen, a compact 48px header
- * with a macOS-style traffic-light cluster and centered title, a body container,
- * and a bottom status pill that is hidden when unused.
+ * with a macOS-style traffic-light cluster and centered title, and a body
+ * container that fills the rest. SetStatus() exists for worker-thread progress
+ * but no longer renders anything on screen -- it only logs.
  *
  * Threading + lifetime mirror WifiSettingsView: the subclass is shared_ptr-owned
  * so worker threads (scans, etc.) can outlive the on-screen overlay; the back

@@ -120,8 +120,8 @@ private:
 
     lv_obj_t *root_ = nullptr;
     lv_obj_t *standby_layer_ = nullptr;
-    // Full-screen black scrim on root_ (above menu bar/dock) used to dim the
-    // whole panel for the brightness control. Non-clickable, non-scrollable.
+    // Full-screen black scrim on LVGL's top layer used to dim the whole UI,
+    // including app overlays. Non-clickable and non-scrollable.
     lv_obj_t *brightness_overlay_ = nullptr;
     lv_obj_t *wallpaper_ = nullptr;
     lv_obj_t *wallpaper_image_obj_ = nullptr;

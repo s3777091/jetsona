@@ -62,7 +62,10 @@ void OverlayView::BuildShell(const char *title) {
         lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
         lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
         auto *g = lv_label_create(b);
-        lv_obj_set_style_text_font(g, &BUILTIN_TEXT_FONT, 0);
+        // Keep the controls on a small, fixed font. BUILTIN_TEXT_FONT is the
+        // 28 px application font, which gets clipped inside a 14 px light and
+        // makes x/-/+ look as if they sit at different heights.
+        lv_obj_set_style_text_font(g, &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(g, Color(0x000000), 0);
         lv_obj_set_style_text_opa(g, (lv_opa_t)0xA0, 0);
         lv_label_set_text(g, glyph);
@@ -84,44 +87,25 @@ void OverlayView::BuildShell(const char *title) {
     lv_obj_center(title_label_);
 
     // ---- Body (fills everything below the compact title bar) ----
-    // The old shell permanently reserved another 32 px for instructional text
-    // ("tap a folder...", "tap a day...").  On a 480 px panel that strip was
-    // both redundant and expensive.  Status is now a transient bottom pill;
-    // normal app content starts immediately below the title bar.
+    // Normal app content starts immediately below the title bar. The old shell
+    // permanently reserved a strip for instructional text; on a 480 px panel
+    // that was both redundant and expensive. A later transient bottom "status
+    // pill" was also removed -- it duplicated info already on screen (e.g.
+    // "Đã kết nối: <ssid>", "Shell san sang") and cluttered the footer. Status
+    // messages now go only to the log (see SetStatus).
     body_ = lv_obj_create(overlay_);
     lv_obj_remove_style_all(body_);
     lv_obj_set_pos(body_, 0, 48);
     lv_obj_set_size(body_, width_, height_ - 48);
     lv_obj_set_style_bg_opa(body_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(body_, 8, 0);
-
-    status_label_ = lv_label_create(overlay_);
-    lv_obj_set_style_text_font(status_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(status_label_, Color(p.text), 0);
-    lv_obj_set_style_bg_color(status_label_, Color(p.row), 0);
-    lv_obj_set_style_bg_opa(status_label_, LV_OPA_90, 0);
-    lv_obj_set_style_radius(status_label_, 10, 0);
-    lv_obj_set_style_pad_hor(status_label_, 10, 0);
-    lv_obj_set_style_pad_ver(status_label_, 5, 0);
-    lv_obj_set_width(status_label_, width_ - 24);
-    lv_label_set_long_mode(status_label_, LV_LABEL_LONG_DOT);
-    lv_obj_align(status_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
-    lv_label_set_text(status_label_, "");
-    lv_obj_add_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
 }
 
 void OverlayView::SetStatus(const char *text) {
-    if (!status_label_) return;
-    const char *message = text ? text : "";
-    if (!message[0]) {
-        lv_label_set_text(status_label_, "");
-        lv_obj_add_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    ESP_LOGI(TAG, "%s: %s", title_.c_str(), message);
-    lv_label_set_text(status_label_, message);
-    lv_obj_clear_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(status_label_);
+    // No on-screen status pill anymore -- it duplicated visible info and
+    // cluttered the footer. Keep the message in the log for diagnostics so
+    // worker threads can still report progress (scans, connects, etc.).
+    ESP_LOGI(TAG, "%s: %s", title_.c_str(), text ? text : "");
 }
 
 void OverlayView::SetRightButton(const char *icon_symbol, RightCb cb) {
@@ -233,8 +217,6 @@ void OverlayView::ToggleZoom() {
     }
     lv_obj_set_size(overlay_, w, h);
     lv_obj_set_width(header_, w);
-    lv_obj_set_width(status_label_, w - 24);
-    lv_obj_align(status_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_set_size(body_, w, h - 48);
     OnResize(w, h - 48);
 }
