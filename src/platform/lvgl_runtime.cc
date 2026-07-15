@@ -194,7 +194,11 @@ lv_display_t *LvglRuntime::createDisplayFbdev(int width, int height) {
     const char *fb = std::getenv("JETSON_FB_DEVICE");
     if (!fb) fb = "/dev/fb0";
     lv_linux_fbdev_set_file(disp, fb);
-    lv_linux_fbdev_set_force_refresh(disp, true);
+    // Partial refresh: only invalidated areas are flushed to the framebuffer.
+    // force_refresh=true re-flushes the whole 800x480 every frame, which on the
+    // single-buffered tegrafb panel shows as continuous full-screen flicker and
+    // wipes one-shot draws (e.g. splash wordmark) between frames.
+    lv_linux_fbdev_set_force_refresh(disp, false);
     ESP_LOGI(TAG, "FBDEV display on %s (%dx%d)", fb,
              (int)lv_display_get_horizontal_resolution(disp), (int)lv_display_get_vertical_resolution(disp));
     return disp;

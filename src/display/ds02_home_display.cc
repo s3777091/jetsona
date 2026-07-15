@@ -22,6 +22,33 @@ namespace {
 int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 lv_color_t Color(uint32_t rgb) { return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff); }
 
+// Read PNG pixel dimensions from the IHDR chunk (width@16, height@20, big-endian)
+// so we can compute an lv_image scale before LVGL lazily decodes the body
+// (LvglRawImage leaves image_dsc_.header.w/h at 0 until decode).
+bool PngSize(const char *path, int *w, int *h) {
+    *w = 0; *h = 0;
+    FILE *f = std::fopen(path, "rb");
+    if (!f) return false;
+    uint8_t hdr[24];
+    size_t n = std::fread(hdr, 1, sizeof(hdr), f);
+    std::fclose(f);
+    if (n < 24 || hdr[0] != 0x89 || hdr[1] != 0x50 || hdr[2] != 0x4E || hdr[3] != 0x47) return false;
+    *w = (hdr[16] << 24) | (hdr[17] << 16) | (hdr[18] << 8) | hdr[19];
+    *h = (hdr[20] << 24) | (hdr[21] << 16) | (hdr[22] << 8) | hdr[23];
+    return *w > 0 && *h > 0;
+}
+
+// lv_image zoom (256 == 100%) that fits a PNG's longer edge to target_px.
+int PngScaleToFit(const char *path, int target_px) {
+    int w = 0, h = 0;
+    if (PngSize(path, &w, &h) && w > 0 && h > 0) {
+        int longer = std::max(w, h);
+        int s = target_px * 256 / longer;
+        return Clamp(s, 32, 1024);
+    }
+    return 256; // unknown size -> leave native (100%)
+}
+
 constexpr int kSystemBarHeight = 28;
 constexpr int kDockHeight = 78;
 constexpr int kDockBottomMargin = 6;
@@ -265,8 +292,7 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
         if (drawer_icon_cache_[i]) {
             auto *icon = lv_image_create(btn);
             lv_image_set_src(icon, drawer_icon_cache_[i]->image_dsc());
-            int iw = drawer_icon_cache_[i]->image_dsc()->header.w;
-            if (iw > 0) lv_image_set_scale(icon, (uint16_t)(52 * 256 / iw)); // ~52 px on the tile
+            lv_image_set_scale(icon, (uint16_t)PngScaleToFit(kApps[i].icon, 52)); // ~52 px on the tile
             lv_obj_center(icon);
             lv_obj_clear_flag(icon, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
         } else {
@@ -445,8 +471,7 @@ void Ds02HomeDisplay::CreateDockObjects() {
         if (dock_icon_cache_[i]) {
             auto *icon = lv_image_create(btn);
             lv_image_set_src(icon, dock_icon_cache_[i]->image_dsc());
-            int iw = dock_icon_cache_[i]->image_dsc()->header.w;
-            if (iw > 0) lv_image_set_scale(icon, (uint16_t)(41 * 256 / iw)); // ~41 px on the dock.
+            lv_image_set_scale(icon, (uint16_t)PngScaleToFit(kIconFiles[i], 41)); // ~41 px on the dock.
             lv_obj_center(icon);
             lv_obj_clear_flag(icon, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
         } else {
@@ -843,17 +868,12 @@ void Ds02HomeDisplay::ShowOnboardSplash(int duration_ms) {
     lv_obj_add_flag(splash_, LV_OBJ_FLAG_CLICKABLE);
 
     // App logo (assets/icon_2/app/logo.png) as the boot mark.
-    splash_logo_ = LvglImageFromFile("assets/icon_2/app/logo.png");
+    static const char *kLogoPath = "assets/icon_2/app/logo.png";
+    splash_logo_ = LvglImageFromFile(kLogoPath);
     if (splash_logo_) {
         auto *logo = lv_image_create(splash_);
         lv_image_set_src(logo, splash_logo_->image_dsc());
-        int iw = splash_logo_->image_dsc()->header.w;
-        int ih = splash_logo_->image_dsc()->header.h;
-        const int kLogoTarget = 130;
-        if (iw > 0 && ih > 0) {
-            int scale = std::min(kLogoTarget * 256 / iw, kLogoTarget * 256 / ih);
-            lv_image_set_scale(logo, (uint16_t)scale);
-        }
+        lv_image_set_scale(logo, (uint16_t)PngScaleToFit(kLogoPath, 130)); // ~130 px logo.
         lv_obj_align(logo, LV_ALIGN_CENTER, 0, -54);
         lv_obj_clear_flag(logo, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     }
