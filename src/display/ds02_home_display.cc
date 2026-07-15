@@ -733,10 +733,12 @@ bool Ds02HomeDisplay::ApplyBackgroundIndex(size_t index) {
         return false;
     }
     lv_image_set_src(wallpaper_image_obj_, img->image_dsc());
-    // Cover-fit: scale to fill 800x480.
-    int iw = img->image_dsc()->header.w;
-    int ih = img->image_dsc()->header.h;
-    if (iw > 0 && ih > 0) {
+    // Cover-fit: scale the wallpaper to fill the 800x480 panel. Parse the PNG
+    // IHDR directly -- image_dsc().header.w stays 0 until LVGL lazily decodes
+    // the body, which left the wallpaper unscaled (shown too small).
+    std::string path = home::BackgroundsDir() + "/" + home::BackgroundFile(index);
+    int iw = 0, ih = 0;
+    if (PngSize(path.c_str(), &iw, &ih) && iw > 0 && ih > 0) {
         int scale = std::max(width_ * 256 / iw, height_ * 256 / ih);
         lv_image_set_scale(wallpaper_image_obj_, (uint16_t)scale);
     }
