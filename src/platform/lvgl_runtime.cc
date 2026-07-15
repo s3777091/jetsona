@@ -1,5 +1,6 @@
 #include "lvgl_runtime.h"
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -32,6 +33,19 @@ struct KeyboardState {
     bool caps = false;
     int key = 0;
     lv_indev_state_t state = LV_INDEV_STATE_RELEASED;
+};
+
+/* The LVGL 9.2 evdev driver treats every pointer as an absolute device during
+ * setup. A USB mouse has REL_X/REL_Y instead, so the driver issues failing
+ * EVIOCGABS ioctls and starts its coordinates at the top-left corner. Keep a
+ * small relative-mouse driver here, just as we already do for the keyboard. */
+struct RelativeMouseState {
+    int fd = -1;
+    int x = 0;
+    int y = 0;
+    lv_indev_state_t state = LV_INDEV_STATE_RELEASED;
+    bool read_error_logged = false;
+    bool motion_logged = false;
 };
 
 /* US-keyboard evdev keycode -> LVGL key. Returns 0 for unmapped / modifier-only
@@ -140,22 +154,65 @@ static void keyboard_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     data->state = st->state;
 }
 
+static void relative_mouse_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    auto *st = static_cast<RelativeMouseState *>(lv_indev_get_driver_data(indev));
+    if (!st || st->fd < 0) {
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
+    struct input_event ev;
+    ssize_t bytes = 0;
+    bool moved = false;
+    while ((bytes = read(st->fd, &ev, sizeof(ev))) == (ssize_t)sizeof(ev)) {
+        if (ev.type == EV_REL) {
+            if (ev.code == REL_X) {
+                st->x += ev.value;
+                moved = moved || ev.value != 0;
+            }
+            else if (ev.code == REL_Y) {
+                st->y += ev.value;
+                moved = moved || ev.value != 0;
+            }
+        }
+        else if (ev.type == EV_KEY && ev.code == BTN_LEFT) {
+            st->state = ev.value ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+        }
+    }
+
+    if (bytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK && !st->read_error_logged) {
+        ESP_LOGW(TAG, "mouse read failed: %s", strerror(errno));
+        st->read_error_logged = true;
+    }
+
+    lv_display_t *disp = lv_indev_get_display(indev);
+    const int width = disp ? lv_display_get_horizontal_resolution(disp) : 0;
+    const int height = disp ? lv_display_get_vertical_resolution(disp) : 0;
+    if (width > 0) {
+        if (st->x < 0) st->x = 0;
+        else if (st->x >= width) st->x = width - 1;
+    }
+    if (height > 0) {
+        if (st->y < 0) st->y = 0;
+        else if (st->y >= height) st->y = height - 1;
+    }
+    if (moved && !st->motion_logged) {
+        ESP_LOGI(TAG, "mouse: first REL_X/REL_Y event received at %d,%d", st->x, st->y);
+        st->motion_logged = true;
+    }
+
+    data->point.x = st->x;
+    data->point.y = st->y;
+    data->state = st->state;
+}
+
 /* LVGL pointer indevs have no visible cursor by default; a relative mouse
  * moves the focus point but the user can't see where it is. Attach a visible
  * cursor -- the PNG at assets/icons/app/cursor.png when LVGL can decode it,
  * otherwise a line-drawn arrow that needs no image decoder and always
- * renders. The PNG path is preferred because the user supplies their own
- * cursor artwork there; the line arrow is the guaranteed-visible fallback.
- *
- * Why still draw the line-arrow when the PNG decodes: a header probe
- * (lv_image_decoder_get_info) only confirms the PNG is parseable, not that its
- * pixels render visibly -- an 8-bit gray+alpha cursor that decodes to a fully
- * transparent image on the fbdev software renderer still reports success, and
- * an earlier build that used the PNG alone in that case rendered nothing, so
- * evdev kept delivering REL_X/REL_Y + BTN_MOUSE but the pointer looked dead.
- * The arrow is therefore drawn unconditionally as a base layer and the PNG is
- * overlaid on top: an opaque PNG hides the arrow, a blank/transparent PNG lets
- * the arrow show through, so the cursor is visible in either case.
+ * renders. Exactly one of them is created; drawing both makes two overlapping
+ * arrow shapes visible when the PNG has transparent pixels.
  *
  * The cursor is parented to lv_layer_sys() -- the system layer renders above
  * lv_layer_top() and above the active screen, so it stays on top of every
@@ -169,15 +226,7 @@ static void attach_pointer_cursor(lv_indev_t *indev)
 {
     if (!indev) return;
 
-    /* Probe the PNG artwork first. `static` so the decoded image buffer
-     * outlives the cursor object. get_info only reads the header -- a PNG
-     * that decodes its header but renders blank (e.g. an 8-bit gray+alpha
-     * cursor that comes out fully transparent on the fbdev software renderer)
-     * still reports success, so a header probe alone is NOT proof the cursor
-     * will be visible. We therefore ALWAYS draw the line-arrow base and only
-     * overlay the PNG on top of it: an opaque PNG hides the arrow, a blank/
-     * transparent PNG lets the arrow show through -- the cursor is visible in
-     * either case, which is the only way "the mouse moves" reads as working. */
+    /* `static` keeps the decoded image bytes alive for the cursor lifetime. */
     static auto cursor_img = LvglImageFromFile("assets/icons/app/cursor.png");
     bool png_ok = false;
     lv_image_header_t info = {};
@@ -186,47 +235,33 @@ static void attach_pointer_cursor(lv_indev_t *indev)
                  && info.w > 0 && info.h > 0);
     }
 
-    lv_obj_t *cur = lv_obj_create(lv_layer_sys());
-    lv_obj_remove_style_all(cur);
-    lv_obj_clear_flag(cur, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
-    /* Classic arrow outline, tip at (0,0) so it lands on the pointer hot-spot.
-     * Drawn unconditionally as the guaranteed-visible base layer. */
-    static lv_point_precise_t pts[] = {
-        {0, 0}, {0, 17}, {4, 13}, {7, 17}, {9, 16}, {6, 12}, {11, 12}, {0, 0}
-    };
-    int cur_w = 16, cur_h = 20;
+    lv_obj_t *cur = nullptr;
     if (png_ok) {
-        if ((int)info.w > cur_w) cur_w = info.w;
-        if ((int)info.h > cur_h) cur_h = info.h;
-    }
-    lv_obj_set_size(cur, cur_w, cur_h);
-    /* Black outline (wider, behind) then white core (narrower, on top): a white
-     * arrow with a high-contrast border that reads on any background. */
-    lv_obj_t *bl = lv_line_create(cur);
-    lv_obj_set_style_line_color(bl, lv_color_black(), 0);
-    lv_obj_set_style_line_width(bl, 5, 0);
-    lv_obj_set_style_line_rounded(bl, false, 0);
-    lv_line_set_points(bl, pts, sizeof(pts) / sizeof(pts[0]));
-
-    lv_obj_t *wl = lv_line_create(cur);
-    lv_obj_set_style_line_color(wl, lv_color_white(), 0);
-    lv_obj_set_style_line_width(wl, 3, 0);
-    lv_obj_set_style_line_rounded(wl, false, 0);
-    lv_line_set_points(wl, pts, sizeof(pts) / sizeof(pts[0]));
-
-    /* Overlay the user's cursor artwork on top of the arrow. Created last so it
-     * renders above the lines; its per-pixel alpha lets the arrow show through
-     * any transparent regions. The hot-spot stays the top-left corner (0,0). */
-    if (png_ok) {
-        lv_obj_t *img = lv_image_create(cur);
-        lv_image_set_src(img, cursor_img->image_dsc());
-        lv_obj_clear_flag(img, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-        ESP_LOGI(TAG, "cursor: png %dx%d overlaid on arrow fallback", info.w, info.h);
+        cur = lv_image_create(lv_layer_sys());
+        lv_image_set_src(cur, cursor_img->image_dsc());
+        ESP_LOGI(TAG, "cursor: png %dx%d", info.w, info.h);
     } else {
-        ESP_LOGI(TAG, "cursor: arrow only (png missing/undecodable)");
+        /* Classic high-contrast arrow, used only when the PNG cannot decode. */
+        cur = lv_obj_create(lv_layer_sys());
+        lv_obj_remove_style_all(cur);
+        lv_obj_set_size(cur, 16, 20);
+        static lv_point_precise_t pts[] = {
+            {0, 0}, {0, 17}, {4, 13}, {7, 17}, {9, 16}, {6, 12}, {11, 12}, {0, 0}
+        };
+        lv_obj_t *outline = lv_line_create(cur);
+        lv_obj_set_style_line_color(outline, lv_color_black(), 0);
+        lv_obj_set_style_line_width(outline, 5, 0);
+        lv_obj_set_style_line_rounded(outline, false, 0);
+        lv_line_set_points(outline, pts, sizeof(pts) / sizeof(pts[0]));
+        lv_obj_t *fill = lv_line_create(cur);
+        lv_obj_set_style_line_color(fill, lv_color_white(), 0);
+        lv_obj_set_style_line_width(fill, 3, 0);
+        lv_obj_set_style_line_rounded(fill, false, 0);
+        lv_line_set_points(fill, pts, sizeof(pts) / sizeof(pts[0]));
+        ESP_LOGI(TAG, "cursor: arrow fallback (png missing/undecodable)");
     }
 
+    lv_obj_clear_flag(cur, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     lv_indev_set_cursor(indev, cur);
 }
 } // namespace
@@ -392,7 +427,7 @@ void LvglRuntime::openTouch() {
         }
         ESP_LOGW(TAG, "touch: open %s failed", path);
     }
-    ESP_LOGW(TAG, "no evdev touch device found (UI will be non-interactive)");
+    ESP_LOGW(TAG, "no evdev touch device found (mouse input may still be available)");
 }
 
 void LvglRuntime::openKeyboard() {
@@ -461,12 +496,8 @@ void LvglRuntime::openMouse() {
      * too filters those out without dropping a genuine combo keyboard+mouse,
      * which has REL_X+REL_Y AND keys (KEY_Q). We do NOT skip on KEY_Q: opening
      * the same evdev node as both a keypad (openKeyboard) and a pointer
-     * (here) is fine on Linux -- each indev keeps only the events it cares
-     * about, and only this one creates a cursor, so there is no "two cursors"
-     * symptom. LVGL's evdev driver accumulates REL_X/REL_Y for pointer
-     * devices, so a relative mouse works without ABS axes (it logs a harmless
-     * EVIOCGABS error at create time). Override with JETSON_MOUSE_DEVICE if
-     * needed. */
+     * (here) is fine on Linux -- each open file descriptor receives its own
+     * event stream. Override with JETSON_MOUSE_DEVICE if needed. */
     std::string devpath;
     const char *forced = std::getenv("JETSON_MOUSE_DEVICE");
     if (forced && forced[0]) {
@@ -511,14 +542,39 @@ void LvglRuntime::openMouse() {
         ESP_LOGW(TAG, "no evdev mouse found");
         return;
     }
-    lv_indev_t *m = lv_evdev_create(LV_INDEV_TYPE_POINTER, devpath.c_str());
-    if (!m) {
-        ESP_LOGW(TAG, "mouse: open %s failed", devpath.c_str());
+    int fd = open(devpath.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC);
+    if (fd < 0) {
+        ESP_LOGW(TAG, "mouse: open %s failed: %s", devpath.c_str(), strerror(errno));
         return;
     }
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
+        ESP_LOGW(TAG, "mouse: non-blocking mode failed for %s: %s", devpath.c_str(), strerror(errno));
+        close(fd);
+        return;
+    }
+
+    auto *st = new RelativeMouseState();
+    st->fd = fd;
+    st->x = lv_display_get_horizontal_resolution(display_) / 2;
+    st->y = lv_display_get_vertical_resolution(display_) / 2;
+
+    lv_indev_t *m = lv_indev_create();
+    if (!m) {
+        ESP_LOGW(TAG, "mouse: LVGL input allocation failed");
+        close(fd);
+        delete st;
+        return;
+    }
+    lv_indev_set_type(m, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_display(m, display_);
+    lv_indev_set_read_cb(m, relative_mouse_read_cb);
+    lv_indev_set_driver_data(m, st);
+    /* Seed LVGL's current point before attaching the cursor so it appears in
+     * the center rather than flashing once at (0, 0). */
+    lv_indev_read(m);
     attach_pointer_cursor(m);
     mouse_ = m;
-    ESP_LOGI(TAG, "mouse: %s", devpath.c_str());
+    ESP_LOGI(TAG, "mouse: %s (relative, start=%d,%d)", devpath.c_str(), st->x, st->y);
 }
 
 bool LvglRuntime::Init(int width, int height) {
