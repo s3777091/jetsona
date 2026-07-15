@@ -21,11 +21,10 @@ namespace home {
  * timedatectl + 12h/24h), Power & Security (sleep timeout, lock screen, set
  * PIN, reboot, shutdown), About (device + storage + memory).
  *
- * WiFi/Bluetooth panels reuse the scan/list/row + detached-thread + lv_lock
- * idiom from WifiSettingsView/BluetoothSettingsView, built inline (those views
- * are not OverlayView subclasses and are not reused). Modal popups use the
- * DocumentsView backdrop-dismiss pattern. Home wires brightness/volume/lock via
- * the setter hooks below (called after make_shared, before Start()). */
+ * Connectivity actions depend on IWifiManager/IBluetoothManager rather than
+ * concrete singletons, while common LVGL locking and signal indicators are
+ * shared components. Modal popups use the DocumentsView backdrop-dismiss
+ * pattern. Home wires brightness/volume/lock through the setter hooks below. */
 class SettingsView : public OverlayView {
 public:
     SettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);

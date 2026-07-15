@@ -124,15 +124,15 @@ endif()
 # ----------------------------------------------------------------------------
 # Our firmware
 # ----------------------------------------------------------------------------
-file(GLOB_RECURSE FW_SOURCES
+file(GLOB_RECURSE FW_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
 
 add_executable(jetson_fw ${FW_SOURCES})
 
-# Recursively add every directory under src/ as an include path, so a file in
-# src/display/ can `#include "fonts.h"` (src/app/), "lvgl_runtime.h" (src/platform/),
-# "wifi_manager.h" (src/net/), etc. without per-dir bookkeeping.
+# Keep the source root for boundary-qualified includes (`display/core/...`,
+# `platform/...`) and the first-level module directories for the legacy ported
+# headers that still use short include names.
 file(GLOB _fw_subdirs LIST_DIRECTORIES true "${CMAKE_CURRENT_SOURCE_DIR}/src/*")
 set(FW_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src")
 foreach(_d ${_fw_subdirs})

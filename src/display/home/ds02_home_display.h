@@ -2,7 +2,7 @@
 
 #include "display/core/lcd_display.h"
 #include "display/core/lvgl_image.h"
-#include "display/home/backgrounds.h"
+#include "display/common/backgrounds.h"
 #include "display/views/background_gallery_view.h"
 #include "display/views/bluetooth_settings_view.h"
 #include "display/views/calendar_view.h"
@@ -63,7 +63,7 @@ public:
     void SetSleepBackground(const std::string &file);
     void ReloadBackgrounds();
 
-    /* The wallpaper set is scanned from disk at runtime (home::ListBackgroundFiles)
+    /* The wallpaper set is scanned from disk at runtime (backgrounds::ListBackgroundFiles)
      * and cached by filename; the gallery can delete files and the list updates. */
 
 private:

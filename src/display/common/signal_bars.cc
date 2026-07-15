@@ -17,7 +17,7 @@ int RssiToSignalPercent(int rssi_dbm) {
 
 lv_obj_t *CreateSignalBars(lv_obj_t *parent, int signal_percent) {
     const int strength = std::clamp(signal_percent, 0, 100);
-    const int filled = strength == 0 ? 0 : std::min(kBarCount, (strength + 24) / 25);
+    const int filled = strength == 0 ? 0 : std::min(kBarCount, strength / 25 + 1);
 
     auto *container = lv_obj_create(parent);
     lv_obj_remove_style_all(container);

@@ -1,6 +1,6 @@
 #include "display/home/ds02_home_display.h"
 #include "display/common/lvgl_utils.h"
-#include "display/home/backgrounds.h"
+#include "display/common/backgrounds.h"
 #include "board.h"
 #include "fonts.h"
 #include "settings.h"
@@ -185,7 +185,7 @@ void Ds02HomeDisplay::SetupUI() {
     }
 
     Settings s("display", false);
-    background_files_ = home::ListBackgroundFiles();
+    background_files_ = jetson::ui::backgrounds::ListBackgroundFiles();
     background_file_ = s.GetString("ds02_background_file", "");
     sleep_background_file_ = s.GetString("ds02_sleep_bg_file", "");
     // Fall back to the first available wallpaper if the saved one is gone
@@ -813,7 +813,7 @@ void Ds02HomeDisplay::SetSleepBackground(const std::string &file) {
 
 void Ds02HomeDisplay::ReloadBackgrounds() {
     DisplayLockGuard lock(this);
-    background_files_ = home::ListBackgroundFiles();
+    background_files_ = jetson::ui::backgrounds::ListBackgroundFiles();
     // Drop cache entries whose files were deleted.
     for (auto it = background_image_cache_.begin(); it != background_image_cache_.end();) {
         bool exists = false;
@@ -895,7 +895,7 @@ LvglImage *Ds02HomeDisplay::GetBackgroundImage(const std::string &file) {
     if (file.empty()) return nullptr;
     auto it = background_image_cache_.find(file);
     if (it != background_image_cache_.end() && it->second) return it->second.get();
-    std::string path = home::BackgroundPath(file);
+    std::string path = jetson::ui::backgrounds::BackgroundPath(file);
     auto img = LvglImageFromFile(path);
     if (!img) return nullptr;
     LvglImage *raw = img.get();

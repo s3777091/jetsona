@@ -93,9 +93,9 @@ SettingsView::SettingsView(lv_obj_t *parent, int width, int height,
                            jetson::IWifiManager &wifi,
                            jetson::IBluetoothManager &bluetooth,
                            ClosedCb on_closed)
-    : SettingsView(parent, width, height, std::move(on_closed)) {
-    wifi_ = &wifi;
-    bluetooth_ = &bluetooth;
+    : OverlayView(parent, width, height, u8"Cài đặt", std::move(on_closed)),
+      wifi_(&wifi), bluetooth_(&bluetooth) {
+    BuildShell();
 }
 
 void SettingsView::BuildShell() {

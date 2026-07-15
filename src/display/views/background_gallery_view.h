@@ -18,7 +18,7 @@ namespace home {
  *   - "Đặt hình nền desktop"  -> set as the home wallpaper
  *   - "Đặt hình nền sleep screen" -> set as the sleep/dim wallpaper
  *   - "Xóa ảnh"               -> delete the file (full + thumb) from disk
- * The wallpaper set is read from disk at runtime (home::ListBackgroundFiles),
+ * The wallpaper set is read from disk at runtime (backgrounds::ListBackgroundFiles),
  * so deletions take effect immediately and the app stays capped by what's on
  * disk. The view is shared_ptr-owned (see OverlayView) so the deferred load
  * timer and worker callbacks outlive the on-screen overlay. */

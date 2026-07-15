@@ -1,6 +1,6 @@
 #include "display/views/background_gallery_view.h"
 #include "display/common/lvgl_utils.h"
-#include "display/home/backgrounds.h"
+#include "display/common/backgrounds.h"
 #include "fonts.h"
 #include "settings.h"
 #include "display/theme/ui_theme.h"
@@ -60,7 +60,7 @@ void BackgroundGalleryView::BuildBody() {
     lv_obj_set_scroll_dir(body_, LV_DIR_HOR);
 
     ClearGrid();
-    files_ = home::ListBackgroundFiles();
+    files_ = jetson::ui::backgrounds::ListBackgroundFiles();
     images_.resize(files_.size());
     cells_.resize(files_.size(), nullptr);
     img_objs_.resize(files_.size(), nullptr);
@@ -131,7 +131,7 @@ void BackgroundGalleryView::LoadNextImage() {
         return;
     }
     size_t i = load_idx_++;
-    auto img = LvglImageFromFile(home::ThumbPath(files_[i]));
+    auto img = LvglImageFromFile(jetson::ui::backgrounds::ThumbPath(files_[i]));
     if (img && img_objs_[i]) {
         int cellW = lv_obj_get_width(img_objs_[i]);
         if (cellW <= 0) cellW = 200;
@@ -212,8 +212,8 @@ void BackgroundGalleryView::DeleteImage(size_t index) {
     if (index >= files_.size()) return;
     std::string file = files_[index];
     ClosePopup();
-    std::remove(home::BackgroundPath(file).c_str());
-    std::remove(home::ThumbPath(file).c_str());
+    std::remove(jetson::ui::backgrounds::BackgroundPath(file).c_str());
+    std::remove(jetson::ui::backgrounds::ThumbPath(file).c_str());
     if (current_file_ == file) current_file_.clear();
     if (sleep_file_ == file) sleep_file_.clear();
     if (on_changed_) on_changed_();

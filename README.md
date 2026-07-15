@@ -40,11 +40,31 @@ jetson/
     backgrounds/*.png     # 10 DS-02 wallpaper PNGs (lodepng-decoded)
   src/
     shims/                # esp_log, esp_timer, esp_err, esp_lcd handles, heap_caps, esp_pm, freertos/{task,event_groups,semphr,FreeRTOS}, font_awesome
-    platform/             # lvgl_runtime: DRM/SDL display + evdev touch + tick/handler threads
+    platform/             # runtime + reusable process/shell infrastructure
     app/                  # application, board, settings, fonts, system_info, device_state, audio_codec/backlight/led/button stubs
-    display/              # ds02_home_display, lcd_display, lvgl_display, lvgl_image, lvgl_theme, lvgl_font, emoji_collection
+    display/
+      common/             # shared LVGL helpers, signal bars, background catalog
+      core/               # display abstractions and LVGL adapters
+      home/               # DS-02 home composition root
+      theme/              # runtime UI palette
+      views/              # feature screens and overlays
+      widgets/            # reusable input widgets (Telex IME)
+    net/                  # WiFi/Bluetooth contracts and Linux implementations
+    agent/                # LLM conversation and tool orchestration
+    power/                # INA219 power monitor
     main.cc               # entry point (replaces app_main)
 ```
+
+### Source boundaries
+
+- `display/core` does not depend on feature views.
+- `display/views` composes shared widgets/components and talks to WiFi/Bluetooth
+  through interfaces, so alternate implementations and test doubles can be
+  injected without changing UI code.
+- `display/home` is the composition root for the screen and owns feature-view
+  lifetimes.
+- Cross-module includes use source-root-qualified paths; reusable platform and
+  display helpers live outside individual features.
 
 ## Prerequisites (on the Jetson)
 
@@ -166,20 +186,20 @@ namespaces. Set `JETSON_SETTINGS_FILE` to relocate it.
   shows an on-screen keyboard for entering the password. Requires a **USB WiFi
   dongle** (the Jetson Nano 4GB B01 has no onboard WiFi) and NetworkManager
   running (`systemctl status NetworkManager`). See `src/net/wifi_manager.*` and
-  `src/display/wifi_settings_view.*`.
+  `src/display/views/wifi_settings_view.*`.
 - **On-screen Bluetooth settings:** tap the globe dock button to open a
   Bluetooth screen that scans devices (`bluetoothctl`/BlueZ), lists them with
   RSSI bars + Paired/Connected state, and pairs + connects on tap (no password
   entry — pairing goes through bluetoothctl's default-agent). Requires a **USB
   Bluetooth dongle** and `bluez` installed (`apt install bluez`). See
-  `src/net/bluetooth_manager.*` and `src/display/bluetooth_settings_view.*`.
+  `src/net/bluetooth_manager.*` and `src/display/views/bluetooth_settings_view.*`.
 - **On-screen Terminal:** the launcher app drawer has a "Terminal" tile (tap it)
   that opens an interactive root shell over a pseudo-terminal (`forkpty` +
   `/bin/sh -i`). It runs `sudo`, pipes, redirects, and any program that reads
   stdin (e.g. a `sudo` password prompt) — the firmware service runs as root, so
   every command has full privileges. Output scrolls in a black panel; type a
   command in the input box and press **Gui**/**Enter** (on-screen keyboard) to
-  run it. See `src/display/terminal_view.*`. Build note: `forkpty` needs
+  run it. See `src/display/views/terminal_view.*`. Build note: `forkpty` needs
   `libutil` on older glibc (JetPack 4.x / Ubuntu 18.04); `CMakeLists.txt` links
   it when present.
 - Linux shims for the full ESP-IDF API surface the ported code uses.
