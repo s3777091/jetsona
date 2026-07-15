@@ -97,7 +97,10 @@ void WifiSettingsView::BuildUi() {
 
     rescan_btn_ = lv_button_create(header);
     lv_obj_set_size(rescan_btn_, 40, 40);
-    lv_obj_align(rescan_btn_, LV_ALIGN_RIGHT_MID, 0, 0);
+    // Sit next to the back button on the left so the top-right corner is free
+    // for the global status bar (which lives on lv_layer_top and would overlap
+    // a right-aligned button here).
+    lv_obj_align_to(rescan_btn_, back_btn_, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     lv_obj_set_style_bg_color(rescan_btn_, Color(0x2a2d33), 0);
     lv_obj_add_event_cb(rescan_btn_, OnRescan, LV_EVENT_CLICKED, this);
     auto *res_lbl = lv_label_create(rescan_btn_);

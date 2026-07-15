@@ -1,6 +1,7 @@
 #pragma once
 
 #include "display/core/lcd_display.h"
+#include "display/widgets/status_bar.h"
 
 #include <array>
 #include <chrono>
@@ -92,7 +93,6 @@ private:
     void CreateDockObjects();
     void SetDockActive(int index);
     void RefreshClock();
-    void RefreshBattery();
     void CheckIdleDim();
     void ApplyStandbyState();
     void RepaintForTheme();
@@ -104,15 +104,10 @@ private:
     static void OnDockButtonEvent(lv_event_t *e);
     static void OnAppButtonClicked(lv_event_t *e);
     static void OnAppDeleted(lv_event_t *e);
-    static void OnMenuWifi(lv_event_t *e);
-    static void OnMenuBluetooth(lv_event_t *e);
-    static void OnMenuVolume(lv_event_t *e);
-    static void OnMenuPower(lv_event_t *e);
     void ToggleVolume();
     static void OnSplashOpa(void *var, int32_t v);
     static void OnSplashBar(void *var, int32_t v);
     static void OnSplashGone(lv_anim_t *a);
-    static std::string FormatTime(const struct tm &t);
     static std::string FormatDate(const struct tm &t);
 
     StandbyState standby_state_ = StandbyState::Awake;
@@ -126,24 +121,10 @@ private:
     lv_obj_t *wallpaper_ = nullptr;
     lv_obj_t *wallpaper_image_obj_ = nullptr;
     lv_obj_t *dim_overlay_ = nullptr;
-    lv_obj_t *system_bar_ = nullptr;       // macOS-style menu bar (top-right cluster)
-    lv_obj_t *wifi_label_ = nullptr;
-    lv_obj_t *bluetooth_label_ = nullptr;
-    lv_obj_t *volume_label_ = nullptr;
-    lv_obj_t *power_label_ = nullptr;
+    // Global wifi/bt/battery/volume/clock bar on lv_layer_top(), visible on
+    // every screen. Self-refreshes; home wires the click hooks.
+    std::unique_ptr<StatusBar> status_bar_;
     bool volume_muted_ = false;
-    lv_obj_t *battery_icon_root_ = nullptr;
-    lv_obj_t *battery_icon_body_ = nullptr;
-    lv_obj_t *battery_icon_fill_ = nullptr;
-    lv_obj_t *battery_percent_label_ = nullptr;
-    // Battery is read from I2C (INA219); throttle to one read per ~5 s and
-    // cache the result so the two 1 Hz refresh timers don't hammer the bus.
-    std::chrono::steady_clock::time_point last_battery_read_{};
-    int  cached_battery_level_ = 100;
-    bool cached_battery_charging_ = false;
-    bool cached_battery_discharging_ = false;
-    bool battery_read_done_ = false;
-    lv_obj_t *time_label_ = nullptr;
     lv_obj_t *date_label_ = nullptr;
     lv_obj_t *weather_label_ = nullptr;
     lv_obj_t *chat_label_ = nullptr;
@@ -160,7 +141,6 @@ private:
     std::string background_file_;       // current desktop wallpaper filename
     std::string sleep_background_file_; // wallpaper shown when the screen is dim
     uint32_t text_color_ = 0xffffff;
-    std::string cached_time_;
     std::string cached_date_;
 
     std::shared_ptr<WifiSettingsView> wifi_view_;

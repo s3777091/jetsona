@@ -375,93 +375,21 @@ void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
 }
 
 void Ds02HomeDisplay::CreateSystemBarObjects() {
-    /* macOS-style menu bar: a compact pill pinned to the top-right corner
-     * holding the status icons (wifi, bluetooth, battery, volume, power) and
-     * the clock -- all in one corner, like the right side of the macOS menu
-     * bar. Icons are clickable (wifi/bt open their settings, volume toggles
-     * mute, power is a placeholder). Notifications/status show as a transient
-     * toast centered just below the pill. */
-    const int bar_h = 28;
-    system_bar_ = lv_obj_create(root_);
-    lv_obj_remove_style_all(system_bar_);
-    lv_obj_set_size(system_bar_, LV_SIZE_CONTENT, bar_h);
-    lv_obj_align(system_bar_, LV_ALIGN_TOP_RIGHT, -8, 6);
-    lv_obj_set_style_bg_color(system_bar_, Color(0x000000), 0);
-    lv_obj_set_style_bg_opa(system_bar_, LV_OPA_50, 0);
-    lv_obj_set_style_radius(system_bar_, 14, 0);
-    lv_obj_set_style_pad_left(system_bar_, 10, 0);
-    lv_obj_set_style_pad_right(system_bar_, 10, 0);
-    lv_obj_set_style_pad_top(system_bar_, 2, 0);
-    lv_obj_set_style_pad_bottom(system_bar_, 2, 0);
-    lv_obj_set_style_pad_column(system_bar_, 12, 0);
-    lv_obj_set_flex_flow(system_bar_, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(system_bar_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(system_bar_, LV_OBJ_FLAG_SCROLLABLE);
-
-    auto add_icon = [&](lv_obj_t **out, const char *glyph, lv_event_cb_t cb) {
-        auto *l = lv_label_create(system_bar_);
-        lv_obj_set_style_text_font(l, &BUILTIN_ICON_FONT, 0);
-        lv_obj_set_style_text_color(l, lv_color_white(), 0);
-        lv_label_set_text(l, glyph);
-        lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
-        if (cb) lv_obj_add_event_cb(l, cb, LV_EVENT_CLICKED, this);
-        *out = l;
-    };
-    add_icon(&wifi_label_, FONT_AWESOME_WIFI, OnMenuWifi);
-    add_icon(&bluetooth_label_, FONT_AWESOME_BLUETOOTH, OnMenuBluetooth);
-
-    // Battery percent + drawn icon (DS-02 style, rectangles).
-    battery_percent_label_ = lv_label_create(system_bar_);
-    lv_obj_set_style_text_font(battery_percent_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
-    lv_label_set_text(battery_percent_label_, "100%");
-
-    battery_icon_root_ = lv_obj_create(system_bar_);
-    lv_obj_remove_style_all(battery_icon_root_);
-    lv_obj_set_size(battery_icon_root_, 28, 16);
-    lv_obj_clear_flag(battery_icon_root_, LV_OBJ_FLAG_SCROLLABLE);
-
-    battery_icon_body_ = lv_obj_create(battery_icon_root_);
-    lv_obj_remove_style_all(battery_icon_body_);
-    lv_obj_set_size(battery_icon_body_, 24, 14);
-    lv_obj_set_pos(battery_icon_body_, 0, 1);
-    lv_obj_set_style_radius(battery_icon_body_, 2, 0);
-    lv_obj_set_style_border_width(battery_icon_body_, 1, 0);
-    lv_obj_set_style_border_color(battery_icon_body_, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(battery_icon_body_, LV_OPA_TRANSP, 0);
-    lv_obj_clear_flag(battery_icon_body_, LV_OBJ_FLAG_SCROLLABLE);
-
-    battery_icon_fill_ = lv_obj_create(battery_icon_body_);
-    lv_obj_remove_style_all(battery_icon_fill_);
-    lv_obj_set_size(battery_icon_fill_, 18, 10);
-    lv_obj_set_pos(battery_icon_fill_, 2, 1);
-    lv_obj_set_style_radius(battery_icon_fill_, 1, 0);
-    lv_obj_set_style_bg_color(battery_icon_fill_, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(battery_icon_fill_, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(battery_icon_fill_, LV_OBJ_FLAG_SCROLLABLE);
-
-    auto *nub = lv_obj_create(battery_icon_root_);
-    lv_obj_remove_style_all(nub);
-    lv_obj_set_size(nub, 2, 6);
-    lv_obj_set_pos(nub, 25, 5);
-    lv_obj_set_style_bg_color(nub, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(nub, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(nub, LV_OBJ_FLAG_SCROLLABLE);
-
-    add_icon(&volume_label_, FONT_AWESOME_VOLUME_HIGH, OnMenuVolume);
-    // The power/settings button that used to sit here was removed: it opened
-    // Settings, which is already reachable from the dock's settings icon, so it
-    // was redundant next to the clock. Reboot/shutdown live in Settings > Nguồn.
-
-    // Clock (rightmost item in the pill).
-    time_label_ = lv_label_create(system_bar_);
-    lv_obj_set_style_text_font(time_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(time_label_, lv_color_white(), 0);
-    lv_label_set_text(time_label_, "--:--");
+    /* The wifi/bt/battery/volume/clock bar lives on lv_layer_top() (not root_)
+     * so it renders above every full-screen overlay and stays visible on every
+     * screen. The StatusBar self-refreshes its clock + battery; home only wires
+     * the click hooks. Created here, before brightness_overlay_ (which is also
+     * on layer_top), so the brightness scrim ends up above the bar and dims it
+     * together with the rest of the UI. */
+    volume_muted_ = Settings("display").GetBool("muted", false);
+    status_bar_ = std::make_unique<StatusBar>(lv_layer_top());
+    status_bar_->SetWifiAction([this]() { OpenWifiSettings(); });
+    status_bar_->SetBluetoothAction([this]() { OpenBluetoothSettings(); });
+    status_bar_->SetVolumeAction([this]() { ToggleVolume(); });
 
     // Reuse the base class status/notification labels (created on the screen by
     // LvglDisplay) as a centered toast just below the menu bar.
+    const int bar_h = 28;
     if (status_label_) lv_obj_align(status_label_, LV_ALIGN_TOP_MID, 0, bar_h + 8);
     if (notification_label_) {
         lv_obj_align(notification_label_, LV_ALIGN_TOP_MID, 0, bar_h + 8);
@@ -756,11 +684,8 @@ void Ds02HomeDisplay::OpenSettings() {
         [this](int v, bool muted) {
             volume_muted_ = muted;
             (void)v;
-            if (volume_label_) {
-                lv_label_set_text(volume_label_,
-                                  muted ? FONT_AWESOME_VOLUME_XMARK
-                                        : FONT_AWESOME_VOLUME_HIGH);
-            }
+            // The global StatusBar reads the persisted "muted" flag and updates
+            // its own icon, so nothing to touch here.
         });
     settings_view_->SetLockRequest([this]() { OpenLockScreen(); });
     settings_view_->Start();
@@ -785,8 +710,15 @@ void Ds02HomeDisplay::OpenLockScreen() {
         return;
     }
     if (!root_) root_ = lv_screen_active();
+    // The global bar lives above the lock overlay (it's on lv_layer_top()), so
+    // hide it while locked -- otherwise its clickable wifi/bt icons would let
+    // someone escape the lock screen.
+    if (status_bar_) status_bar_->Hide();
     lock_screen_view_ = std::make_shared<LockScreenView>(
-        root_, width_, height_, [this]() { lock_screen_view_.reset(); });
+        root_, width_, height_, [this]() {
+            lock_screen_view_.reset();
+            if (status_bar_) status_bar_->Show();
+        });
     lock_screen_view_->Start();
 }
 
@@ -852,37 +784,11 @@ void Ds02HomeDisplay::OnAppDeleted(lv_event_t *e) {
     delete ctx;
 }
 
-void Ds02HomeDisplay::OnMenuWifi(lv_event_t *e) {
-    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
-    DisplayLockGuard lock(self);
-    self->OpenWifiSettings();
-}
-
-void Ds02HomeDisplay::OnMenuBluetooth(lv_event_t *e) {
-    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
-    DisplayLockGuard lock(self);
-    self->OpenBluetoothSettings();
-}
-
-void Ds02HomeDisplay::OnMenuVolume(lv_event_t *e) {
-    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
-    DisplayLockGuard lock(self);
-    self->ToggleVolume();
-}
-
-void Ds02HomeDisplay::OnMenuPower(lv_event_t *e) {
-    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
-    DisplayLockGuard lock(self);
-    self->OpenSettings();
-}
-
 void Ds02HomeDisplay::ToggleVolume() {
     volume_muted_ = !volume_muted_;
-    if (volume_label_) {
-        lv_label_set_text(volume_label_,
-                          volume_muted_ ? FONT_AWESOME_VOLUME_XMARK
-                                        : FONT_AWESOME_VOLUME_HIGH);
-    }
+    // Persist so the global StatusBar (which reads "muted") reflects the toggle
+    // within ~1 s. The bar owns the icon now; no label to update here.
+    Settings("display", true).SetBool("muted", volume_muted_);
     ShowNotification(volume_muted_ ? "Tắt tiếng" : "Bật tiếng", 1200);
 }
 
@@ -906,7 +812,6 @@ void Ds02HomeDisplay::RepaintForTheme() {
             if (lbl) lv_obj_set_style_text_color(lbl, Color(p.text), 0);
         }
     }
-    if (system_bar_) lv_obj_set_style_bg_color(system_bar_, Color(p.bar_bg), 0);
     if (dock_) lv_obj_set_style_bg_color(dock_, Color(p.dock_bg), 0);
 }
 
@@ -958,17 +863,11 @@ void Ds02HomeDisplay::ApplyWallpaperForState() {
 void Ds02HomeDisplay::SetTextColor(uint32_t color) {
     text_color_ = color;
     lv_color_t c = Color(color);
-    for (lv_obj_t *lbl : {time_label_, date_label_, weather_label_, chat_label_}) {
+    for (lv_obj_t *lbl : {date_label_, weather_label_, chat_label_}) {
         if (lbl) lv_obj_set_style_text_color(lbl, c, 0);
     }
 }
 
-std::string Ds02HomeDisplay::FormatTime(const struct tm &t) {
-    char buf[16];
-    bool h24 = Settings("display").GetBool("clock_24h", true);
-    std::strftime(buf, sizeof(buf), h24 ? "%H:%M" : "%I:%M", &t);
-    return buf;
-}
 std::string Ds02HomeDisplay::FormatDate(const struct tm &t) {
     char buf[40];
     std::strftime(buf, sizeof(buf), "%A, %d %B", &t);
@@ -976,50 +875,18 @@ std::string Ds02HomeDisplay::FormatDate(const struct tm &t) {
 }
 
 void Ds02HomeDisplay::RefreshClock() {
+    // The clock itself moved to the global StatusBar; this only refreshes the
+    // big date label on the standby wallpaper now.
     time_t now = std::time(nullptr);
     struct tm t = *std::localtime(&now);
     if (t.tm_year < (2025 - 1900)) return; // time not set yet
-    std::string ts = FormatTime(t);
     std::string ds = FormatDate(t);
-    if (ts != cached_time_ && time_label_) { lv_label_set_text(time_label_, ts.c_str()); cached_time_ = ts; }
     if (ds != cached_date_ && date_label_) { lv_label_set_text(date_label_, ds.c_str()); cached_date_ = ds; }
-}
-
-void Ds02HomeDisplay::RefreshBattery() {
-    // Battery comes from the INA219 over I2C (Board::GetBatteryLevel). The two
-    // 1 Hz timers call this ~2x/s; throttle the I2C read to once per ~5 s and
-    // cache the result so the bus isn't hammered while the LVGL lock is held.
-    constexpr auto kBatteryReadInterval = std::chrono::seconds(5);
-    auto now = std::chrono::steady_clock::now();
-    if (!battery_read_done_ || (now - last_battery_read_ >= kBatteryReadInterval)) {
-        int level = 100; bool charging = false, discharging = false;
-        Board::GetInstance().GetBatteryLevel(level, charging, discharging);
-        cached_battery_level_ = Clamp(level, 0, 100);
-        cached_battery_charging_ = charging;
-        cached_battery_discharging_ = discharging;
-        last_battery_read_ = now;
-        battery_read_done_ = true;
-    }
-
-    int level = cached_battery_level_;
-    if (battery_icon_fill_) {
-        // Fill width 0..18 px maps to 0..100 %; the body is 24 px wide with a
-        // 2 px inset on each side, so 18 px == full.
-        lv_obj_set_size(battery_icon_fill_, 18 * level / 100, 10);
-    }
-    if (battery_percent_label_) {
-        char buf[8];
-        std::snprintf(buf, sizeof(buf), "%d%%", level);
-        lv_label_set_text(battery_percent_label_, buf);
-    }
-    (void)cached_battery_charging_;
-    (void)cached_battery_discharging_;
 }
 
 void Ds02HomeDisplay::UpdateStatusBar(bool /*update_all*/) {
     DisplayLockGuard lock(this);
-    RefreshClock();
-    RefreshBattery();
+    RefreshClock(); // standby date label; the bar refreshes its own clock/battery
 }
 
 void Ds02HomeDisplay::OnRefreshTimer(void *arg) {
