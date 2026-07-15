@@ -869,32 +869,11 @@ void Ds02HomeDisplay::ShowOnboardSplash(int duration_ms) {
         auto *logo = lv_image_create(splash_);
         lv_image_set_src(logo, splash_logo_->image_dsc());
         lv_image_set_scale(logo, (uint16_t)PngScaleToFit(kLogoPath, 130)); // ~130 px logo.
-        lv_obj_align(logo, LV_ALIGN_CENTER, 0, -54);
+        lv_obj_align(logo, LV_ALIGN_CENTER, 0, -30);
         lv_obj_clear_flag(logo, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     }
 
-    // Wordmark + accent underline.
-    auto *title = lv_label_create(splash_);
-    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(title, lv_color_white(), 0);
-    lv_obj_set_style_text_letter_space(title, 4, 0);
-    lv_label_set_text(title, "DS-02");
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, 38);
-
-    auto *underline = lv_obj_create(splash_);
-    lv_obj_remove_style_all(underline);
-    lv_obj_set_size(underline, 96, 3);
-    lv_obj_set_style_bg_color(underline, Color(0x4aa3df), 0);
-    lv_obj_set_style_bg_opa(underline, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(underline, 2, 0);
-    lv_obj_align(underline, LV_ALIGN_CENTER, 0, 56);
-    lv_obj_clear_flag(underline, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
-    auto *sub = lv_label_create(splash_);
-    lv_obj_set_style_text_font(sub, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(sub, Color(0x9fb4c8), 0);
-    lv_label_set_text(sub, "Jetson Nano  \xC2\xB7  AI Firmware");
-    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 72);
+    // Splash is logo + progress bar only (no wordmark/subtitle text).
 
     // Progress bar near the bottom.
     auto *bar = lv_bar_create(splash_);

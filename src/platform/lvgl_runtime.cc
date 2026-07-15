@@ -252,11 +252,17 @@ static unsigned long readSysFirstHexWord(const char *path) {
 }
 
 void LvglRuntime::openTouch() {
-    /* A real touch screen exposes ABS_X (bit 0) + ABS_Y (bit 1); a direct
-     * touch panel also sets INPUT_PROP_DIRECT (properties bit 0). Grabbing the
-     * first event device that merely opens would mis-select non-pointing
-     * devices (the Tegra HDMI/audio event0, gpio-keys, USB mice), so scan by
-     * capability instead and prefer a direct-touch device. */
+    /* A touch screen exposes either the legacy single-touch axes ABS_X (bit 0)
+     * + ABS_Y (bit 1), or the multitouch axes ABS_MT_POSITION_X (0x35) +
+     * ABS_MT_POSITION_Y (0x36) -- many USB panels (e.g. Waveshare 7" HDMI LCD)
+     * only report the multitouch axes. A direct touch panel also sets
+     * INPUT_PROP_DIRECT (properties bit 0). Grabbing the first event device
+     * that merely opens would mis-select non-pointing devices (Tegra HDMI/audio
+     * event0, gpio-keys, USB mice), so scan by capability and prefer a
+     * direct-touch device, preferring legacy ABS_X/Y over multitouch-only. */
+    constexpr unsigned long kAbsXY = 0x3UL;                              // ABS_X | ABS_Y
+    constexpr unsigned long kAbsMtXY = (1UL << 0x35) | (1UL << 0x36);   // ABS_MT_POSITION_X | ABS_MT_POSITION_Y
+
     const char *forced = std::getenv("JETSON_TOUCH_DEVICE");
     if (forced && forced[0]) {
         pointer_ = lv_evdev_create(LV_INDEV_TYPE_POINTER, forced);
@@ -269,29 +275,39 @@ void LvglRuntime::openTouch() {
 
     int best = -1;
     bool bestDirect = false;
+    bool bestLegacy = false;
     for (int i = 0; i < 16; ++i) {
         char sysp[96];
         std::snprintf(sysp, sizeof(sysp),
                       "/sys/class/input/event%d/device/capabilities/abs", i);
         unsigned long abs = readSysFirstHexWord(sysp);
-        if ((abs & 0x3UL) != 0x3UL) continue; /* needs ABS_X | ABS_Y */
+        bool legacy = (abs & kAbsXY) == kAbsXY;
+        bool mt = (abs & kAbsMtXY) == kAbsMtXY;
+        if (!legacy && !mt) continue;
         std::snprintf(sysp, sizeof(sysp),
                       "/sys/class/input/event%d/device/properties", i);
         unsigned long props = readSysFirstHexWord(sysp);
         bool direct = (props & 0x1UL) != 0; /* INPUT_PROP_DIRECT */
-        if (best < 0 || (direct && !bestDirect)) {
-            best = i;
-            bestDirect = direct;
-        }
+        ESP_LOGI(TAG, "touch candidate: event%d abs=0x%lx direct=%d %s",
+                 i, abs, direct ? 1 : 0, legacy ? "(ABS_X/Y)" : "(ABS_MT)");
+        /* Pick: direct > indirect; within that, legacy ABS_X/Y > multitouch. */
+        bool take = false;
+        if (best < 0) take = true;
+        else if (direct && !bestDirect) take = true;
+        else if (direct == bestDirect && legacy && !bestLegacy) take = true;
+        if (take) { best = i; bestDirect = direct; bestLegacy = legacy; }
     }
     if (best >= 0) {
         char path[32];
         std::snprintf(path, sizeof(path), "/dev/input/event%d", best);
         pointer_ = lv_evdev_create(LV_INDEV_TYPE_POINTER, path);
         if (pointer_) {
-            ESP_LOGI(TAG, "touch: %s%s", path, bestDirect ? " (direct)" : "");
+            ESP_LOGI(TAG, "touch: %s%s%s", path,
+                     bestDirect ? " (direct)" : "",
+                     bestLegacy ? "" : " (multitouch)");
             return;
         }
+        ESP_LOGW(TAG, "touch: open %s failed", path);
     }
     ESP_LOGW(TAG, "no evdev touch device found (UI will be non-interactive)");
 }
@@ -379,6 +395,8 @@ void LvglRuntime::openMouse() {
                           "/sys/class/input/event%d/device/capabilities/abs", i);
             unsigned long abs = readSysFirstHexWord(sysp);
             if ((abs & 0x3UL) == 0x3UL) continue; /* ABS_X+ABS_Y => touch, not mouse */
+            constexpr unsigned long kAbsMtXY = (1UL << 0x35) | (1UL << 0x36);
+            if ((abs & kAbsMtXY) == kAbsMtXY) continue; /* multitouch panel => touch */
             char path[32];
             std::snprintf(path, sizeof(path), "/dev/input/event%d", i);
             paths.emplace_back(path);
