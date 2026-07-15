@@ -17,8 +17,10 @@
 #include <cstdint>
 #include <ctime>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace home {
 
@@ -52,10 +54,12 @@ public:
     void OpenSettings();
     void OpenChat();
     void OpenTerminal();
-    void ApplyBackgroundIndexFromGallery(size_t index);
+    void ApplyBackgroundFromFile(const std::string &file);
+    void SetSleepBackground(const std::string &file);
+    void ReloadBackgrounds();
 
-    /* Wallpaper count comes from backgrounds.h (home::kBackgroundCount) so the
-     * cache array tracks the shared wallpaper list. */
+    /* The wallpaper set is scanned from disk at runtime (home::ListBackgroundFiles)
+     * and cached by filename; the gallery can delete files and the list updates. */
 
 private:
     enum class StandbyState { Dim, Awake, Launcher };
@@ -77,9 +81,9 @@ private:
     void RefreshBattery();
     void ApplyStandbyState();
     void RepaintForTheme();
-    bool ApplyBackgroundIndex(size_t index);
-    LvglImage *GetBackgroundImage(size_t index);
-    const char *GetBackgroundFile(size_t index) const;
+    bool ApplyBackgroundFile(const std::string &file);
+    void ApplyWallpaperForState();
+    LvglImage *GetBackgroundImage(const std::string &file);
     void SetTextColor(uint32_t color);
     static void OnRefreshTimer(void *arg);
     static void OnDockButtonEvent(lv_event_t *e);
@@ -133,8 +137,10 @@ private:
     int dock_active_index_ = -1;
     std::array<std::unique_ptr<LvglImage>, kDrawerItemCount> drawer_icon_cache_ = {};
 
-    std::array<std::unique_ptr<LvglImage>, kBackgroundCount> background_image_cache_ = {};
-    size_t background_index_ = 0;
+    std::map<std::string, std::unique_ptr<LvglImage>> background_image_cache_;
+    std::vector<std::string> background_files_;
+    std::string background_file_;       // current desktop wallpaper filename
+    std::string sleep_background_file_; // wallpaper shown when the screen is dim
     uint32_t text_color_ = 0xffffff;
     std::string cached_time_;
     std::string cached_date_;

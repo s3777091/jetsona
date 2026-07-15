@@ -155,9 +155,17 @@ void Ds02HomeDisplay::SetupUI() {
     CreateDockObjects();
 
     Settings s("display", false);
-    background_index_ = (size_t)Clamp(s.GetInt("ds02_background", 0), 0, (int)kBackgroundCount - 1);
+    background_files_ = home::ListBackgroundFiles();
+    background_file_ = s.GetString("ds02_background_file", "");
+    sleep_background_file_ = s.GetString("ds02_sleep_bg_file", "");
+    // Fall back to the first available wallpaper if the saved one is gone
+    // (e.g. deleted via the gallery) or none was set.
+    bool bg_ok = !background_file_.empty();
+    for (const auto &f : background_files_)
+        if (f == background_file_) { bg_ok = true; break; }
+    if (!bg_ok) background_file_ = background_files_.empty() ? "" : background_files_.front();
     text_color_ = (uint32_t)s.GetInt("ds02_text_color", (int32_t)0xffffff) & 0xffffff;
-    ApplyBackgroundIndex(background_index_);
+    ApplyBackgroundFile(background_file_);
     SetTextColor(text_color_);
 
     ApplyStandbyState();
@@ -537,15 +545,21 @@ void Ds02HomeDisplay::ApplyStandbyState() {
     if (!standby_layer_ || !launcher_layer_) return;
     switch (standby_state_) {
     case StandbyState::Dim:
-        lv_obj_set_style_bg_opa(dim_overlay_, LV_OPA_60, 0);
+        // A sleep-screen wallpaper (if set) replaces the desktop wallpaper
+        // while dim; only a light scrim is drawn over it so it stays visible.
+        ApplyWallpaperForState();
+        lv_obj_set_style_bg_opa(dim_overlay_,
+                                sleep_background_file_.empty() ? LV_OPA_60 : LV_OPA_20, 0);
         lv_obj_clear_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
         break;
     case StandbyState::Awake:
+        ApplyWallpaperForState();
         lv_obj_set_style_bg_opa(dim_overlay_, 0, 0);
         lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
         break;
     case StandbyState::Launcher:
+        ApplyWallpaperForState();
         lv_obj_set_style_bg_opa(dim_overlay_, 0, 0);
         lv_obj_clear_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
         break;
@@ -654,9 +668,15 @@ void Ds02HomeDisplay::OpenBackgroundGallery() {
     if (!root_) root_ = lv_screen_active();
     gallery_view_ = std::make_shared<BackgroundGalleryView>(
         root_, width_, height_,
-        [this]() { gallery_view_.reset(); });
-    gallery_view_->SetCurrent(background_index_);
-    gallery_view_->SetOnSelect([this](size_t index) { ApplyBackgroundIndexFromGallery(index); });
+        [this]() {
+            // The set may have changed (deletes) while the gallery was open;
+            // reload the runtime list and re-apply the current wallpaper.
+            ReloadBackgrounds();
+            gallery_view_.reset();
+        });
+    gallery_view_->SetOnSelect([this](const std::string &file) { ApplyBackgroundFromFile(file); });
+    gallery_view_->SetOnSleep([this](const std::string &file) { SetSleepBackground(file); });
+    gallery_view_->SetOnChanged([this]() { ReloadBackgrounds(); });
     gallery_view_->Start();
 }
 
@@ -694,12 +714,37 @@ void Ds02HomeDisplay::OpenTerminal() {
     terminal_view_->Start();
 }
 
-void Ds02HomeDisplay::ApplyBackgroundIndexFromGallery(size_t index) {
+void Ds02HomeDisplay::ApplyBackgroundFromFile(const std::string &file) {
     DisplayLockGuard lock(this);
-    if (ApplyBackgroundIndex(index)) {
-        Settings s("display", false);
-        s.SetInt("ds02_background", (int32_t)index);
+    if (ApplyBackgroundFile(file)) {
+        Settings s("display", true);
+        s.SetString("ds02_background_file", background_file_);
     }
+}
+
+void Ds02HomeDisplay::SetSleepBackground(const std::string &file) {
+    DisplayLockGuard lock(this);
+    sleep_background_file_ = file;
+    Settings s("display", true);
+    s.SetString("ds02_sleep_bg_file", file);
+    if (standby_state_ == StandbyState::Dim) ApplyWallpaperForState();
+}
+
+void Ds02HomeDisplay::ReloadBackgrounds() {
+    DisplayLockGuard lock(this);
+    background_files_ = home::ListBackgroundFiles();
+    // Drop cache entries whose files were deleted.
+    for (auto it = background_image_cache_.begin(); it != background_image_cache_.end();) {
+        bool exists = false;
+        for (const auto &f : background_files_) if (f == it->first) { exists = true; break; }
+        if (!exists) it = background_image_cache_.erase(it);
+        else ++it;
+    }
+    // If the current desktop wallpaper was deleted, fall back to the first.
+    bool bg_ok = !background_file_.empty();
+    for (const auto &f : background_files_) if (f == background_file_) { bg_ok = true; break; }
+    if (!bg_ok) background_file_ = background_files_.empty() ? "" : background_files_.front();
+    ApplyWallpaperForState();
 }
 
 void Ds02HomeDisplay::OnAppDeleted(lv_event_t *e) {
@@ -765,23 +810,21 @@ void Ds02HomeDisplay::RepaintForTheme() {
     if (dock_) lv_obj_set_style_bg_color(dock_, Color(p.dock_bg), 0);
 }
 
-const char *Ds02HomeDisplay::GetBackgroundFile(size_t index) const {
-    return home::BackgroundFile(index);
-}
-
-LvglImage *Ds02HomeDisplay::GetBackgroundImage(size_t index) {
-    if (index >= kBackgroundCount) return nullptr;
-    if (background_image_cache_[index]) return background_image_cache_[index].get();
-    std::string path = home::BackgroundsDir() + "/" + home::kBackgroundFiles[index];
+LvglImage *Ds02HomeDisplay::GetBackgroundImage(const std::string &file) {
+    if (file.empty()) return nullptr;
+    auto it = background_image_cache_.find(file);
+    if (it != background_image_cache_.end() && it->second) return it->second.get();
+    std::string path = home::BackgroundPath(file);
     auto img = LvglImageFromFile(path);
     if (!img) return nullptr;
-    background_image_cache_[index] = std::move(img);
-    return background_image_cache_[index].get();
+    LvglImage *raw = img.get();
+    background_image_cache_[file] = std::move(img);
+    return raw;
 }
 
-bool Ds02HomeDisplay::ApplyBackgroundIndex(size_t index) {
-    background_index_ = index;
-    LvglImage *img = GetBackgroundImage(index);
+bool Ds02HomeDisplay::ApplyBackgroundFile(const std::string &file) {
+    if (!file.empty()) background_file_ = file;
+    LvglImage *img = GetBackgroundImage(background_file_);
     if (!img || !wallpaper_image_obj_) {
         if (wallpaper_image_obj_) lv_image_set_src(wallpaper_image_obj_, nullptr);
         return false;
@@ -791,6 +834,25 @@ bool Ds02HomeDisplay::ApplyBackgroundIndex(size_t index) {
     // display them 1:1 -- no runtime cover-fit scaling needed.
     lv_obj_center(wallpaper_image_obj_);
     return true;
+}
+
+// Choose which wallpaper to show based on standby state: the sleep-screen
+// wallpaper (if set) when dim, otherwise the desktop wallpaper.
+void Ds02HomeDisplay::ApplyWallpaperForState() {
+    if (!wallpaper_image_obj_) return;
+    std::string file = background_file_;
+    if (standby_state_ == StandbyState::Dim && !sleep_background_file_.empty()) {
+        // Only swap if the sleep file still exists on disk.
+        bool exists = false;
+        for (const auto &f : background_files_) if (f == sleep_background_file_) { exists = true; break; }
+        if (exists) file = sleep_background_file_;
+    }
+    if (LvglImage *img = GetBackgroundImage(file)) {
+        lv_image_set_src(wallpaper_image_obj_, img->image_dsc());
+        lv_obj_center(wallpaper_image_obj_);
+    } else {
+        lv_image_set_src(wallpaper_image_obj_, nullptr);
+    }
 }
 
 void Ds02HomeDisplay::SetTextColor(uint32_t color) {

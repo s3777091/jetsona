@@ -3,25 +3,36 @@
 #include "overlay_view.h"
 #include "lvgl_image.h"
 
-#include <array>
 #include <functional>
 #include <lvgl.h>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace home {
 
-/* Grid of the 10 DS-02 wallpapers as thumbnails. Tapping one saves it as the
- * selected background (Settings "display"/"ds02_background") and fires
- * on_select(index) so the home screen can apply it immediately. */
+/* Bento-style wallpaper gallery (the "Ảnh" app). A horizontal, drag-to-pan
+ * row of thumbnails with skeleton placeholders that fill in progressively so
+ * opening never stalls. Tapping a thumbnail opens a small popup with three
+ * actions:
+ *   - "Đặt hình nền desktop"  -> set as the home wallpaper
+ *   - "Đặt hình nền sleep screen" -> set as the sleep/dim wallpaper
+ *   - "Xóa ảnh"               -> delete the file (full + thumb) from disk
+ * The wallpaper set is read from disk at runtime (home::ListBackgroundFiles),
+ * so deletions take effect immediately and the app stays capped by what's on
+ * disk. The view is shared_ptr-owned (see OverlayView) so the deferred load
+ * timer and worker callbacks outlive the on-screen overlay. */
 class BackgroundGalleryView : public OverlayView {
 public:
-    using OnSelect = std::function<void(size_t)>;
+    using OnSelectBg = std::function<void(const std::string &file)>;
+    using OnChanged = std::function<void()>;
 
     BackgroundGalleryView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
-    ~BackgroundGalleryView();
+    ~BackgroundGalleryView() override;
 
-    void SetOnSelect(OnSelect cb) { on_select_ = std::move(cb); }
-    void SetCurrent(size_t index) { current_ = index; }
+    void SetOnSelect(OnSelectBg cb) { on_select_ = std::move(cb); }
+    void SetOnSleep(OnSelectBg cb) { on_sleep_ = std::move(cb); }
+    void SetOnChanged(OnChanged cb) { on_changed_ = std::move(cb); }
 
 protected:
     void OnStart() override;
@@ -29,21 +40,39 @@ protected:
 private:
     struct CellCtx { BackgroundGalleryView *self; size_t index; };
 
-    static constexpr size_t kCount = 10;
-    static constexpr int kCols = 2;
+    std::vector<std::string> files_;
+    std::string current_file_;   // selected desktop wallpaper
+    std::string sleep_file_;     // selected sleep-screen wallpaper
 
-    OnSelect on_select_;
-    size_t current_ = 0;
-    std::array<lv_obj_t *, kCount> cells_{};
-    std::array<lv_obj_t *, kCount> img_objs_{};
-    std::array<std::unique_ptr<LvglImage>, kCount> images_{};
-    std::array<CellCtx *, kCount> ctxs_{};
+    std::vector<lv_obj_t *> cells_{};
+    std::vector<lv_obj_t *> img_objs_{};
+    std::vector<lv_obj_t *> skeletons_{};
+    std::vector<std::unique_ptr<LvglImage>> images_{};
+    std::vector<CellCtx *> ctxs_{};
+
+    lv_obj_t *popup_ = nullptr;        // modal overlay over the app
+    lv_obj_t *popup_card_ = nullptr;
+    size_t popup_index_ = 0;
+
+    lv_timer_t *load_timer_ = nullptr;
+    size_t load_idx_ = 0;
 
     void BuildBody();
+    void ClearGrid();
+    void RebuildGrid();
+    void LoadNextImage();
     void RefreshHighlights();
-    static std::string AssetPath(size_t index);
+    void OpenPopup(size_t index);
+    void ClosePopup();
+    void DeleteImage(size_t index);
+
     static void OnCellClicked(lv_event_t *e);
     static void OnCellDeleted(lv_event_t *e);
+    static void OnPopupDismiss(lv_event_t *e);
+    static void OnPopupDesktop(lv_event_t *e);
+    static void OnPopupSleep(lv_event_t *e);
+    static void OnPopupDelete(lv_event_t *e);
+    static void OnLoadTimer(lv_timer_t *t);
 };
 
 } // namespace home
