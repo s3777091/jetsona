@@ -466,12 +466,6 @@ void Ds02HomeDisplay::CreateDockObjects() {
         FONT_AWESOME_MUSIC, FONT_AWESOME_MICROPHONE_LINES, FONT_AWESOME_GEAR,
         FONT_AWESOME_MICROPHONE, FONT_AWESOME_TERMINAL,
     };
-    static constexpr uint32_t kTileColors[kDockItemCount] = {
-        0x2b8cff, 0x7357d9, 0xe04f5f, 0xe2aa36, 0x66707d, 0x29a58d, 0x3282d8, 0x3a3a3a,
-    };
-    static constexpr uint32_t kTileGradients[kDockItemCount] = {
-        0x125a9c, 0x3e2c91, 0x8f2535, 0x8a5c14, 0x343a43, 0x126354, 0x184c91, 0x181818,
-    };
 
     for (size_t i = 0; i < kDockItemCount; ++i) {
         auto *item = lv_obj_create(dock_);
@@ -484,18 +478,9 @@ void Ds02HomeDisplay::CreateDockObjects() {
         lv_obj_remove_style_all(btn);
         lv_obj_set_size(btn, kDockButtonSize, kDockButtonSize);
         lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 0);
-        lv_obj_set_style_radius(btn, 14, 0);
-        lv_obj_set_style_bg_color(btn, Color(kTileColors[i]), 0);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_grad_color(btn, Color(kTileGradients[i]), 0);
-        lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_VER, 0);
-        lv_obj_set_style_border_width(btn, 1, 0);
-        lv_obj_set_style_border_color(btn, lv_color_white(), 0);
-        lv_obj_set_style_border_opa(btn, LV_OPA_30, 0);
-        lv_obj_set_style_shadow_color(btn, lv_color_black(), 0);
-        lv_obj_set_style_shadow_width(btn, 8, 0);
-        lv_obj_set_style_shadow_offset_y(btn, 3, 0);
-        lv_obj_set_style_shadow_opa(btn, LV_OPA_40, 0);
+        /* No colored tile behind the icon -- the PNG/label sits directly on the
+         * dock strip. The button is just a transparent, clickable hit area that
+         * still carries the magnify transform. */
         lv_obj_set_style_transform_pivot_x(btn, kDockButtonSize / 2, 0);
         lv_obj_set_style_transform_pivot_y(btn, kDockButtonSize, 0);
         lv_obj_set_style_transform_scale(btn, kDockScaleNormal, 0);
