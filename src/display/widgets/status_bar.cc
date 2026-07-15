@@ -23,8 +23,10 @@ int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 // Short Vietnamese weekday, libc tm_wday convention (0 = Sunday).
 const char *kShortWday[7] = {"CN", "T2", "T3", "T4", "T5", "T6", "T7"};
 
-constexpr int kPillW = 520;
-constexpr int kPillH = 28;
+constexpr int kPillW = 560;
+constexpr int kPillH = 30;
+constexpr int kGap = 14;       // column gap inside the pill
+constexpr int kAutoCloseMs = 6000;
 } // namespace
 
 StatusBar::StatusBar(lv_obj_t *parent) {
@@ -34,36 +36,26 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     pill_ = lv_obj_create(parent);
     lv_obj_remove_style_all(pill_);
     lv_obj_set_size(pill_, kPillW, kPillH);
-    lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, 4);
+    lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, 3);
     lv_obj_set_style_bg_color(pill_, Color(0x000000), 0);
     lv_obj_set_style_bg_opa(pill_, LV_OPA_60, 0);
-    lv_obj_set_style_radius(pill_, 14, 0);
-    lv_obj_set_style_pad_left(pill_, 12, 0);
-    lv_obj_set_style_pad_right(pill_, 12, 0);
+    lv_obj_set_style_radius(pill_, 15, 0);
+    lv_obj_set_style_pad_left(pill_, 14, 0);
+    lv_obj_set_style_pad_right(pill_, 14, 0);
     lv_obj_set_style_pad_top(pill_, 2, 0);
     lv_obj_set_style_pad_bottom(pill_, 2, 0);
     lv_obj_set_flex_flow(pill_, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(pill_, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+    lv_obj_set_flex_align(pill_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(pill_, kGap, 0);
     lv_obj_clear_flag(pill_, LV_OBJ_FLAG_SCROLLABLE);
 
-    auto make_cluster = [&](lv_obj_t **out) {
-        auto *c = lv_obj_create(pill_);
-        lv_obj_remove_style_all(c);
-        lv_obj_set_size(c, LV_SIZE_CONTENT, kPillH - 4);
-        lv_obj_set_flex_flow(c, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(c, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(c, 12, 0);
-        lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
-        *out = c;
-    };
-    make_cluster(&left_);
-    make_cluster(&right_);
-
-    auto add_icon = [&](lv_obj_t *host, lv_obj_t **out, const char *glyph,
-                        lv_event_cb_t cb) {
-        auto *l = lv_label_create(host);
+    // Flat children -- direct flex items of the pill (no nested content-sized
+    // clusters; LVGL resolves these reliably in one pass). Order, left to
+    // right, matches a real iPhone status row: clock group on the left,
+    // connectivity group on the right, split by a flex-grow spacer.
+    auto add_icon = [&](lv_obj_t **out, const char *glyph, lv_event_cb_t cb) {
+        auto *l = lv_label_create(pill_);
         lv_obj_set_style_text_font(l, &BUILTIN_ICON_FONT, 0);
         lv_obj_set_style_text_color(l, lv_color_white(), 0);
         lv_label_set_text(l, glyph);
@@ -71,16 +63,30 @@ StatusBar::StatusBar(lv_obj_t *parent) {
         if (cb) lv_obj_add_event_cb(l, cb, LV_EVENT_CLICKED, this);
         *out = l;
     };
-    add_icon(left_, &wifi_label_, LV_SYMBOL_WIFI, OnWifiClick);
-    add_icon(left_, &bt_label_, LV_SYMBOL_BLUETOOTH, OnBtClick);
+
+    // Clock group (left): weekday + date + time.
+    datetime_label_ = lv_label_create(pill_);
+    lv_obj_set_style_text_font(datetime_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(datetime_label_, lv_color_white(), 0);
+    lv_label_set_text(datetime_label_, "--:--");
+
+    // Flex-grow spacer pushes the connectivity group to the pill's right edge.
+    auto *spacer = lv_obj_create(pill_);
+    lv_obj_remove_style_all(spacer);
+    lv_obj_set_flex_grow(spacer, 1);
+    lv_obj_clear_flag(spacer, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Connectivity group (right).
+    add_icon(&wifi_label_, LV_SYMBOL_WIFI, OnWifiClick);
+    add_icon(&bt_label_, LV_SYMBOL_BLUETOOTH, OnBtClick);
 
     // Battery: drawn-rect icon + percent/"AC" label (display-only).
-    battery_percent_label_ = lv_label_create(left_);
+    battery_percent_label_ = lv_label_create(pill_);
     lv_obj_set_style_text_font(battery_percent_label_, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
     lv_label_set_text(battery_percent_label_, "100%");
 
-    battery_icon_root_ = lv_obj_create(left_);
+    battery_icon_root_ = lv_obj_create(pill_);
     lv_obj_remove_style_all(battery_icon_root_);
     lv_obj_set_size(battery_icon_root_, 28, 16);
     lv_obj_clear_flag(battery_icon_root_, LV_OBJ_FLAG_SCROLLABLE);
@@ -113,19 +119,13 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_clear_flag(nub, LV_OBJ_FLAG_SCROLLABLE);
 
     // Input language indicator (display-only, refreshed each tick).
-    lang_label_ = lv_label_create(left_);
+    lang_label_ = lv_label_create(pill_);
     lv_obj_set_style_text_font(lang_label_, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(lang_label_, lv_color_white(), 0);
     lv_label_set_text(lang_label_, "EN");
 
-    // Power/lock icon -> drops the power menu.
-    add_icon(left_, &power_label_, LV_SYMBOL_POWER, OnPowerClick);
-
-    // Right cluster: weekday + date + time.
-    datetime_label_ = lv_label_create(right_);
-    lv_obj_set_style_text_font(datetime_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(datetime_label_, lv_color_white(), 0);
-    lv_label_set_text(datetime_label_, "--:--");
+    // Power/lock icon -> drops the power menu (toggle on tap).
+    add_icon(&power_label_, LV_SYMBOL_POWER, OnPowerClick);
 
     // ---- Notification drop panel (below pill center) ----
     notif_panel_ = lv_obj_create(parent);
@@ -149,17 +149,10 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_center(notif_label_);
     lv_obj_add_event_cb(notif_panel_, OnNotifDeleted, LV_EVENT_DELETE, this);
 
-    // ---- Power menu + dismiss backdrop ----
-    power_backdrop_ = lv_obj_create(parent);
-    lv_obj_remove_style_all(power_backdrop_);
-    lv_obj_set_size(power_backdrop_, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_opa(power_backdrop_, LV_OPA_TRANSP, 0);
-    lv_obj_add_flag(power_backdrop_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(power_backdrop_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(power_backdrop_, OnPowerMenuDismiss, LV_EVENT_CLICKED, this);
-    lv_obj_add_event_cb(power_backdrop_, OnBackdropDeleted, LV_EVENT_DELETE, this);
-    lv_obj_add_flag(power_backdrop_, LV_OBJ_FLAG_HIDDEN);
-
+    // ---- Power menu drop (below pill center, on layer_top; no full-screen
+    // backdrop -- a full-screen clickable on layer_top intercepted mouse input,
+    // so the menu now dismisses via the power icon toggle + an auto-close
+    // timer + tapping an action). ----
     BuildPowerMenu();
 
     lv_obj_add_event_cb(pill_, OnDeleted, LV_EVENT_DELETE, this);
@@ -168,12 +161,12 @@ StatusBar::StatusBar(lv_obj_t *parent) {
 }
 
 void StatusBar::BuildPowerMenu() {
-    power_menu_ = lv_obj_create(power_backdrop_);
+    power_menu_ = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(power_menu_);
     lv_obj_set_size(power_menu_, 220, LV_SIZE_CONTENT);
     lv_obj_align_to(power_menu_, pill_, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
     lv_obj_set_style_bg_color(power_menu_, Color(0x000000), 0);
-    lv_obj_set_style_bg_opa(power_menu_, LV_OPA_60, 0);
+    lv_obj_set_style_bg_opa(power_menu_, LV_OPA_90, 0);
     lv_obj_set_style_radius(power_menu_, 14, 0);
     lv_obj_set_style_pad_all(power_menu_, 8, 0);
     lv_obj_set_style_pad_row(power_menu_, 6, 0);
@@ -181,6 +174,7 @@ void StatusBar::BuildPowerMenu() {
     lv_obj_clear_flag(power_menu_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_opa(power_menu_, LV_OPA_0, 0);
     lv_obj_add_flag(power_menu_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(power_menu_, OnPowerMenuDeleted, LV_EVENT_DELETE, this);
 
     auto add_item = [&](const char *label, lv_event_cb_t cb) {
         auto *row = lv_obj_create(power_menu_);
@@ -207,12 +201,12 @@ StatusBar::~StatusBar() {
     LvglLockGuard lock;
     if (timer_) { lv_timer_del(timer_); timer_ = nullptr; }
     if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
-    // notif_panel_ / power_backdrop_ are siblings of pill_ on the same parent,
-    // so they are not deleted with pill_; delete them explicitly. OnDeleted
-    // nulls pill_ if the layer already tore it down. power_menu_ is a child of
-    // power_backdrop_, so it goes with it.
+    if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
+    // Siblings of pill_ on the same layer are not deleted with pill_; delete
+    // them explicitly. OnDeleted / OnNotifDeleted / OnPowerMenuDeleted null the
+    // pointers if the layer already tore them down.
+    if (power_menu_) { lv_obj_del(power_menu_); power_menu_ = nullptr; }
     if (notif_panel_) { lv_obj_del(notif_panel_); notif_panel_ = nullptr; }
-    if (power_backdrop_) { lv_obj_del(power_backdrop_); power_backdrop_ = nullptr; }
     if (pill_) { lv_obj_del(pill_); pill_ = nullptr; }
 }
 
@@ -220,9 +214,9 @@ void StatusBar::Hide() {
     if (pill_) lv_obj_add_flag(pill_, LV_OBJ_FLAG_HIDDEN);
     // Also hide any open drop so nothing floats above the lock screen.
     if (notif_panel_ && !lv_obj_has_flag(notif_panel_, LV_OBJ_FLAG_HIDDEN))
-        lv_obj_add_flag(notif_panel_, LV_OBJ_FLAG_HIDDEN);
-    if (power_backdrop_ && !lv_obj_has_flag(power_backdrop_, LV_OBJ_FLAG_HIDDEN))
-        lv_obj_add_flag(power_backdrop_, LV_OBJ_FLAG_HIDDEN);
+        AnimateDrop(notif_panel_, false);
+    if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN))
+        HidePowerMenu();
 }
 
 void StatusBar::Show() {
@@ -278,7 +272,6 @@ void StatusBar::RefreshBattery() {
             std::snprintf(buf, sizeof(buf), "%d%%", level);
             lv_label_set_text(battery_percent_label_, buf);
         }
-        // Low-battery alert (only meaningful when a real battery is present).
         if (level <= 20 && !low_warned_) {
             low_warned_ = true;
             ShowNotification("Pin yeu -- sac ngay");
@@ -345,13 +338,15 @@ void StatusBar::ShowPowerMenu() {
     if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
     if (notif_panel_ && !lv_obj_has_flag(notif_panel_, LV_OBJ_FLAG_HIDDEN))
         AnimateDrop(notif_panel_, false);
-    if (power_backdrop_) lv_obj_clear_flag(power_backdrop_, LV_OBJ_FLAG_HIDDEN);
     AnimateDrop(power_menu_, true);
+    if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
+    power_menu_timer_ = lv_timer_create(OnPowerMenuTimer, kAutoCloseMs, this);
+    lv_timer_set_repeat_count(power_menu_timer_, 1);
 }
 
 void StatusBar::HidePowerMenu() {
-    AnimateDrop(power_menu_, false);
-    if (power_backdrop_) lv_obj_add_flag(power_backdrop_, LV_OBJ_FLAG_HIDDEN);
+    if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
+    if (power_menu_) AnimateDrop(power_menu_, false);
 }
 
 void StatusBar::OnTimer(lv_timer_t *t) {
@@ -368,11 +363,20 @@ void StatusBar::OnNotifTimer(lv_timer_t *t) {
     self->AnimateDrop(self->notif_panel_, false);
 }
 
+void StatusBar::OnPowerMenuTimer(lv_timer_t *t) {
+    auto *self = static_cast<StatusBar *>(lv_timer_get_user_data(t));
+    LvglLockGuard lock;
+    self->power_menu_timer_ = nullptr;
+    lv_timer_del(t);
+    self->HidePowerMenu();
+}
+
 void StatusBar::OnDeleted(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     if (!self) return;
     if (self->timer_) { lv_timer_del(self->timer_); self->timer_ = nullptr; }
     if (self->notif_timer_) { lv_timer_del(self->notif_timer_); self->notif_timer_ = nullptr; }
+    if (self->power_menu_timer_) { lv_timer_del(self->power_menu_timer_); self->power_menu_timer_ = nullptr; }
     self->pill_ = nullptr;
 }
 
@@ -381,12 +385,9 @@ void StatusBar::OnNotifDeleted(lv_event_t *e) {
     if (self) self->notif_panel_ = nullptr;
 }
 
-void StatusBar::OnBackdropDeleted(lv_event_t *e) {
+void StatusBar::OnPowerMenuDeleted(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
-    if (!self) return;
-    // power_menu_ is a child of power_backdrop_, so it goes with it.
-    self->power_backdrop_ = nullptr;
-    self->power_menu_ = nullptr;
+    if (self) self->power_menu_ = nullptr;
 }
 
 void StatusBar::OnWifiClick(lv_event_t *e) {
@@ -404,7 +405,11 @@ void StatusBar::OnBtClick(lv_event_t *e) {
 void StatusBar::OnPowerClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
-    self->ShowPowerMenu();
+    // Toggle: open if closed, close if open.
+    if (self->power_menu_ && !lv_obj_has_flag(self->power_menu_, LV_OBJ_FLAG_HIDDEN))
+        self->HidePowerMenu();
+    else
+        self->ShowPowerMenu();
 }
 
 void StatusBar::OnPowerLock(lv_event_t *e) {
@@ -426,12 +431,6 @@ void StatusBar::OnPowerShutdown(lv_event_t *e) {
     LvglLockGuard lock;
     self->HidePowerMenu();
     if (self->shutdown_action_) self->shutdown_action_();
-}
-
-void StatusBar::OnPowerMenuDismiss(lv_event_t *e) {
-    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
-    LvglLockGuard lock;
-    self->HidePowerMenu();
 }
 
 void StatusBar::OnDropOpa(void *var, int32_t v) {

@@ -3,16 +3,19 @@
 /* Dynamic-Island style status bar, parented to `lv_layer_top()` so it renders
  * above every full-screen overlay and stays visible on every screen.
  *
- * A black pill sits centered at the top. It carries two clusters:
- *   left  -> wifi, bluetooth, battery (drawn icon + %/"AC"), input language
- *            (EN/VI), and a power/lock icon
- *   right -> weekday + date + time (e.g. "T2  15/07/2026  09:30")
+ * A black pill sits centered at the top. Flat children left-to-right:
+ *   wifi, bluetooth, battery (drawn icon + %/"AC"), input language (EN/VI),
+ *   power/lock icon  ...  [flex-grow spacer]  ...  weekday + date + time
+ *
+ * (Flat children -- not nested content-sized clusters -- because LVGL does
+ * not reliably resolve nested LV_SIZE_CONTENT in one layout pass, which left
+ * the island empty. A flex-grow spacer pushes the clock group to the right.)
  *
  * Where an iPhone puts the camera / Face ID, this firmware puts notifications:
  * `ShowNotification(text, ms)` drops a small panel straight down from the
- * island's center (slide + fade), leaving both clusters visible, then
+ * island's center (slide + fade), leaving the clusters visible, then
  * auto-dismisses. Tapping the power icon drops a menu (Khoa / Khoi dong lai /
- * Tat may) the same way.
+ * Tat may) the same way; the icon toggles it and it auto-closes.
  *
  * Threading: the lv_timer and all event callbacks run on the LVGL handler
  * thread, which does NOT hold lv_lock, so they take jetson::ui::LvglLockGuard. */
@@ -27,7 +30,6 @@ namespace home {
 class StatusBar {
 public:
     using Action = std::function<void()>;
-    using NotifyCb = std::function<void(const char *)>;
 
     explicit StatusBar(lv_obj_t *parent);
     ~StatusBar();
@@ -45,10 +47,7 @@ public:
     void ShowNotification(const char *text, int duration_ms = 3000);
 
 private:
-    // Island pill + its two clusters.
     lv_obj_t *pill_ = nullptr;
-    lv_obj_t *left_ = nullptr;
-    lv_obj_t *right_ = nullptr;
     lv_obj_t *wifi_label_ = nullptr;
     lv_obj_t *bt_label_ = nullptr;
     lv_obj_t *battery_icon_root_ = nullptr;
@@ -64,9 +63,9 @@ private:
     lv_obj_t *notif_label_ = nullptr;
     lv_timer_t *notif_timer_ = nullptr;
 
-    // Power menu drop (below pill center) + full-screen dismiss backdrop.
+    // Power menu drop (below pill center).
     lv_obj_t *power_menu_ = nullptr;
-    lv_obj_t *power_backdrop_ = nullptr;
+    lv_timer_t *power_menu_timer_ = nullptr;
 
     lv_timer_t *timer_ = nullptr; // 1 Hz refresh
 
@@ -92,15 +91,15 @@ private:
     static void OnTimer(lv_timer_t *t);
     static void OnDeleted(lv_event_t *e);
     static void OnNotifDeleted(lv_event_t *e);
-    static void OnBackdropDeleted(lv_event_t *e);
+    static void OnPowerMenuDeleted(lv_event_t *e);
     static void OnNotifTimer(lv_timer_t *t);
+    static void OnPowerMenuTimer(lv_timer_t *t);
     static void OnWifiClick(lv_event_t *e);
     static void OnBtClick(lv_event_t *e);
     static void OnPowerClick(lv_event_t *e);
     static void OnPowerLock(lv_event_t *e);
     static void OnPowerReboot(lv_event_t *e);
     static void OnPowerShutdown(lv_event_t *e);
-    static void OnPowerMenuDismiss(lv_event_t *e);
     static void OnDropOpa(void *var, int32_t v);
     static void OnDropY(void *var, int32_t v);
     static void OnDropHidden(lv_anim_t *a);
