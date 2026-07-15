@@ -255,7 +255,6 @@ void Ds02HomeDisplay::SetupUI() {
     esp_timer_create(&args, &refresh_timer_);
     esp_timer_start_periodic(refresh_timer_, kRefreshIntervalUs);
 
-    RefreshClock();
     UpdateStatusBar(true);
 
     // Repaint the whole home screen when the light/dark theme flips.
@@ -287,20 +286,17 @@ void Ds02HomeDisplay::CreateStandbyObjects() {
     lv_obj_set_style_bg_opa(dim_overlay_, 0, 0); // awake by default
     lv_obj_clear_flag(dim_overlay_, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // The clock lives in the macOS-style menu bar (top-right cluster) built by
-    // CreateSystemBarObjects; weather + date stay bottom-center.
+    // The clock + weekday + date all live in the global StatusBar (Dynamic
+    // Island) built by CreateSystemBarObjects, so the standby layer only needs
+    // the weather line. The old big center "Wednesday, 15 July" date label was
+    // redundant with the island and was removed.
 
-    // Weather + date, bottom-center.
+    // Weather, bottom-center.
     weather_label_ = lv_label_create(standby_layer_);
     lv_obj_set_style_text_font(weather_label_, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(weather_label_, lv_color_white(), 0);
     lv_label_set_text(weather_label_, "");
     lv_obj_align(weather_label_, LV_ALIGN_BOTTOM_MID, 0, -(kDockHeight + kDockBottomMargin + 8));
-
-    date_label_ = lv_label_create(standby_layer_);
-    lv_obj_set_style_text_font(date_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(date_label_, lv_color_white(), 0);
-    lv_obj_align(date_label_, LV_ALIGN_BOTTOM_MID, 0, -(kDockHeight + kDockBottomMargin + 40));
 
     // Chat subtitle (assistant / user messages).
     chat_label_ = lv_label_create(standby_layer_);
@@ -402,13 +398,10 @@ void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
 }
 
 void Ds02HomeDisplay::CreateSystemBarObjects() {
-    /* The Dynamic-Island bar (wifi/bt/battery/EN-VI/power on the left, weekday
-     * + date + time on the right) lives on lv_layer_top() (not root_) so it
-     * renders above every full-screen overlay and stays visible on every
-     * screen. The StatusBar self-refreshes its clock + battery + language;
-     * home wires the click hooks (wifi/bt/lock/reboot/shutdown). Created here,
-     * before brightness_overlay_ (also on layer_top), so the brightness scrim
-     * ends up above the bar and dims it together with the rest of the UI. */
+    /* The iPhone-like status row + Dynamic Island live on lv_layer_top() so
+     * they render above every full-screen view. Time/status sit outside the
+     * centered sensor pill; notifications morph that same pill. Created before
+     * the brightness overlay so the software dimmer affects it too. */
     volume_muted_ = Settings("display").GetBool("muted", false);
     status_bar_ = std::make_unique<StatusBar>(lv_layer_top());
     status_bar_->SetWifiAction([this]() { OpenWifiSettings(); });
@@ -425,11 +418,10 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
 
     // Reuse the base class status/notification labels (created on the screen by
     // LvglDisplay) for the device-state status line.
-    const int bar_h = 28;
-    // The device-state status ("Ready"/"Listening"/...) sits at the top-LEFT
-    // (not top-center) so it does not collide with the centered Dynamic-Island
-    // bar above it or its notification drop panel. Notifications now surface on
-    // the island, so the base notification_label_ stays hidden.
+    const int bar_h = 42;
+    // The device-state status ("Ready"/"Listening"/...) sits at the top-left
+    // so it does not collide with the centered island as it expands. The old
+    // base toast stays hidden because notifications now bloom inside the island.
     if (status_label_) lv_obj_align(status_label_, LV_ALIGN_TOP_LEFT, 8, bar_h + 8);
     if (notification_label_) {
         lv_obj_align(notification_label_, LV_ALIGN_TOP_LEFT, 8, bar_h + 8);
@@ -974,30 +966,17 @@ void Ds02HomeDisplay::ApplyWallpaperForState() {
 void Ds02HomeDisplay::SetTextColor(uint32_t color) {
     text_color_ = color;
     lv_color_t c = Color(color);
-    for (lv_obj_t *lbl : {date_label_, weather_label_, chat_label_}) {
+    for (lv_obj_t *lbl : {weather_label_, chat_label_}) {
         if (lbl) lv_obj_set_style_text_color(lbl, c, 0);
     }
 }
 
-std::string Ds02HomeDisplay::FormatDate(const struct tm &t) {
-    char buf[40];
-    std::strftime(buf, sizeof(buf), "%A, %d %B", &t);
-    return buf;
-}
-
-void Ds02HomeDisplay::RefreshClock() {
-    // The clock itself moved to the global StatusBar; this only refreshes the
-    // big date label on the standby wallpaper now.
-    time_t now = std::time(nullptr);
-    struct tm t = *std::localtime(&now);
-    if (t.tm_year < (2025 - 1900)) return; // time not set yet
-    std::string ds = FormatDate(t);
-    if (ds != cached_date_ && date_label_) { lv_label_set_text(date_label_, ds.c_str()); cached_date_ = ds; }
-}
-
 void Ds02HomeDisplay::UpdateStatusBar(bool /*update_all*/) {
     DisplayLockGuard lock(this);
-    RefreshClock(); // standby date label; the bar refreshes its own clock/battery
+    // The clock + date live in the global StatusBar (Dynamic Island), which
+    // refreshes its own time/battery/lang on its 1s lv_timer. Nothing date-
+    // related remains on the standby layer after the center date label was
+    // removed, so there is no per-tick clock work to do here.
 }
 
 void Ds02HomeDisplay::OnRefreshTimer(void *arg) {
@@ -1059,8 +1038,8 @@ void Ds02HomeDisplay::ShowNotification(const char *notification, int duration_ms
         if (!display.GetBool("always_on", true) ||
             !display.GetBool("aod_notifications", true)) return;
     }
-    // Toasts now surface as the Dynamic-Island drop notification (visible on
-    // every screen) instead of the old centered base-class toast.
+    // Toasts now bloom from the Dynamic Island instead of using the old
+    // centered base-class label.
     if (status_bar_) status_bar_->ShowNotification(notification, duration_ms);
 }
 
@@ -1090,6 +1069,9 @@ void Ds02HomeDisplay::ShowOnboardSplash(int duration_ms) {
     // Must be called with the display lock held (as from SetupUI).
     if (duration_ms <= 0) return;
     if (splash_) lv_obj_del(splash_); // replace any prior splash
+    // The greeting owns the whole boot moment. Reveal the status row and bloom
+    // the welcome island only after the splash has gone.
+    if (status_bar_) status_bar_->Hide();
 
     splash_ = lv_obj_create(root_);
     lv_obj_remove_style_all(splash_);
@@ -1106,19 +1088,49 @@ void Ds02HomeDisplay::ShowOnboardSplash(int duration_ms) {
     // App logo (assets/icons/app/logo.png) as the boot mark.
     static const char *kLogoPath = "assets/icons/app/logo.png";
     splash_logo_ = LvglImageFromFile(kLogoPath);
+    lv_obj_t *logo = nullptr;
     if (splash_logo_) {
-        auto *logo = lv_image_create(splash_);
+        logo = lv_image_create(splash_);
         lv_image_set_src(logo, splash_logo_->image_dsc());
         lv_image_set_scale(logo, (uint16_t)PngScaleToFit(kLogoPath, 130)); // ~130 px logo.
-        lv_obj_align(logo, LV_ALIGN_CENTER, 0, -30);
+        lv_obj_align(logo, LV_ALIGN_CENTER, 0, -62);
         lv_obj_clear_flag(logo, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     }
 
-    // Splash is logo + progress bar only (no wordmark/subtitle text).
+    auto *hello = lv_label_create(splash_);
+    lv_obj_set_style_text_font(hello, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(hello, Color(0x62e6a7), 0);
+    lv_label_set_text(hello, "Xin chào");
+    lv_obj_align(hello, LV_ALIGN_CENTER, 0, 36);
+
+    auto *welcome = lv_label_create(splash_);
+    lv_obj_set_style_text_font(welcome, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(welcome, lv_color_white(), 0);
+    lv_label_set_text(welcome, "Chào mừng bạn đến với Ekko Land");
+    lv_obj_align(welcome, LV_ALIGN_CENTER, 0, 74);
+
+    // Staggered fades give the greeting a calm Apple-like reveal instead of
+    // abruptly painting every element on the first frame.
+    auto fade_in = [](lv_obj_t *obj, uint32_t delay, uint32_t time) {
+        if (!obj) return;
+        lv_obj_set_style_opa(obj, LV_OPA_0, 0);
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, obj);
+        lv_anim_set_values(&a, 0, 255);
+        lv_anim_set_delay(&a, delay);
+        lv_anim_set_time(&a, time);
+        lv_anim_set_exec_cb(&a, OnSplashOpa);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    };
+    fade_in(logo, 100, 500);
+    fade_in(hello, 420, 420);
+    fade_in(welcome, 760, 420);
 
     // Progress bar near the bottom.
     auto *bar = lv_bar_create(splash_);
-    lv_obj_set_size(bar, 320, 6);
+    lv_obj_set_size(bar, 280, 6);
     lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, -42);
     lv_bar_set_range(bar, 0, 100);
     lv_bar_set_start_value(bar, 0, LV_ANIM_OFF);
@@ -1170,6 +1182,10 @@ void Ds02HomeDisplay::OnSplashGone(lv_anim_t *a) {
     // Deferred delete: safe from within an anim completed callback.
     lv_obj_del_async(self->splash_);
     self->splash_ = nullptr;
+    if (self->status_bar_) {
+        self->status_bar_->Show();
+        self->status_bar_->ShowWelcome(4000);
+    }
     // splash_logo_ is intentionally kept alive until the async delete runs: the
     // lv_image inside splash_ still references its dsc until the subtree is gone.
 }

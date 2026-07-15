@@ -93,7 +93,6 @@ private:
     void CreateSystemBarObjects();
     void CreateDockObjects();
     void SetDockActive(int index);
-    void RefreshClock();
     void CheckIdleDim();
     void ApplyStandbyState();
     bool HasOpenOverlay() const;
@@ -111,7 +110,6 @@ private:
     static void OnSplashOpa(void *var, int32_t v);
     static void OnSplashBar(void *var, int32_t v);
     static void OnSplashGone(lv_anim_t *a);
-    static std::string FormatDate(const struct tm &t);
 
     StandbyState standby_state_ = StandbyState::Awake;
     esp_timer_handle_t refresh_timer_ = nullptr;
@@ -132,7 +130,6 @@ private:
     // every screen. Self-refreshes; home wires the click hooks.
     std::unique_ptr<StatusBar> status_bar_;
     bool volume_muted_ = false;
-    lv_obj_t *date_label_ = nullptr;
     lv_obj_t *weather_label_ = nullptr;
     lv_obj_t *chat_label_ = nullptr;
     lv_obj_t *launcher_layer_ = nullptr;
@@ -148,7 +145,6 @@ private:
     std::string background_file_;       // current desktop wallpaper filename
     std::string sleep_background_file_; // wallpaper shown when the screen is dim
     uint32_t text_color_ = 0xffffff;
-    std::string cached_date_;
 
     std::shared_ptr<WifiSettingsView> wifi_view_;
     std::shared_ptr<BluetoothSettingsView> bt_view_;
@@ -163,8 +159,8 @@ private:
 
     lv_obj_t *app_grid_ = nullptr;
 
-    /* Full-screen boot splash shown on top of the home UI for ~duration_ms.
-     * Fades out then self-destructs (see ShowOnboardSplash). */
+    /* Full-screen boot greeting shown for ~duration_ms. It fades away, then
+     * hands off to the welcome animation in the Dynamic Island. */
     lv_obj_t *splash_ = nullptr;
     std::unique_ptr<LvglImage> splash_logo_;
 };
