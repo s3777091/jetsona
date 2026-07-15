@@ -115,6 +115,18 @@ if(JETSON_DISPLAY_BACKEND STREQUAL "SDL")
     target_compile_definitions(lvgl PUBLIC LV_USE_SDL=1)
     target_include_directories(lvgl PRIVATE ${SDL2_INCLUDE_DIRS})
     target_link_libraries(lvgl PUBLIC ${SDL2_LIBRARIES})
+
+    # Some Jetson/Ubuntu SDL packages expose pixel formats as SDL_PixelFormat
+    # (or only as the integer format code accepted by SDL_CreateTexture), while
+    # LVGL 9.2's window driver declares a local variable as
+    # SDL_PixelFormatEnum. Force-include a tiny compatibility header for this
+    # one LVGL source file. Keeping the workaround outside the LVGL submodule
+    # means `git submodule update` cannot silently remove it.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl/src/drivers/sdl/lv_sdl_window.c
+        DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl
+        PROPERTIES COMPILE_OPTIONS
+            "-include${CMAKE_CURRENT_SOURCE_DIR}/src/platform/lvgl_sdl_compat.h")
 endif()
 
 # Enable Wayland client driver inside LVGL when chosen. The driver registers its
