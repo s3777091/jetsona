@@ -154,13 +154,14 @@ namespaces. Set `JETSON_SETTINGS_FILE` to relocate it.
 
 - DRM/KMS direct rendering at 800×480 (SDL fallback behind a build switch).
 - evdev touch → LVGL pointer indev (DS-02 dock tap + swipe gestures).
-- DS-02 home UI: wallpaper (10 PNGs, cover-fit), clock, date, system bar
-  (Wi-Fi icon + drawn battery + status/notification), bottom dock, and the
-  launcher with the avatar sphere. The macOS-style glass dock uses OpenMoji
-  PNG icons, touch magnification, click bounce, and an active-app indicator.
-  Icon attribution is in `assets/icons/ATTRIBUTION.md`. 1 Hz clock/status
-  refresh.
-- **On-screen WiFi provisioning:** tap the gear (settings) dock button to open
+- DS-02 home UI: wallpaper (10 PNGs, pre-resized to 800×480 and shown 1:1),
+  clock, date, system bar (Wi-Fi icon + drawn battery + status/notification),
+  bottom dock (7 PNG icons under `assets/icons/dock/`), and a swipe-up app
+  drawer (8 PNG tiles under `assets/icons/drawer/`). The macOS-style glass
+  dock uses PNG icons, touch magnification, click bounce, and an active-app
+  indicator. Dock taps launch the backed apps (calendar / gallery / WiFi /
+  Bluetooth / settings / chat / terminal). 1 Hz clock/status refresh.
+- **On-screen WiFi provisioning:** tap the dock button to open
   a WiFi screen that scans networks (`nmcli`), lists them with signal bars, and
   shows an on-screen keyboard for entering the password. Requires a **USB WiFi
   dongle** (the Jetson Nano 4GB B01 has no onboard WiFi) and NetworkManager

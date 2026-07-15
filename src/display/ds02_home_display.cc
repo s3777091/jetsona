@@ -250,14 +250,14 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
     // ---- App drawer grid (the DS-02 launcher content) ----
     struct AppDef { const char *icon; const char *label; int id; };
     static const AppDef kApps[kDrawerItemCount] = {
-        {"assets/icon_2/drawer/agent.png",      "Agent",      0},
-        {"assets/icon_2/drawer/chromium.png",    "Chromium",   1},
-        {"assets/icon_2/drawer/git.png",         "Git",        2},
-        {"assets/icon_2/drawer/minion.png",      "Minion",     3},
-        {"assets/icon_2/drawer/nightowl.png",    "NightOwl",   4},
-        {"assets/icon_2/drawer/photos.png",      "Ảnh",        5},
-        {"assets/icon_2/drawer/teamspeak.png",   "TeamSpeak",  6},
-        {"assets/icon_2/drawer/translate.png",   "Dịch",       7},
+        {"assets/icons/drawer/agent.png",      "Agent",      0},
+        {"assets/icons/drawer/chromium.png",    "Chromium",   1},
+        {"assets/icons/drawer/git.png",         "Git",        2},
+        {"assets/icons/drawer/minion.png",      "Minion",     3},
+        {"assets/icons/drawer/nightowl.png",    "NightOwl",   4},
+        {"assets/icons/drawer/photos.png",      "Ảnh",        5},
+        {"assets/icons/drawer/teamspeak.png",   "TeamSpeak",  6},
+        {"assets/icons/drawer/translate.png",   "Dịch",       7},
     };
     constexpr int kCols = 4;
 
@@ -420,10 +420,10 @@ void Ds02HomeDisplay::CreateDockObjects() {
     lv_obj_align(dock_, LV_ALIGN_BOTTOM_MID, 0, -kDockBottomMargin);
 
     static const char *kIconFiles[kDockItemCount] = {
-        "assets/icon_2/dock/calendar.png", "assets/icon_2/dock/folder.png",
-        "assets/icon_2/dock/music.png", "assets/icon_2/dock/reminders.png",
-        "assets/icon_2/dock/settings.png", "assets/icon_2/dock/siri.png",
-        "assets/icon_2/dock/terminal.png",
+        "assets/icons/dock/calendar.png", "assets/icons/dock/folder.png",
+        "assets/icons/dock/music.png", "assets/icons/dock/reminders.png",
+        "assets/icons/dock/settings.png", "assets/icons/dock/siri.png",
+        "assets/icons/dock/terminal.png",
     };
     static const char *kFallbackIcons[kDockItemCount] = {
         FONT_AWESOME_BOOK_OPEN, FONT_AWESOME_BOOK, FONT_AWESOME_MUSIC,
@@ -733,15 +733,8 @@ bool Ds02HomeDisplay::ApplyBackgroundIndex(size_t index) {
         return false;
     }
     lv_image_set_src(wallpaper_image_obj_, img->image_dsc());
-    // Cover-fit: scale the wallpaper to fill the 800x480 panel. Parse the PNG
-    // IHDR directly -- image_dsc().header.w stays 0 until LVGL lazily decodes
-    // the body, which left the wallpaper unscaled (shown too small).
-    std::string path = home::BackgroundsDir() + "/" + home::BackgroundFile(index);
-    int iw = 0, ih = 0;
-    if (PngSize(path.c_str(), &iw, &ih) && iw > 0 && ih > 0) {
-        int scale = std::max(width_ * 256 / iw, height_ * 256 / ih);
-        lv_image_set_scale(wallpaper_image_obj_, (uint16_t)scale);
-    }
+    // Backgrounds are pre-resized to the panel size on disk (800x480), so
+    // display them 1:1 -- no runtime cover-fit scaling needed.
     lv_obj_center(wallpaper_image_obj_);
     return true;
 }
@@ -869,8 +862,8 @@ void Ds02HomeDisplay::ShowOnboardSplash(int duration_ms) {
     // Swallow taps while the splash is up so the dock isn't poked mid-boot.
     lv_obj_add_flag(splash_, LV_OBJ_FLAG_CLICKABLE);
 
-    // App logo (assets/icon_2/app/logo.png) as the boot mark.
-    static const char *kLogoPath = "assets/icon_2/app/logo.png";
+    // App logo (assets/icons/app/logo.png) as the boot mark.
+    static const char *kLogoPath = "assets/icons/app/logo.png";
     splash_logo_ = LvglImageFromFile(kLogoPath);
     if (splash_logo_) {
         auto *logo = lv_image_create(splash_);
