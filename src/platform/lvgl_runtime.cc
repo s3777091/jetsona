@@ -147,12 +147,15 @@ static void keyboard_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
  * renders. The PNG path is preferred because the user supplies their own
  * cursor artwork there; the line arrow is the guaranteed-visible fallback.
  *
- * Why validate with lv_image_decoder_get_info: an earlier build blindly
- * called lv_image_set_src on the PNG descriptor and, when the file failed to
- * decode, the cursor rendered nothing -- evdev still delivered REL_X/REL_Y +
- * BTN_MOUSE but the pointer looked dead. Probing the decoder up front lets us
- * pick the PNG only when it really renders, and fall back to the arrow
- * otherwise, so the cursor is visible in either case.
+ * Why still draw the line-arrow when the PNG decodes: a header probe
+ * (lv_image_decoder_get_info) only confirms the PNG is parseable, not that its
+ * pixels render visibly -- an 8-bit gray+alpha cursor that decodes to a fully
+ * transparent image on the fbdev software renderer still reports success, and
+ * an earlier build that used the PNG alone in that case rendered nothing, so
+ * evdev kept delivering REL_X/REL_Y + BTN_MOUSE but the pointer looked dead.
+ * The arrow is therefore drawn unconditionally as a base layer and the PNG is
+ * overlaid on top: an opaque PNG hides the arrow, a blank/transparent PNG lets
+ * the arrow show through, so the cursor is visible in either case.
  *
  * The cursor is parented to lv_layer_sys() -- the system layer renders above
  * lv_layer_top() and above the active screen, so it stays on top of every
@@ -167,44 +170,61 @@ static void attach_pointer_cursor(lv_indev_t *indev)
     if (!indev) return;
 
     /* Probe the PNG artwork first. `static` so the decoded image buffer
-     * outlives the cursor object. */
+     * outlives the cursor object. get_info only reads the header -- a PNG
+     * that decodes its header but renders blank (e.g. an 8-bit gray+alpha
+     * cursor that comes out fully transparent on the fbdev software renderer)
+     * still reports success, so a header probe alone is NOT proof the cursor
+     * will be visible. We therefore ALWAYS draw the line-arrow base and only
+     * overlay the PNG on top of it: an opaque PNG hides the arrow, a blank/
+     * transparent PNG lets the arrow show through -- the cursor is visible in
+     * either case, which is the only way "the mouse moves" reads as working. */
     static auto cursor_img = LvglImageFromFile("assets/icons/app/cursor.png");
     bool png_ok = false;
     lv_image_header_t info = {};
     if (cursor_img) {
-        png_ok = (lv_image_decoder_get_info(cursor_img->image_dsc(), &info) == LV_RESULT_OK);
+        png_ok = (lv_image_decoder_get_info(cursor_img->image_dsc(), &info) == LV_RESULT_OK
+                 && info.w > 0 && info.h > 0);
     }
 
     lv_obj_t *cur = lv_obj_create(lv_layer_sys());
     lv_obj_remove_style_all(cur);
     lv_obj_clear_flag(cur, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
+    /* Classic arrow outline, tip at (0,0) so it lands on the pointer hot-spot.
+     * Drawn unconditionally as the guaranteed-visible base layer. */
+    static lv_point_precise_t pts[] = {
+        {0, 0}, {0, 17}, {4, 13}, {7, 17}, {9, 16}, {6, 12}, {11, 12}, {0, 0}
+    };
+    int cur_w = 16, cur_h = 20;
     if (png_ok) {
-        /* User's cursor artwork. lv_image auto-sizes to the PNG; the hot-spot
-         * is its top-left corner (the usual arrow-tip placement). */
+        if ((int)info.w > cur_w) cur_w = info.w;
+        if ((int)info.h > cur_h) cur_h = info.h;
+    }
+    lv_obj_set_size(cur, cur_w, cur_h);
+    /* Black outline (wider, behind) then white core (narrower, on top): a white
+     * arrow with a high-contrast border that reads on any background. */
+    lv_obj_t *bl = lv_line_create(cur);
+    lv_obj_set_style_line_color(bl, lv_color_black(), 0);
+    lv_obj_set_style_line_width(bl, 5, 0);
+    lv_obj_set_style_line_rounded(bl, false, 0);
+    lv_line_set_points(bl, pts, sizeof(pts) / sizeof(pts[0]));
+
+    lv_obj_t *wl = lv_line_create(cur);
+    lv_obj_set_style_line_color(wl, lv_color_white(), 0);
+    lv_obj_set_style_line_width(wl, 3, 0);
+    lv_obj_set_style_line_rounded(wl, false, 0);
+    lv_line_set_points(wl, pts, sizeof(pts) / sizeof(pts[0]));
+
+    /* Overlay the user's cursor artwork on top of the arrow. Created last so it
+     * renders above the lines; its per-pixel alpha lets the arrow show through
+     * any transparent regions. The hot-spot stays the top-left corner (0,0). */
+    if (png_ok) {
         lv_obj_t *img = lv_image_create(cur);
         lv_image_set_src(img, cursor_img->image_dsc());
         lv_obj_clear_flag(img, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-        lv_obj_set_size(cur, info.w, info.h);
+        ESP_LOGI(TAG, "cursor: png %dx%d overlaid on arrow fallback", info.w, info.h);
     } else {
-        /* Classic arrow outline, tip at (0,0) so it lands on the pointer hot-spot. */
-        static lv_point_precise_t pts[] = {
-            {0, 0}, {0, 17}, {4, 13}, {7, 17}, {9, 16}, {6, 12}, {11, 12}, {0, 0}
-        };
-        lv_obj_set_size(cur, 16, 20);
-        /* Black outline (wider, behind) then white core (narrower, on top): a white
-         * arrow with a high-contrast border that reads on any background. */
-        lv_obj_t *bl = lv_line_create(cur);
-        lv_obj_set_style_line_color(bl, lv_color_black(), 0);
-        lv_obj_set_style_line_width(bl, 5, 0);
-        lv_obj_set_style_line_rounded(bl, false, 0);
-        lv_line_set_points(bl, pts, sizeof(pts) / sizeof(pts[0]));
-
-        lv_obj_t *wl = lv_line_create(cur);
-        lv_obj_set_style_line_color(wl, lv_color_white(), 0);
-        lv_obj_set_style_line_width(wl, 3, 0);
-        lv_obj_set_style_line_rounded(wl, false, 0);
-        lv_line_set_points(wl, pts, sizeof(pts) / sizeof(pts[0]));
+        ESP_LOGI(TAG, "cursor: arrow only (png missing/undecodable)");
     }
 
     lv_indev_set_cursor(indev, cur);

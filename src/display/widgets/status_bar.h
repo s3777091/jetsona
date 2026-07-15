@@ -53,6 +53,7 @@ private:
     lv_obj_t *battery_icon_root_ = nullptr;
     lv_obj_t *battery_icon_body_ = nullptr;
     lv_obj_t *battery_icon_fill_ = nullptr;
+    lv_obj_t *battery_icon_nub_ = nullptr;
     lv_obj_t *battery_percent_label_ = nullptr;
     lv_obj_t *lang_label_ = nullptr;
     lv_obj_t *power_label_ = nullptr;
