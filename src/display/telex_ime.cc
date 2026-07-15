@@ -110,7 +110,7 @@ void TelexIme::AppendCodepoint(const std::string &cp) {
 
 void TelexIme::ReplaceLast(const std::string &rep) {
     if (buf_.empty()) return;
-    size_t len = LastCpLen(buf_, buf.size());
+    size_t len = LastCpLen(buf_, buf_.size());
     buf_.replace(buf_.size() - len, len, rep);
 }
 
@@ -166,7 +166,7 @@ void TelexIme::Feed(char c) {
 
 void TelexIme::Backspace() {
     if (buf_.empty()) return;
-    size_t len = LastCpLen(buf_, buf.size());
+    size_t len = LastCpLen(buf_, buf_.size());
     buf_.erase(buf_.size() - len);
 }
 
@@ -183,7 +183,7 @@ TelexInput::TelexInput(lv_obj_t *parent, int w, int h) {
     lv_obj_set_style_radius(root_, 10, 0);
     lv_obj_set_style_pad_all(root_, 8, 0);
     lv_obj_clear_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_add_flag(root_, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE));
 
     label_ = lv_label_create(root_);
     lv_obj_set_style_text_font(label_, &BUILTIN_TEXT_FONT, 0);

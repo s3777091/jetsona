@@ -133,7 +133,7 @@ void SettingsView::BuildShell() {
     struct Entry { Cat cat; const char *glyph; const char *label; };
     const Entry cats[] = {
         {Cat::Appearance, LV_SYMBOL_IMAGE, "Giao diện"},
-        {Cat::Display, LV_SYMBOL_BRIGHTNESS, "Hiển thị"},
+        {Cat::Display, LV_SYMBOL_EYE_OPEN, "Hiển thị"},
         {Cat::Sound, LV_SYMBOL_VOLUME_MAX, "Âm thanh"},
         {Cat::Wifi, LV_SYMBOL_WIFI, "WiFi"},
         {Cat::Bluetooth, LV_SYMBOL_BLUETOOTH, "Bluetooth"},
@@ -858,7 +858,8 @@ void SettingsView::BtCreateRow(const jetson::BtDevice &d) {
     lv_obj_set_style_pad_column(right, 6, 0);
     lv_obj_set_flex_align(right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     int lvl = d.rssi + 100; // dBm (-100..0) -> 0..100
-    if (lvl < 0) lvl = 0; if (lvl > 100) lvl = 100;
+    if (lvl < 0) lvl = 0;
+    if (lvl > 100) lvl = 100;
     DrawSignalBars(right, lvl);
     auto *tag = lv_label_create(right);
     lv_obj_set_style_text_font(tag, &BUILTIN_TEXT_FONT, 0);
@@ -1246,7 +1247,7 @@ void SettingsView::OnLangEn(lv_event_t *e) {
 void SettingsView::On24hToggle(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
-    bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
     Settings("display", true).SetBool("clock_24h", on);
     self->SetStatus(on ? "Định dạng 24h" : "Định dạng 12h");
     self->ShowCategory(Cat::DateTime);
@@ -1298,7 +1299,7 @@ void SettingsView::OnReboot(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     self->OpenConfirmModal("Khởi động lại?", "Thiết bị sẽ khởi động lại ngay.", []() {
-        std::thread([]() { sync(); system("reboot"); }).detach();
+        std::thread([]() { sync(); (void)system("reboot"); }).detach();
     });
 }
 
@@ -1306,7 +1307,7 @@ void SettingsView::OnShutdown(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     self->OpenConfirmModal("Tắt máy?", "Thiết bị sẽ tắt ngay.", []() {
-        std::thread([]() { sync(); system("poweroff"); }).detach();
+        std::thread([]() { sync(); (void)system("poweroff"); }).detach();
     });
 }
 
