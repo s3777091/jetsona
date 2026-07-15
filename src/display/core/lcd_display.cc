@@ -1,5 +1,5 @@
-#include "lcd_display.h"
-#include "lvgl_theme.h"
+#include "display/core/lcd_display.h"
+#include "display/core/lvgl_theme.h"
 #include "lvgl_runtime.h"
 #include "fonts.h"
 #include "esp_log.h"

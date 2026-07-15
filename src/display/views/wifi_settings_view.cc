@@ -1,4 +1,6 @@
-#include "wifi_settings_view.h"
+#include "display/views/wifi_settings_view.h"
+#include "display/common/lvgl_utils.h"
+#include "display/common/signal_bars.h"
 #include "fonts.h"
 #include "esp_log.h"
 #include "lvgl_runtime.h"
@@ -12,11 +14,10 @@
 
 namespace home {
 
-namespace {
-lv_color_t Color(uint32_t rgb) {
-    return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
-}
+using jetson::ui::Color;
+using LvLockGuard = jetson::ui::LvglLockGuard;
 
+namespace {
 struct RowCtx {
     WifiSettingsView *self;
     std::string ssid;
@@ -28,17 +29,16 @@ void OnRowDeleted(lv_event_t *e) {
     delete ctx;
 }
 
-// LVGL is not thread-safe; every event callback touches objects and must hold
-// lv_lock (the worker threads lock separately). The handler loop does not hold
-// it for us, so we acquire it here.
-struct LvLockGuard {
-    LvLockGuard() { lv_lock(); }
-    ~LvLockGuard() { lv_unlock(); }
-};
 } // namespace
 
 WifiSettingsView::WifiSettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
-    : parent_(parent), width_(width), height_(height), on_closed_(std::move(on_closed)) {
+    : WifiSettingsView(parent, width, height, jetson::WifiManager::Instance(),
+                       std::move(on_closed)) {}
+
+WifiSettingsView::WifiSettingsView(lv_obj_t *parent, int width, int height,
+                                   jetson::IWifiManager &wifi, ClosedCb on_closed)
+    : wifi_(wifi), parent_(parent), width_(width), height_(height),
+      on_closed_(std::move(on_closed)) {
     if (!parent_) parent_ = lv_screen_active();
     BuildUi();
 }
@@ -51,9 +51,8 @@ WifiSettingsView::~WifiSettingsView() {
     closed_ = true;
     if (overlay_) {
         // May run on a worker thread; guard the LVGL deletion.
-        lv_lock();
+        LvLockGuard lock;
         lv_obj_del(overlay_);
-        lv_unlock();
         overlay_ = nullptr;
     }
 }
@@ -196,39 +195,6 @@ void WifiSettingsView::BuildUi() {
     lv_obj_add_event_cb(kb_keyboard_, OnCancel, LV_EVENT_CANCEL, this);
 }
 
-void WifiSettingsView::DrawSignalBars(lv_obj_t *parent, int signal) {
-    auto *bars = lv_obj_create(parent);
-    lv_obj_remove_style_all(bars);
-    lv_obj_set_size(bars, 36, 22);
-    lv_obj_clear_flag(bars, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(bars, 0, 0);
-    lv_obj_set_flex_flow(bars, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(bars, 2, 0);
-    lv_obj_set_flex_align(bars, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-
-    // 4 bars; fill count based on signal (0-100).
-    int filled = 0;
-    if (signal >= 75) filled = 4;
-    else if (signal >= 50) filled = 3;
-    else if (signal >= 25) filled = 2;
-    else if (signal > 0) filled = 1;
-    const int heights[4] = {8, 12, 16, 20};
-    for (int i = 0; i < 4; ++i) {
-        auto *bar = lv_obj_create(bars);
-        lv_obj_remove_style_all(bar);
-        lv_obj_set_size(bar, 6, heights[i]);
-        lv_obj_set_style_radius(bar, 1, 0);
-        lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-        if (i < filled) {
-            lv_obj_set_style_bg_color(bar, lv_color_white(), 0);
-            lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-        } else {
-            lv_obj_set_style_bg_color(bar, Color(0x555555), 0);
-            lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-        }
-    }
-}
-
 void WifiSettingsView::ClearRows() {
     if (!list_) return;
     lv_obj_clean(list_);
@@ -274,7 +240,7 @@ lv_obj_t *WifiSettingsView::CreateRow(const jetson::WifiNetwork &net, int index)
         lv_obj_set_style_text_color(lock, Color(0x9aa0a6), 0);
         lv_label_set_text(lock, LV_SYMBOL_KEYBOARD); // "needs password"
     }
-    DrawSignalBars(right, net.signal);
+    jetson::ui::CreateSignalBars(right, net.signal);
 
     if (net.in_use) {
         auto *tag = lv_label_create(row);
@@ -296,24 +262,23 @@ void WifiSettingsView::RenderList(const std::vector<jetson::WifiNetwork> &nets) 
 }
 
 void WifiSettingsView::StartScan() {
-    if (!jetson::WifiManager::Instance().Available()) {
+    if (!wifi_.Available()) {
         SetStatus("NetworkManager không sẵn sàng (cắm USB WiFi + kiểm tra nmcli).");
         return;
     }
     if (scanning_.exchange(true)) return;
     SetStatus("Đang quét WiFi...");
     std::thread([self = shared_from_this()]() {
-        auto nets = jetson::WifiManager::Instance().Scan();
-        lv_lock();
+        auto nets = self->wifi_.Scan();
+        LvLockGuard lock;
         self->scanning_ = false;
         if (!self->closed_.load()) {
             self->last_networks_ = std::move(nets);
             self->RenderList(self->last_networks_);
-            auto active = jetson::WifiManager::Instance().ActiveSsid();
+            auto active = self->wifi_.ActiveSsid();
             self->SetStatus(active.empty() ? "Chạm vào mạng để kết nối"
                                            : ("Đã kết nối: " + active).c_str());
         }
-        lv_unlock();
     }).detach();
 }
 
@@ -335,17 +300,16 @@ void WifiSettingsView::DoConnect(const std::string &ssid, const std::string &pas
     HideKeyboard();
     SetStatus(("Đang kết nối " + ssid + "...").c_str());
     std::thread([self = shared_from_this(), ssid, password]() {
-        bool ok = jetson::WifiManager::Instance().Connect(ssid, password);
-        lv_lock();
+        bool ok = self->wifi_.Connect(ssid, password);
+        LvLockGuard lock;
         if (!self->closed_.load()) {
             if (ok) {
                 self->SetStatus(("Đã kết nối: " + ssid).c_str());
                 self->StartScan();
             } else {
-                self->SetStatus(("Lỗi: " + jetson::WifiManager::Instance().LastError()).c_str());
+                self->SetStatus(("Lỗi: " + self->wifi_.LastError()).c_str());
             }
         }
-        lv_unlock();
     }).detach();
 }
 

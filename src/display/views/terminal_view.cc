@@ -1,7 +1,8 @@
-#include "terminal_view.h"
+#include "display/views/terminal_view.h"
+#include "display/common/lvgl_utils.h"
 #include "esp_log.h"
 #include "fonts.h"
-#include "ui_theme.h"
+#include "display/theme/ui_theme.h"
 #include "lvgl_runtime.h"
 
 #include <lvgl.h>
@@ -21,17 +22,8 @@
 
 namespace home {
 
-namespace {
-lv_color_t Color(uint32_t rgb) {
-    return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
-}
-
-class LvLockGuard {
-public:
-    LvLockGuard() { lv_lock(); }
-    ~LvLockGuard() { lv_unlock(); }
-};
-} // namespace
+using jetson::ui::Color;
+using LvLockGuard = jetson::ui::LvglLockGuard;
 
 TerminalView::TerminalView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
     : OverlayView(parent, width, height, "Terminal", std::move(on_closed)) {
@@ -120,9 +112,8 @@ TerminalView::~TerminalView() {
     // Tear down the flush timer before the base deletes the overlay; the timer
     // callback touches output_label_ (a child of overlay_). lv_lock is not
     // recursive, so release it before ~OverlayView re-takes it.
-    lv_lock();
+    LvLockGuard lock;
     if (flush_timer_) { lv_timer_del(flush_timer_); flush_timer_ = nullptr; }
-    lv_unlock();
 }
 
 void TerminalView::OnStart() {

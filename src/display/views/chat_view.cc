@@ -1,6 +1,7 @@
-#include "chat_view.h"
+#include "display/views/chat_view.h"
+#include "display/common/lvgl_utils.h"
 #include "fonts.h"
-#include "ui_theme.h"
+#include "display/theme/ui_theme.h"
 #include "application.h"
 #include "lvgl_runtime.h"
 #include "esp_log.h"
@@ -15,17 +16,8 @@
 
 namespace home {
 
-namespace {
-lv_color_t Color(uint32_t rgb) {
-    return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
-}
-
-class LvLockGuard {
-public:
-    LvLockGuard() { lv_lock(); }
-    ~LvLockGuard() { lv_unlock(); }
-};
-} // namespace
+using jetson::ui::Color;
+using jetson::ui::LvglLockGuard;
 
 ChatView::ChatView(lv_obj_t *parent, int width, int height,
                    std::shared_ptr<jetson::Conversation> conv, ClosedCb on_closed)
@@ -123,7 +115,7 @@ void ChatView::OnStart() {
                                                  status = std::move(status)]() {
                 auto sp = weak.lock();
                 if (!sp) return;
-                LvLockGuard lk;
+                LvglLockGuard lock;
                 if (status == "start") {
                     sp->SetStatus((std::string("Dang go tool: ") + name + "...").c_str());
                 }
@@ -163,12 +155,12 @@ void ChatView::AddBubble(const std::string &role, const std::string &content) {
 }
 
 void ChatView::AppendMessage(const std::string &role, const std::string &content) {
-    LvLockGuard lk;
+    LvglLockGuard lock;
     AddBubble(role, content);
 }
 
 void ChatView::SetBusy(bool busy) {
-    LvLockGuard lk;
+    LvglLockGuard lock;
     if (send_btn_) {
         if (busy) lv_obj_add_state(send_btn_, LV_STATE_DISABLED);
         else      lv_obj_clear_state(send_btn_, LV_STATE_DISABLED);
@@ -180,7 +172,7 @@ void ChatView::DoSend() {
     if (!conv_) return;
     std::string text;
     {
-        LvLockGuard lk;
+        LvglLockGuard lock;
         if (conv_->busy()) return;
         const char *txt = lv_textarea_get_text(input_);
         text = txt ? txt : "";
@@ -223,7 +215,7 @@ void ChatView::OnInputReady(lv_event_t *e) {
 
 void ChatView::OnInputFocused(lv_event_t *e) {
     auto *self = static_cast<ChatView *>(lv_event_get_user_data(e));
-    LvLockGuard lk;
+    LvglLockGuard lock;
     if (self->keyboard_) lv_obj_clear_flag(self->keyboard_, LV_OBJ_FLAG_HIDDEN);
 }
 

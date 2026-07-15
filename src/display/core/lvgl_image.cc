@@ -1,4 +1,4 @@
-#include "lvgl_image.h"
+#include "display/core/lvgl_image.h"
 #include "esp_log.h"
 
 #include <cstdlib>

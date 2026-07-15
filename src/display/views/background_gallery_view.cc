@@ -1,8 +1,9 @@
-#include "background_gallery_view.h"
-#include "backgrounds.h"
+#include "display/views/background_gallery_view.h"
+#include "display/common/lvgl_utils.h"
+#include "display/home/backgrounds.h"
 #include "fonts.h"
 #include "settings.h"
-#include "ui_theme.h"
+#include "display/theme/ui_theme.h"
 #include "esp_log.h"
 
 #include <lvgl.h>
@@ -11,15 +12,8 @@
 
 namespace home {
 
-namespace {
-lv_color_t Color(uint32_t rgb) {
-    return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
-}
-struct LvLockGuard {
-    LvLockGuard() { lv_lock(); }
-    ~LvLockGuard() { lv_unlock(); }
-};
-} // namespace
+using jetson::ui::Color;
+using jetson::ui::LvglLockGuard;
 
 BackgroundGalleryView::BackgroundGalleryView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
     : OverlayView(parent, width, height, "Ảnh nền", std::move(on_closed)) {
@@ -33,11 +27,10 @@ BackgroundGalleryView::~BackgroundGalleryView() {
     // Tear down LVGL resources that reference our buffers before the base class
     // deletes the overlay. The load timer and popup live on the overlay; the
     // image dscs point into images_, which is freed when the member destructs.
-    lv_lock();
+    LvglLockGuard lock;
     if (load_timer_) { lv_timer_del(load_timer_); load_timer_ = nullptr; }
     if (popup_) { lv_obj_del(popup_); popup_ = nullptr; popup_card_ = nullptr; }
     for (auto *o : img_objs_) if (o) lv_image_set_src(o, nullptr);
-    lv_unlock();
     // cells_ + CellCtx objects are freed when the base class deletes overlay_
     // (OnCellDeleted runs for each cell and deletes its ctx).
 }
@@ -233,7 +226,7 @@ void BackgroundGalleryView::OnStart() {
 }
 
 void BackgroundGalleryView::OnCellClicked(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *ctx = static_cast<CellCtx *>(lv_event_get_user_data(e));
     ctx->self->OpenPopup(ctx->index);
 }
@@ -244,7 +237,7 @@ void BackgroundGalleryView::OnCellDeleted(lv_event_t *e) {
 }
 
 void BackgroundGalleryView::OnPopupDismiss(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<BackgroundGalleryView *>(lv_event_get_user_data(e));
     // Only dismiss when the click landed on the backdrop itself, not on the
     // card or a button (those have their own handlers).
@@ -252,7 +245,7 @@ void BackgroundGalleryView::OnPopupDismiss(lv_event_t *e) {
 }
 
 void BackgroundGalleryView::OnPopupDesktop(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<BackgroundGalleryView *>(lv_event_get_user_data(e));
     if (self->popup_index_ < self->files_.size()) {
         const std::string &file = self->files_[self->popup_index_];
@@ -265,7 +258,7 @@ void BackgroundGalleryView::OnPopupDesktop(lv_event_t *e) {
 }
 
 void BackgroundGalleryView::OnPopupSleep(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<BackgroundGalleryView *>(lv_event_get_user_data(e));
     if (self->popup_index_ < self->files_.size()) {
         const std::string &file = self->files_[self->popup_index_];
@@ -278,7 +271,7 @@ void BackgroundGalleryView::OnPopupSleep(lv_event_t *e) {
 }
 
 void BackgroundGalleryView::OnPopupDelete(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<BackgroundGalleryView *>(lv_event_get_user_data(e));
     self->DeleteImage(self->popup_index_);
 }
@@ -287,7 +280,7 @@ void BackgroundGalleryView::OnLoadTimer(lv_timer_t *t) {
     auto *self = static_cast<BackgroundGalleryView *>(lv_timer_get_user_data(t));
     // Runs on the LVGL handler thread, not the home refresh thread, so take the
     // LVGL lock to avoid racing the 1 Hz status refresh.
-    LvLockGuard lock;
+    LvglLockGuard lock;
     self->LoadNextImage();
 }
 

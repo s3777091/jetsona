@@ -1,8 +1,8 @@
 #ifndef LCD_DISPLAY_H
 #define LCD_DISPLAY_H
 
-#include "lvgl_display.h"
-#include "lvgl_font.h"
+#include "display/core/lvgl_display.h"
+#include "display/core/lvgl_font.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "font_awesome.h"

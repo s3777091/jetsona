@@ -1,8 +1,8 @@
 #ifndef LVGL_DISPLAY_H
 #define LVGL_DISPLAY_H
 
-#include "display.h"
-#include "lvgl_image.h"
+#include "display/core/display.h"
+#include "display/core/lvgl_image.h"
 
 #include <lvgl.h>
 #include "esp_timer.h"

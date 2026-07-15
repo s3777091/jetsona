@@ -1,5 +1,6 @@
 #include "bluetooth_manager.h"
 #include "esp_log.h"
+#include "platform/shell_command.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -12,31 +13,13 @@
 namespace jetson {
 
 namespace {
-
-int runCmd(const std::string &cmd, std::string &out) {
-    out.clear();
-    std::string full = cmd + " 2>&1";
-    FILE *p = popen(full.c_str(), "r");
-    if (!p) return -1;
-    char buf[1024];
-    while (fgets(buf, sizeof(buf), p)) out += buf;
-    return pclose(p);
-}
-
-std::string sh(const std::string &s) {
-    std::string r = "'";
-    for (char c : s) {
-        if (c == '\'') r += "'\\''";
-        else r += c;
-    }
-    r += "'";
-    return r;
-}
+using platform::QuoteShellArgument;
+using platform::RunShellCommand;
 
 // Run a multi-line bluetoothctl command script (piped to stdin).
 int runBt(const std::string &script, std::string &out) {
-    std::string cmd = "printf '%s' " + sh(script) + " | bluetoothctl";
-    return runCmd(cmd, out);
+    std::string cmd = "printf '%s' " + QuoteShellArgument(script) + " | bluetoothctl";
+    return RunShellCommand(cmd, out);
 }
 
 bool contains(const std::string &hay, const std::string &needle) {
@@ -70,7 +53,7 @@ BluetoothManager &BluetoothManager::Instance() {
 
 bool BluetoothManager::Available() const {
     std::string out;
-    int rc = runCmd("bluetoothctl show", out);
+    int rc = RunShellCommand("bluetoothctl show", out);
     if (rc != 0) { last_error_ = "bluetoothctl not available"; return false; }
     // `bluetoothctl show` prints "Controller <addr> <name>" when a controller
     // exists; otherwise "No default controller available".
@@ -94,7 +77,7 @@ bool BluetoothManager::PowerOff() {
 bool BluetoothManager::IsPowered() const {
     if (!Available()) return false;
     std::string out;
-    runCmd("bluetoothctl show", out);
+    RunShellCommand("bluetoothctl show", out);
     return fieldBool(out, "Powered");
 }
 
@@ -107,7 +90,7 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
     std::string scanCmd = "timeout " + std::to_string(duration_s) +
                           " bluetoothctl scan on";
     std::string junk;
-    runCmd(scanCmd, junk);
+    RunShellCommand(scanCmd, junk);
 
     std::string devicesOut;
     runBt("devices\n", devicesOut);

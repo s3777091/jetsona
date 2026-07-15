@@ -1,4 +1,4 @@
-#include "lvgl_theme.h"
+#include "display/core/lvgl_theme.h"
 #include <cstdlib>
 
 LvglTheme::LvglTheme(const std::string &name) : Theme(name) {}

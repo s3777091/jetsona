@@ -1,4 +1,5 @@
-#include "telex_ime.h"
+#include "display/widgets/telex_ime.h"
+#include "display/common/lvgl_utils.h"
 #include "fonts.h"
 #include "lvgl_runtime.h"
 
@@ -10,9 +11,7 @@ namespace home {
 
 namespace {
 
-lv_color_t Color(uint32_t rgb) {
-    return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
-}
+using jetson::ui::Color;
 
 // ---- UTF-8 helpers (Vietnamese precomposed chars are 2- or 3-byte) ----
 

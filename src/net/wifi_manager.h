@@ -22,32 +22,47 @@ struct WifiNetwork {
     bool in_use = false;  // currently connected
 };
 
-class WifiManager {
+class IWifiManager {
+public:
+    virtual ~IWifiManager() = default;
+
+    virtual bool Available() const = 0;
+    virtual bool IsEnabled() const = 0;
+    virtual bool Enable(bool on) = 0;
+    virtual std::string ActiveSsid() const = 0;
+    virtual std::vector<WifiNetwork> Scan() = 0;
+    virtual bool Connect(const std::string &ssid, const std::string &password) = 0;
+    virtual bool Disconnect() = 0;
+    virtual bool Forget(const std::string &ssid) = 0;
+    virtual std::string LastError() const = 0;
+};
+
+class WifiManager final : public IWifiManager {
 public:
     static WifiManager &Instance();
 
     // True if nmcli is installed and NetworkManager is active.
-    bool Available() const;
+    bool Available() const override;
 
     // True if the WiFi radio is powered on (`nmcli radio wifi`).
-    bool IsEnabled() const;
+    bool IsEnabled() const override;
     // Power the WiFi radio on/off (`nmcli radio wifi on|off`).
-    bool Enable(bool on);
+    bool Enable(bool on) override;
 
     // SSID of the currently connected WiFi, or "" if none.
-    std::string ActiveSsid() const;
+    std::string ActiveSsid() const override;
 
     // Scan and return networks sorted by signal desc. Blocking (~1-2s).
-    std::vector<WifiNetwork> Scan();
+    std::vector<WifiNetwork> Scan() override;
 
     // Connect to an SSID. password may be empty for open networks.
     // Returns true on success; sets LastError() on failure.
-    bool Connect(const std::string &ssid, const std::string &password);
+    bool Connect(const std::string &ssid, const std::string &password) override;
 
-    bool Disconnect();
-    bool Forget(const std::string &ssid);
+    bool Disconnect() override;
+    bool Forget(const std::string &ssid) override;
 
-    std::string LastError() const { return last_error_; }
+    std::string LastError() const override { return last_error_; }
 
 private:
     WifiManager() = default;

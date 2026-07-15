@@ -1,7 +1,10 @@
-#include "settings_view.h"
+#include "display/views/settings_view.h"
+#include "display/common/lvgl_utils.h"
+#include "display/common/signal_bars.h"
 #include "fonts.h"
-#include "ui_theme.h"
+#include "display/theme/ui_theme.h"
 #include "lvgl_runtime.h"
+#include "platform/shell_command.h"
 #include "settings.h"
 #include "esp_log.h"
 
@@ -24,30 +27,15 @@
 
 namespace home {
 
+using jetson::ui::Color;
+using LvLockGuard = jetson::ui::LvglLockGuard;
+
 namespace {
-
-lv_color_t Color(uint32_t rgb) {
-    return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
-}
-
-struct LvLockGuard {
-    LvLockGuard() { lv_lock(); }
-    ~LvLockGuard() { lv_unlock(); }
-};
-
 // Run `cmd` via /bin/sh, capture combined stdout+stderr (trimmed).
 std::string RunCapture(const std::string &cmd) {
-    std::string out;
-    FILE *p = popen((cmd + " 2>&1").c_str(), "r");
-    if (!p) return "";
-    char buf[256];
-    while (fgets(buf, sizeof(buf), p)) out += buf;
-    pclose(p);
-    while (!out.empty() && (out.back() == '\n' || out.back() == '\r' ||
-                            out.back() == ' ' || out.back() == '\t')) {
-        out.pop_back();
-    }
-    return out;
+    auto result = jetson::platform::RunShellCommand(cmd);
+    jetson::platform::TrimTrailingWhitespace(result.output);
+    return std::move(result.output);
 }
 
 // Sidebar glyphs (FONT_AWESOME / LV_SYMBOL).
@@ -99,6 +87,15 @@ std::shared_ptr<SettingsView> SettingsView::Self() {
 SettingsView::SettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
     : OverlayView(parent, width, height, "Cài đặt", std::move(on_closed)) {
     BuildShell();
+}
+
+SettingsView::SettingsView(lv_obj_t *parent, int width, int height,
+                           jetson::IWifiManager &wifi,
+                           jetson::IBluetoothManager &bluetooth,
+                           ClosedCb on_closed)
+    : SettingsView(parent, width, height, std::move(on_closed)) {
+    wifi_ = &wifi;
+    bluetooth_ = &bluetooth;
 }
 
 void SettingsView::BuildShell() {
@@ -580,14 +577,14 @@ void SettingsView::BuildAbout() {
 
 void SettingsView::WifiRefreshSwitch() {
     if (!wifi_switch_) return;
-    bool on = jetson::WifiManager::Instance().IsEnabled();
+    bool on = wifi_->IsEnabled();
     if (on) lv_obj_add_state(wifi_switch_, LV_STATE_CHECKED);
     else lv_obj_clear_state(wifi_switch_, LV_STATE_CHECKED);
 }
 
 void SettingsView::WifiRescan() {
     if (!wifi_list_) return;
-    if (!jetson::WifiManager::Instance().IsEnabled()) {
+    if (!wifi_->IsEnabled()) {
         SetStatus("WiFi đang tắt");
         wifi_nets_.clear();
         WifiRenderList();
@@ -595,17 +592,16 @@ void SettingsView::WifiRescan() {
     }
     SetStatus("Đang quét WiFi...");
     std::thread([self = Self()]() {
-        auto nets = jetson::WifiManager::Instance().Scan();
-        lv_lock();
+        auto nets = self->wifi_->Scan();
+        LvLockGuard lock;
         if (self) {
             self->wifi_nets_ = std::move(nets);
             self->wifi_scanned_ = true;
             self->WifiRenderList();
-            auto active = jetson::WifiManager::Instance().ActiveSsid();
+            auto active = self->wifi_->ActiveSsid();
             self->SetStatus(active.empty() ? "Chạm mạng để xem/kết nối"
                                            : ("Đã kết nối: " + active).c_str());
         }
-        lv_unlock();
     }).detach();
 }
 
@@ -662,7 +658,7 @@ void SettingsView::WifiCreateRow(const jetson::WifiNetwork &n) {
         lv_obj_set_style_text_color(lock, Color(p.sub_text), 0);
         lv_label_set_text(lock, LV_SYMBOL_EYE_CLOSE); // "secured"
     }
-    DrawSignalBars(right, n.signal);
+    jetson::ui::CreateSignalBars(right, n.signal);
     if (n.in_use) {
         auto *tag = lv_label_create(right);
         lv_obj_set_style_text_font(tag, &BUILTIN_TEXT_FONT, 0);
@@ -747,26 +743,24 @@ void SettingsView::WifiOpenModal(const WifiRowCtx &info) {
 void SettingsView::WifiDoConnect(const std::string &ssid, const std::string &pw) {
     SetStatus(("Đang kết nối " + ssid + "...").c_str());
     std::thread([self = Self(), ssid, pw]() {
-        bool ok = jetson::WifiManager::Instance().Connect(ssid, pw);
-        lv_lock();
+        bool ok = self->wifi_->Connect(ssid, pw);
+        LvLockGuard lock;
         if (self) {
             if (ok) { self->SetStatus(("Đã kết nối: " + ssid).c_str()); self->WifiRescan(); }
-            else self->SetStatus(("Lỗi: " + jetson::WifiManager::Instance().LastError()).c_str());
+            else self->SetStatus(("Lỗi: " + self->wifi_->LastError()).c_str());
         }
-        lv_unlock();
     }).detach();
 }
 
 void SettingsView::WifiDoForget(const std::string &ssid) {
     std::thread([self = Self(), ssid]() {
-        bool ok = jetson::WifiManager::Instance().Forget(ssid);
-        lv_lock();
+        bool ok = self->wifi_->Forget(ssid);
+        LvLockGuard lock;
         if (self) {
             self->SetStatus(ok ? ("Đã quên: " + ssid).c_str()
-                               : ("Lỗi: " + jetson::WifiManager::Instance().LastError()).c_str());
+                               : ("Lỗi: " + self->wifi_->LastError()).c_str());
             self->WifiRescan();
         }
-        lv_unlock();
     }).detach();
 }
 
@@ -776,14 +770,14 @@ void SettingsView::WifiDoForget(const std::string &ssid) {
 
 void SettingsView::BtRefreshSwitch() {
     if (!bt_switch_) return;
-    bool on = jetson::BluetoothManager::Instance().IsPowered();
+    bool on = bluetooth_->IsPowered();
     if (on) lv_obj_add_state(bt_switch_, LV_STATE_CHECKED);
     else lv_obj_clear_state(bt_switch_, LV_STATE_CHECKED);
 }
 
 void SettingsView::BtRescan() {
     if (!bt_list_) return;
-    if (!jetson::BluetoothManager::Instance().IsPowered()) {
+    if (!bluetooth_->IsPowered()) {
         SetStatus("Bluetooth đang tắt");
         bt_devs_.clear();
         BtRenderList();
@@ -791,15 +785,14 @@ void SettingsView::BtRescan() {
     }
     SetStatus("Đang quét Bluetooth...");
     std::thread([self = Self()]() {
-        auto devs = jetson::BluetoothManager::Instance().Scan(8);
-        lv_lock();
+        auto devs = self->bluetooth_->Scan(8);
+        LvLockGuard lock;
         if (self) {
             self->bt_devs_ = std::move(devs);
             self->bt_scanned_ = true;
             self->BtRenderList();
             self->SetStatus("Chạm thiết bị để kết nối/ngắt/quên");
         }
-        lv_unlock();
     }).detach();
 }
 
@@ -860,7 +853,7 @@ void SettingsView::BtCreateRow(const jetson::BtDevice &d) {
     int lvl = d.rssi + 100; // dBm (-100..0) -> 0..100
     if (lvl < 0) lvl = 0;
     if (lvl > 100) lvl = 100;
-    DrawSignalBars(right, lvl);
+    jetson::ui::CreateSignalBars(right, lvl);
     auto *tag = lv_label_create(right);
     lv_obj_set_style_text_font(tag, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(tag, d.connected ? Color(p.accent) : Color(p.sub_text), 0);
@@ -931,26 +924,24 @@ void SettingsView::BtOpenModal(const std::string &addr) {
 void SettingsView::BtDoAction(const std::string &addr, bool connected) {
     SetStatus(connected ? "Đang ngắt..." : "Đang kết nối...");
     std::thread([self = Self(), addr, connected]() {
-        bool ok = connected ? jetson::BluetoothManager::Instance().Disconnect(addr)
-                            : jetson::BluetoothManager::Instance().PairAndConnect(addr);
-        lv_lock();
+        bool ok = connected ? self->bluetooth_->Disconnect(addr)
+                            : self->bluetooth_->PairAndConnect(addr);
+        LvLockGuard lock;
         if (self) {
-            self->SetStatus(ok ? "Xong" : ("Lỗi: " + jetson::BluetoothManager::Instance().LastError()).c_str());
+            self->SetStatus(ok ? "Xong" : ("Lỗi: " + self->bluetooth_->LastError()).c_str());
             self->BtRescan();
         }
-        lv_unlock();
     }).detach();
 }
 
 void SettingsView::BtDoRemove(const std::string &addr) {
     std::thread([self = Self(), addr]() {
-        bool ok = jetson::BluetoothManager::Instance().Remove(addr);
-        lv_lock();
+        bool ok = self->bluetooth_->Remove(addr);
+        LvLockGuard lock;
         if (self) {
-            self->SetStatus(ok ? "Đã quên thiết bị" : ("Lỗi: " + jetson::BluetoothManager::Instance().LastError()).c_str());
+            self->SetStatus(ok ? "Đã quên thiết bị" : ("Lỗi: " + self->bluetooth_->LastError()).c_str());
             self->BtRescan();
         }
-        lv_unlock();
     }).detach();
 }
 
@@ -1069,31 +1060,6 @@ void SettingsView::OpenPinModal() {
     MakeButton(btns, "Hủy", 0x3a3a3a, OnModalClose);
 }
 
-void SettingsView::DrawSignalBars(lv_obj_t *parent, int level01, int bars) {
-    auto *cont = lv_obj_create(parent);
-    lv_obj_remove_style_all(cont);
-    lv_obj_set_size(cont, bars * 8, 22);
-    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(cont, 2, 0);
-    lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-    int filled = 0;
-    if (level01 >= 75) filled = 4;
-    else if (level01 >= 50) filled = 3;
-    else if (level01 >= 25) filled = 2;
-    else if (level01 > 0) filled = 1;
-    const int heights[4] = {8, 12, 16, 20};
-    for (int i = 0; i < bars; ++i) {
-        auto *bar = lv_obj_create(cont);
-        lv_obj_remove_style_all(bar);
-        lv_obj_set_size(bar, 6, heights[i]);
-        lv_obj_set_style_radius(bar, 1, 0);
-        lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_bg_color(bar, i < filled ? lv_color_white() : Color(0x555555), 0);
-        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    }
-}
-
 // =========================================================================
 // OnStart / OnResize
 // =========================================================================
@@ -1173,8 +1139,8 @@ void SettingsView::OnWifiSwitch(lv_event_t *e) {
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     bool on = lv_obj_has_state(self->wifi_switch_, LV_STATE_CHECKED);
     std::thread([self = self->Self(), on]() {
-        jetson::WifiManager::Instance().Enable(on);
-        lv_lock();
+        self->wifi_->Enable(on);
+        LvLockGuard lock;
         if (self) {
             self->wifi_scanned_ = false;
             self->SetStatus(on ? "Đang bật WiFi..." : "Đã tắt WiFi");
@@ -1182,7 +1148,6 @@ void SettingsView::OnWifiSwitch(lv_event_t *e) {
             if (on) self->WifiRescan();
             else { self->wifi_nets_.clear(); }
         }
-        lv_unlock();
     }).detach();
 }
 
@@ -1204,9 +1169,9 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     bool on = lv_obj_has_state(self->bt_switch_, LV_STATE_CHECKED);
     std::thread([self = self->Self(), on]() {
-        if (on) jetson::BluetoothManager::Instance().PowerOn();
-        else jetson::BluetoothManager::Instance().PowerOff();
-        lv_lock();
+        if (on) self->bluetooth_->PowerOn();
+        else self->bluetooth_->PowerOff();
+        LvLockGuard lock;
         if (self) {
             self->bt_scanned_ = false;
             self->SetStatus(on ? "Đang bật Bluetooth..." : "Đã tắt Bluetooth");
@@ -1214,7 +1179,6 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
             if (on) self->BtRescan();
             else self->bt_devs_.clear();
         }
-        lv_unlock();
     }).detach();
 }
 
@@ -1260,14 +1224,13 @@ void SettingsView::OnTzSelected(lv_event_t *e) {
     std::string tz = ctx->value;
     ctx->self->SetStatus(("Đang đặt múi giờ " + tz + "...").c_str());
     std::thread([self = ctx->self->Self(), tz]() {
-        RunCapture("timedatectl set-timezone " + tz);
+        RunCapture("timedatectl set-timezone " + jetson::platform::QuoteShellArgument(tz));
         Settings("system", true).SetString("timezone", tz);
-        lv_lock();
+        LvLockGuard lock;
         if (self) {
             self->SetStatus(("Múi giờ: " + tz).c_str());
             self->ShowCategory(Cat::DateTime);
         }
-        lv_unlock();
     }).detach();
 }
 

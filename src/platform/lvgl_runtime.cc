@@ -15,7 +15,7 @@
 #include "esp_log.h"
 
 #include "lvgl.h"
-#include "lvgl_image.h"
+#include "display/core/lvgl_image.h"
 
 #define TAG "lvgl"
 

@@ -1,12 +1,13 @@
-#include "ds02_home_display.h"
-#include "backgrounds.h"
+#include "display/home/ds02_home_display.h"
+#include "display/common/lvgl_utils.h"
+#include "display/home/backgrounds.h"
 #include "board.h"
 #include "fonts.h"
 #include "settings.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "font_awesome.h"
-#include "ui_theme.h"
+#include "display/theme/ui_theme.h"
 
 #include <lvgl.h>
 #include <algorithm>
@@ -20,7 +21,7 @@
 
 namespace {
 int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
-lv_color_t Color(uint32_t rgb) { return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff); }
+using jetson::ui::Color;
 
 // Brightness (15..100) -> black-scrim opacity for the full-screen brightness
 // overlay. The scrim is CAPPED at LV_OPA_70 (~70% black) so the lowest setting

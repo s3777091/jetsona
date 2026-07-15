@@ -1,5 +1,5 @@
 #include "board.h"
-#include "ds02_home_display.h"
+#include "display/home/ds02_home_display.h"
 #include "lvgl_runtime.h"
 #include "fonts.h"
 #include "settings.h"

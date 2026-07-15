@@ -1,9 +1,9 @@
 #pragma once
 
-#include "overlay_view.h"
-#include "telex_ime.h"
-#include "wifi_manager.h"
-#include "bluetooth_manager.h"
+#include "display/views/overlay_view.h"
+#include "display/widgets/telex_ime.h"
+#include "net/bluetooth_manager.h"
+#include "net/wifi_manager.h"
 
 #include <lvgl.h>
 #include <functional>
@@ -29,6 +29,9 @@ namespace home {
 class SettingsView : public OverlayView {
 public:
     SettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
+    SettingsView(lv_obj_t *parent, int width, int height,
+                 jetson::IWifiManager &wifi, jetson::IBluetoothManager &bluetooth,
+                 ClosedCb on_closed);
 
     void SetBrightnessApplier(std::function<void(int)> cb) { brightness_cb_ = std::move(cb); }
     void SetVolumeApplier(std::function<void(int, bool)> cb) { volume_cb_ = std::move(cb); }
@@ -39,6 +42,11 @@ protected:
     void OnResize(int w, int h) override;
 
 private:
+    // Dependencies are non-owning and must outlive the view. Production uses
+    // the process-wide managers; tests can provide deterministic fakes.
+    jetson::IWifiManager *wifi_ = &jetson::WifiManager::Instance();
+    jetson::IBluetoothManager *bluetooth_ = &jetson::BluetoothManager::Instance();
+
     enum class Cat {
         Appearance, Display, Sound, Wifi, Bluetooth, Keyboard, DateTime, Power, About
     };
@@ -139,7 +147,6 @@ private:
 
     // ---- helpers ----
     std::shared_ptr<SettingsView> Self();
-    static void DrawSignalBars(lv_obj_t *parent, int level01, int bars = 4);
     static void OnSideClicked(lv_event_t *e);
     static void OnSideDeleted(lv_event_t *e);
     static void OnWifiRowDeleted(lv_event_t *e);

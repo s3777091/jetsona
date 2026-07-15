@@ -1,6 +1,7 @@
-#include "documents_view.h"
+#include "display/views/documents_view.h"
+#include "display/common/lvgl_utils.h"
 #include "fonts.h"
-#include "ui_theme.h"
+#include "display/theme/ui_theme.h"
 
 #include <lvgl.h>
 
@@ -15,15 +16,10 @@
 
 namespace home {
 
-namespace {
-lv_color_t Color(uint32_t rgb) {
-    return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
-}
-struct LvLockGuard {
-    LvLockGuard() { lv_lock(); }
-    ~LvLockGuard() { lv_unlock(); }
-};
+using jetson::ui::Color;
+using jetson::ui::LvglLockGuard;
 
+namespace {
 bool CaseLess(const std::string &a, const std::string &b) {
     auto cmp = [](char x, char y) {
         return std::tolower(static_cast<unsigned char>(x)) <
@@ -51,10 +47,9 @@ DocumentsView::DocumentsView(lv_obj_t *parent, int width, int height, ClosedCb o
 }
 
 DocumentsView::~DocumentsView() {
-    lv_lock();
+    LvglLockGuard lock;
     if (nav_timer_) { lv_timer_del(nav_timer_); nav_timer_ = nullptr; }
     if (popup_) { lv_obj_del(popup_); popup_ = nullptr; popup_card_ = nullptr; }
-    lv_unlock();
     // cells_ + CellCtx are freed when the base class deletes overlay_
     // (OnEntryDeleted runs for each cell and deletes its ctx).
 }
@@ -243,7 +238,7 @@ void DocumentsView::BuildGrid() {
 
 void DocumentsView::Rescan() {
     // Caller holds the LVGL lock (DisplayLockGuard during construction, or
-    // LvLockGuard from the click handlers), so it is not re-taken here -- lv_lock
+    // LvglLockGuard from the click handlers), so it is not re-taken here -- lv_lock
     // is not recursive (see ~OverlayView / ~BackgroundGalleryView).
     entries_.clear();
     DIR *d = opendir(current_path_.c_str());
@@ -409,18 +404,18 @@ void DocumentsView::OnResize(int w, int h) {
 }
 
 void DocumentsView::OnBack(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<DocumentsView *>(lv_event_get_user_data(e));
     self->GoBack();
 }
 void DocumentsView::OnForward(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<DocumentsView *>(lv_event_get_user_data(e));
     self->GoForward();
 }
 
 void DocumentsView::OnEntryClicked(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *ctx = static_cast<CellCtx *>(lv_event_get_user_data(e));
     auto *self = ctx->self;
     if (ctx->index >= self->entries_.size()) return;
@@ -435,7 +430,7 @@ void DocumentsView::OnEntryClicked(lv_event_t *e) {
 }
 
 void DocumentsView::OnNavTimer(lv_timer_t *t) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<DocumentsView *>(lv_timer_get_user_data(t));
     lv_timer_del(t);
     self->nav_timer_ = nullptr;
@@ -448,14 +443,14 @@ void DocumentsView::OnEntryDeleted(lv_event_t *e) {
 }
 
 void DocumentsView::OnPopupDismiss(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<DocumentsView *>(lv_event_get_user_data(e));
     // Only dismiss when the click landed on the backdrop, not the card/button.
     if (lv_event_get_target(e) == self->popup_) self->ClosePopup();
 }
 
 void DocumentsView::OnPopupClose(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<DocumentsView *>(lv_event_get_user_data(e));
     self->ClosePopup();
 }

@@ -24,30 +24,45 @@ struct BtDevice {
     int rssi = 0;          // dBm, negative (0 if unknown)
 };
 
-class BluetoothManager {
+class IBluetoothManager {
+public:
+    virtual ~IBluetoothManager() = default;
+
+    virtual bool Available() const = 0;
+    virtual bool PowerOn() = 0;
+    virtual bool PowerOff() = 0;
+    virtual bool IsPowered() const = 0;
+    virtual std::vector<BtDevice> Scan(int duration_s = 8) = 0;
+    virtual bool PairAndConnect(const std::string &address) = 0;
+    virtual bool Disconnect(const std::string &address) = 0;
+    virtual bool Remove(const std::string &address) = 0;
+    virtual std::string LastError() const = 0;
+};
+
+class BluetoothManager final : public IBluetoothManager {
 public:
     static BluetoothManager &Instance();
 
     // True if bluetoothctl is installed and a controller is present.
-    bool Available() const;
+    bool Available() const override;
 
     // Power on the adapter (no-op if already on).
-    bool PowerOn();
+    bool PowerOn() override;
     // Power off the adapter.
-    bool PowerOff();
+    bool PowerOff() override;
     // True if the adapter is powered on (`bluetoothctl show` -> Powered: yes).
-    bool IsPowered() const;
+    bool IsPowered() const override;
 
     // Scan for `duration_s` seconds, then return all known devices. Blocking.
-    std::vector<BtDevice> Scan(int duration_s = 8);
+    std::vector<BtDevice> Scan(int duration_s = 8) override;
 
     // Pair + trust + connect to a device by address. Returns true if connected.
-    bool PairAndConnect(const std::string &address);
+    bool PairAndConnect(const std::string &address) override;
 
-    bool Disconnect(const std::string &address);
-    bool Remove(const std::string &address);
+    bool Disconnect(const std::string &address) override;
+    bool Remove(const std::string &address) override;
 
-    std::string LastError() const { return last_error_; }
+    std::string LastError() const override { return last_error_; }
 
 private:
     BluetoothManager() = default;

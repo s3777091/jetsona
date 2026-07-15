@@ -12,7 +12,7 @@
  * the view is shared_ptr-owned so the worker can outlive the on-screen overlay;
  * the back button closes via a deferred one-shot lv_timer. */
 
-#include "bluetooth_manager.h"
+#include "net/bluetooth_manager.h"
 
 #include <lvgl.h>
 #include <atomic>
@@ -29,18 +29,21 @@ public:
     using ClosedCb = std::function<void()>;
 
     BluetoothSettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
+    BluetoothSettingsView(lv_obj_t *parent, int width, int height,
+                          jetson::IBluetoothManager &bluetooth, ClosedCb on_closed);
     ~BluetoothSettingsView();
 
     void Start();
     void RequestClose();
 
 private:
+    jetson::IBluetoothManager &bluetooth_;
+
     void BuildUi();
     void StartScan();
     void RenderList(const std::vector<jetson::BtDevice> &devs);
     void ClearRows();
     lv_obj_t *CreateRow(const jetson::BtDevice &dev);
-    void DrawSignalBars(lv_obj_t *parent, int rssi_dbm);
     void DoAction(const std::string &address, bool connected);
     void SetStatus(const char *text);
 

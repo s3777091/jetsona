@@ -1,4 +1,4 @@
-#include "lvgl_display.h"
+#include "display/core/lvgl_display.h"
 #include "esp_log.h"
 #include "esp_err.h"
 

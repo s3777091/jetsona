@@ -13,7 +13,7 @@
  * lv_timer so we never destroy `*this` from inside one of its own event
  * callbacks. */
 
-#include "wifi_manager.h"
+#include "net/wifi_manager.h"
 
 #include <lvgl.h>
 #include <atomic>
@@ -30,6 +30,8 @@ public:
     using ClosedCb = std::function<void()>;
 
     WifiSettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
+    WifiSettingsView(lv_obj_t *parent, int width, int height,
+                     jetson::IWifiManager &wifi, ClosedCb on_closed);
     ~WifiSettingsView();
 
     // Kick off the first scan. Must be called AFTER the object is owned by a
@@ -41,12 +43,13 @@ public:
     void RequestClose();
 
 private:
+    jetson::IWifiManager &wifi_;
+
     void BuildUi();
     void StartScan();
     void RenderList(const std::vector<jetson::WifiNetwork> &nets);
     void ClearRows();
     lv_obj_t *CreateRow(const jetson::WifiNetwork &net, int index);
-    void DrawSignalBars(lv_obj_t *parent, int signal);
     void ShowKeyboardFor(const std::string &ssid);
     void HideKeyboard();
     void DoConnect(const std::string &ssid, const std::string &password);

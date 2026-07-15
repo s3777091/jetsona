@@ -1,9 +1,9 @@
 #ifndef LVGL_THEME_H
 #define LVGL_THEME_H
 
-#include "display.h"
-#include "lvgl_image.h"
-#include "lvgl_font.h"
+#include "display/core/display.h"
+#include "display/core/lvgl_font.h"
+#include "display/core/lvgl_image.h"
 
 #include <lvgl.h>
 #include <memory>

@@ -1,4 +1,5 @@
-#include "lock_screen_view.h"
+#include "display/views/lock_screen_view.h"
+#include "display/common/lvgl_utils.h"
 #include "fonts.h"
 #include "settings.h"
 
@@ -7,15 +8,8 @@
 
 namespace home {
 
-namespace {
-lv_color_t Color(uint32_t rgb) {
-    return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
-}
-struct LvLockGuard {
-    LvLockGuard() { lv_lock(); }
-    ~LvLockGuard() { lv_unlock(); }
-};
-} // namespace
+using jetson::ui::Color;
+using jetson::ui::LvglLockGuard;
 
 LockScreenView::LockScreenView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
     : parent_(parent), width_(width), height_(height), on_closed_(std::move(on_closed)) {
@@ -72,9 +66,8 @@ LockScreenView::~LockScreenView() {
     closed_ = true;
     if (overlay_) {
         // May run on a worker thread; guard the LVGL deletion.
-        lv_lock();
+        LvglLockGuard lock;
         lv_obj_del(overlay_);
-        lv_unlock();
         overlay_ = nullptr;
         input_ = nullptr; // freed via its LV_EVENT_DELETE -> delete self
     }
@@ -111,13 +104,13 @@ void LockScreenView::OnCloseTimer(lv_timer_t *t) {
 }
 
 void LockScreenView::OnUnlock(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<LockScreenView *>(lv_event_get_user_data(e));
     self->CheckPin();
 }
 
 void LockScreenView::OnPinReady(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<LockScreenView *>(lv_event_get_user_data(e));
     self->CheckPin();
 }

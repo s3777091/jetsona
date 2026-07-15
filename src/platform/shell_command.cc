@@ -1,6 +1,7 @@
 #include "platform/shell_command.h"
 
 #include <cstdio>
+#include <utility>
 
 namespace jetson::platform {
 
@@ -13,6 +14,12 @@ ShellCommandResult RunShellCommand(const std::string &command) {
     while (fgets(buffer, sizeof(buffer), process)) result.output += buffer;
     result.status = pclose(process);
     return result;
+}
+
+int RunShellCommand(const std::string &command, std::string &output) {
+    auto result = RunShellCommand(command);
+    output = std::move(result.output);
+    return result.status;
 }
 
 std::string QuoteShellArgument(const std::string &value) {

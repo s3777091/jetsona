@@ -9,7 +9,7 @@
  * The expected PIN is read from Settings("system").GetString("pin"); home does
  * not open this view when no PIN is set. Wrong PIN flashes a message and
  * clears the field. */
-#include "telex_ime.h"
+#include "display/widgets/telex_ime.h"
 
 #include <lvgl.h>
 #include <atomic>

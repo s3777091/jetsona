@@ -1,6 +1,6 @@
 #pragma once
 
-#include "overlay_view.h"
+#include "display/views/overlay_view.h"
 
 #include <lvgl.h>
 #include <string>

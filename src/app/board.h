@@ -1,7 +1,7 @@
 #ifndef BOARD_H
 #define BOARD_H
 
-#include "display.h"
+#include "display/core/display.h"
 #include "audio_codec.h"
 #include "backlight.h"
 #include "led.h"

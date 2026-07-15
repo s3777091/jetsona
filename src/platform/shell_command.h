@@ -14,6 +14,9 @@ struct ShellCommandResult {
 // Runs a trusted command through /bin/sh and captures stdout plus stderr.
 ShellCommandResult RunShellCommand(const std::string &command);
 
+// Convenience overload for call sites that only need the process status.
+int RunShellCommand(const std::string &command, std::string &output);
+
 // Quotes one untrusted value for safe interpolation as a single shell argument.
 std::string QuoteShellArgument(const std::string &value);
 

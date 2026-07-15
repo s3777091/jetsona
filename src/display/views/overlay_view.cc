@@ -1,21 +1,15 @@
-#include "overlay_view.h"
+#include "display/views/overlay_view.h"
+#include "display/common/lvgl_utils.h"
 #include "fonts.h"
-#include "ui_theme.h"
+#include "display/theme/ui_theme.h"
 
 #include <lvgl.h>
 #include <cstring>
 
 namespace home {
 
-namespace {
-lv_color_t Color(uint32_t rgb) {
-    return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
-}
-struct LvLockGuard {
-    LvLockGuard() { lv_lock(); }
-    ~LvLockGuard() { lv_unlock(); }
-};
-} // namespace
+using jetson::ui::Color;
+using jetson::ui::LvglLockGuard;
 
 OverlayView::OverlayView(lv_obj_t *parent, int width, int height, const char *title, ClosedCb on_closed)
     : width_(width), height_(height), parent_(parent), title_(title ? title : ""),
@@ -26,10 +20,9 @@ OverlayView::OverlayView(lv_obj_t *parent, int width, int height, const char *ti
 
 OverlayView::~OverlayView() {
     closed_ = true;
-    lv_lock();
+    LvglLockGuard lock;
     if (restore_btn_) { lv_obj_del(restore_btn_); restore_btn_ = nullptr; }
     if (overlay_) { lv_obj_del(overlay_); overlay_ = nullptr; }
-    lv_unlock();
 }
 
 void OverlayView::BuildShell(const char *title) {
@@ -142,25 +135,25 @@ void OverlayView::OnCloseTimer(lv_timer_t *t) {
 }
 
 void OverlayView::OnCloseBtn(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
     self->RequestClose();
 }
 
 void OverlayView::OnMinBtn(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
     self->Minimize();
 }
 
 void OverlayView::OnZoomBtn(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
     self->ToggleZoom();
 }
 
 void OverlayView::OnRestore(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
     self->Restore();
 }
@@ -223,7 +216,7 @@ void OverlayView::ToggleZoom() {
 }
 
 void OverlayView::OnRight(lv_event_t *e) {
-    LvLockGuard lock;
+    LvglLockGuard lock;
     auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
     if (self->right_cb_) self->right_cb_(self);
 }
