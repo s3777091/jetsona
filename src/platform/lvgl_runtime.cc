@@ -144,16 +144,20 @@ static void keyboard_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
  * moves the focus point but the user can't see where it is. Attach an
  * arrow-shaped cursor (macOS/Windows style) loaded from a small PNG.
  *
- * The cursor is parented to lv_layer_top() (not the active screen) so it stays
- * above every overlay/app view -- otherwise opening a full-screen app covers
- * the cursor and the pointer "disappears". lv_indev_set_cursor positions the
- * object's top-left at the pointer, and the arrow's tip sits at that corner, so
- * the hot-spot is the visible tip. The LvglImage is held in a function-local
- * static so its buffer outlives every cursor that references its dsc. */
+ * The cursor is parented to lv_layer_sys() -- the system layer renders above
+ * lv_layer_top() and above the active screen, so the cursor stays on top of
+ * every overlay/app view AND above the global status-bar pill and the
+ * brightness/tone scrims (which all live on lv_layer_top()). Parenting it to
+ * lv_layer_top() instead left it BELOW those objects: the centered status-bar
+ * pill (created after the cursor) covered it, so the pointer "disappeared" and
+ * the mouse seemed dead. lv_indev_set_cursor positions the object's top-left at
+ * the pointer, and the arrow's tip sits at that corner, so the hot-spot is the
+ * visible tip. The LvglImage is held in a function-local static so its buffer
+ * outlives every cursor that references its dsc. */
 static void attach_pointer_cursor(lv_indev_t *indev)
 {
     if (!indev) return;
-    lv_obj_t *cur = lv_image_create(lv_layer_top());
+    lv_obj_t *cur = lv_image_create(lv_layer_sys());
     lv_obj_remove_style_all(cur);
     static auto cursor_img = LvglImageFromFile("assets/icons/app/cursor.png");
     if (cursor_img) {
