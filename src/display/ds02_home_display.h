@@ -85,7 +85,6 @@ private:
     static void OnDockButtonEvent(lv_event_t *e);
     static void OnAppButtonClicked(lv_event_t *e);
     static void OnAppDeleted(lv_event_t *e);
-    static void OnStandbyGesture(lv_event_t *e);
     static void OnSplashOpa(void *var, int32_t v);
     static void OnSplashBar(void *var, int32_t v);
     static void OnSplashGone(lv_anim_t *a);

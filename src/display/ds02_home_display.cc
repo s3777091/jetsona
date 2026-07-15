@@ -231,9 +231,8 @@ void Ds02HomeDisplay::CreateStandbyObjects() {
     lv_obj_set_style_text_align(chat_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(chat_label_, "");
     lv_obj_align(chat_label_, LV_ALIGN_BOTTOM_MID, 0, -(kDockHeight + kDockBottomMargin + 80));
-
-    // Swipe up -> launcher, swipe down -> dim.
-    lv_obj_add_event_cb(standby_layer_, OnStandbyGesture, LV_EVENT_GESTURE, this);
+    // No swipe gestures: the panel has no working touch, so standby state
+    // changes only via the dock (folder icon toggles the app drawer).
 }
 
 void Ds02HomeDisplay::CreateDrawerObjects() {
@@ -244,8 +243,9 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
     lv_obj_set_style_bg_color(launcher_layer_, Color(p.bg), 0);
     lv_obj_set_style_bg_opa(launcher_layer_, LV_OPA_COVER, 0);
     lv_obj_clear_flag(launcher_layer_, LV_OBJ_FLAG_SCROLLABLE);
+    // Clickable so the drawer absorbs clicks on empty space (acts modal) and
+    // doesn't pass them through to the standby layer behind it.
     lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(launcher_layer_, OnStandbyGesture, LV_EVENT_GESTURE, this);
 
     // ---- App drawer grid (the DS-02 launcher content) ----
     struct AppDef { const char *icon; const char *label; int id; };
@@ -543,16 +543,6 @@ void Ds02HomeDisplay::AdvanceStandbyButtonState() {
     ApplyStandbyState();
 }
 
-void Ds02HomeDisplay::OnStandbyGesture(lv_event_t *e) {
-    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
-    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
-    DisplayLockGuard lock(self);
-    if (dir == LV_DIR_TOP) { self->standby_state_ = StandbyState::Launcher; }
-    else if (dir == LV_DIR_BOTTOM) { self->standby_state_ = StandbyState::Awake; }
-    else if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT) { self->standby_state_ = StandbyState::Awake; }
-    self->ApplyStandbyState();
-}
-
 void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
     lv_obj_t *target = lv_event_get_current_target_obj(e);
@@ -589,12 +579,17 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     BounceDockButton(target);
 
     // Dock icons (in file order): calendar, folder, music, reminders, settings,
-    // siri, terminal. The folder icon opens the swipe-up app drawer (so it is
-    // reachable with a USB mouse even before touch works). music/reminders carry
-    // WiFi/BT; the wallpaper gallery moved into the drawer's "Ảnh" tile.
+    // siri, terminal. The folder icon toggles the app drawer open/closed (no
+    // touch swipe on this panel). music/reminders carry WiFi/BT; the wallpaper
+    // gallery moved into the drawer's "Ảnh" tile.
     switch (focused) {
     case 0: self->OpenCalendar(); break;
-    case 1: self->standby_state_ = StandbyState::Launcher; self->ApplyStandbyState(); break;
+    case 1: // folder -> toggle app drawer
+        self->standby_state_ = (self->standby_state_ == StandbyState::Launcher)
+                                   ? StandbyState::Awake
+                                   : StandbyState::Launcher;
+        self->ApplyStandbyState();
+        break;
     case 2: self->OpenWifiSettings(); break;
     case 3: self->OpenBluetoothSettings(); break;
     case 4: self->OpenSettings(); break;
