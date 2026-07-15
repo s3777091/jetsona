@@ -156,7 +156,10 @@ namespaces. Set `JETSON_SETTINGS_FILE` to relocate it.
 - evdev touch → LVGL pointer indev (DS-02 dock tap + swipe gestures).
 - DS-02 home UI: wallpaper (10 PNGs, cover-fit), clock, date, system bar
   (Wi-Fi icon + drawn battery + status/notification), bottom dock, and the
-  launcher with the avatar sphere. 1 Hz clock/status refresh.
+  launcher with the avatar sphere. The macOS-style glass dock uses OpenMoji
+  PNG icons, touch magnification, click bounce, and an active-app indicator.
+  Icon attribution is in `assets/icons/ATTRIBUTION.md`. 1 Hz clock/status
+  refresh.
 - **On-screen WiFi provisioning:** tap the gear (settings) dock button to open
   a WiFi screen that scans networks (`nmcli`), lists them with signal bars, and
   shows an on-screen keyboard for entering the password. Requires a **USB WiFi

@@ -69,6 +69,7 @@ private:
     void CreateLauncherObjects();
     void CreateSystemBarObjects();
     void CreateDockObjects();
+    void SetDockActive(int index);
     void CreateSphere(lv_obj_t *parent, int size);
     void RefreshClock();
     void RefreshBattery();
@@ -79,7 +80,7 @@ private:
     const char *GetBackgroundFile(size_t index) const;
     void SetTextColor(uint32_t color);
     static void OnRefreshTimer(void *arg);
-    static void OnDockButtonClicked(lv_event_t *e);
+    static void OnDockButtonEvent(lv_event_t *e);
     static void OnAppButtonClicked(lv_event_t *e);
     static void OnAppDeleted(lv_event_t *e);
     static void OnStandbyGesture(lv_event_t *e);
@@ -116,6 +117,9 @@ private:
     lv_obj_t *avatar_sphere_ = nullptr;
     lv_obj_t *dock_ = nullptr;
     std::array<lv_obj_t *, kDockItemCount> dock_buttons_ = {};
+    std::array<lv_obj_t *, kDockItemCount> dock_indicators_ = {};
+    std::array<std::unique_ptr<LvglImage>, kDockItemCount> dock_icon_cache_ = {};
+    int dock_active_index_ = -1;
 
     std::array<std::unique_ptr<LvglImage>, kBackgroundCount> background_image_cache_ = {};
     size_t background_index_ = 0;

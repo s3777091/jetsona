@@ -23,9 +23,75 @@ int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 lv_color_t Color(uint32_t rgb) { return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff); }
 
 constexpr int kSystemBarHeight = 28;
-constexpr int kDockHeight = 56;
-constexpr int kDockBottomMargin = 8;
+constexpr int kDockHeight = 78;
+constexpr int kDockBottomMargin = 6;
+constexpr int kDockButtonSize = 50;
+constexpr int kDockItemHeight = 64;
+constexpr int kDockScaleNormal = 256;
+constexpr int kDockScaleNeighbor = 278;
+constexpr int kDockScaleFocused = 318;
 constexpr uint64_t kRefreshIntervalUs = 1000000; // 1s
+
+void DockScaleAnim(void *var, int32_t value) {
+    lv_obj_set_style_transform_scale(static_cast<lv_obj_t *>(var), value, 0);
+}
+
+void DockTranslateAnim(void *var, int32_t value) {
+    lv_obj_set_style_translate_y(static_cast<lv_obj_t *>(var), value, 0);
+}
+
+void AnimateDockButton(lv_obj_t *button, int32_t scale, int32_t translate_y,
+                       uint32_t duration = 130) {
+    if (!button) return;
+
+    lv_anim_delete(button, DockScaleAnim);
+    lv_anim_t scale_anim;
+    lv_anim_init(&scale_anim);
+    lv_anim_set_var(&scale_anim, button);
+    lv_anim_set_values(&scale_anim,
+                       lv_obj_get_style_transform_scale_x(button, 0), scale);
+    lv_anim_set_time(&scale_anim, duration);
+    lv_anim_set_exec_cb(&scale_anim, DockScaleAnim);
+    lv_anim_set_path_cb(&scale_anim, lv_anim_path_ease_out);
+    lv_anim_start(&scale_anim);
+
+    lv_anim_delete(button, DockTranslateAnim);
+    lv_anim_t translate_anim;
+    lv_anim_init(&translate_anim);
+    lv_anim_set_var(&translate_anim, button);
+    lv_anim_set_values(&translate_anim,
+                       lv_obj_get_style_translate_y(button, 0), translate_y);
+    lv_anim_set_time(&translate_anim, duration);
+    lv_anim_set_exec_cb(&translate_anim, DockTranslateAnim);
+    lv_anim_set_path_cb(&translate_anim, lv_anim_path_ease_out);
+    lv_anim_start(&translate_anim);
+}
+
+void BounceDockButton(lv_obj_t *button) {
+    if (!button) return;
+
+    lv_anim_delete(button, DockScaleAnim);
+    lv_anim_t scale_anim;
+    lv_anim_init(&scale_anim);
+    lv_anim_set_var(&scale_anim, button);
+    lv_anim_set_values(&scale_anim, kDockScaleNormal, 292);
+    lv_anim_set_time(&scale_anim, 90);
+    lv_anim_set_playback_time(&scale_anim, 140);
+    lv_anim_set_exec_cb(&scale_anim, DockScaleAnim);
+    lv_anim_set_path_cb(&scale_anim, lv_anim_path_ease_out);
+    lv_anim_start(&scale_anim);
+
+    lv_anim_delete(button, DockTranslateAnim);
+    lv_anim_t translate_anim;
+    lv_anim_init(&translate_anim);
+    lv_anim_set_var(&translate_anim, button);
+    lv_anim_set_values(&translate_anim, 0, -8);
+    lv_anim_set_time(&translate_anim, 90);
+    lv_anim_set_playback_time(&translate_anim, 140);
+    lv_anim_set_exec_cb(&translate_anim, DockTranslateAnim);
+    lv_anim_set_path_cb(&translate_anim, lv_anim_path_ease_out);
+    lv_anim_start(&translate_anim);
+}
 
 // Filenames live in backgrounds.h (shared with the gallery).
 } // namespace
@@ -333,41 +399,116 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
 }
 
 void Ds02HomeDisplay::CreateDockObjects() {
-    int dock_width = Clamp(width_ - 80, 420, 640);
+    const int dock_width = Clamp(width_ - 180, 388, 520);
     dock_ = lv_obj_create(root_);
     lv_obj_remove_style_all(dock_);
     lv_obj_set_size(dock_, dock_width, kDockHeight);
-    lv_obj_set_style_radius(dock_, kDockHeight / 2, 0);
-    lv_obj_set_style_bg_color(dock_, Color(0x1c1c1e), 0);
+    lv_obj_set_style_radius(dock_, 24, 0);
+    lv_obj_set_style_bg_color(dock_, Color(0x202126), 0);
     lv_obj_set_style_bg_opa(dock_, LV_OPA_80, 0);
-    lv_obj_set_style_border_width(dock_, 0, 0);
-    lv_obj_set_style_pad_all(dock_, 6, 0);
-    lv_obj_set_style_pad_column(dock_, 6, 0);
+    lv_obj_set_style_border_width(dock_, 1, 0);
+    lv_obj_set_style_border_color(dock_, lv_color_white(), 0);
+    lv_obj_set_style_border_opa(dock_, LV_OPA_30, 0);
+    lv_obj_set_style_shadow_color(dock_, lv_color_black(), 0);
+    lv_obj_set_style_shadow_width(dock_, 18, 0);
+    lv_obj_set_style_shadow_offset_y(dock_, 5, 0);
+    lv_obj_set_style_shadow_opa(dock_, LV_OPA_40, 0);
+    lv_obj_set_style_pad_left(dock_, 8, 0);
+    lv_obj_set_style_pad_right(dock_, 8, 0);
+    lv_obj_set_style_pad_top(dock_, 6, 0);
+    lv_obj_set_style_pad_bottom(dock_, 6, 0);
+    lv_obj_set_style_pad_column(dock_, 4, 0);
     lv_obj_set_flex_flow(dock_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(dock_, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(dock_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(dock_, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
     lv_obj_align(dock_, LV_ALIGN_BOTTOM_MID, 0, -kDockBottomMargin);
 
-    const char *icons[kDockItemCount] = {
+    static const char *kIconFiles[kDockItemCount] = {
+        "assets/icons/microphone.png", "assets/icons/music.png",
+        "assets/icons/study.png", "assets/icons/settings.png",
+        "assets/icons/book.png", "assets/icons/internet.png",
+    };
+    static const char *kFallbackIcons[kDockItemCount] = {
         FONT_AWESOME_MICROPHONE, FONT_AWESOME_MUSIC, FONT_AWESOME_GRADUATION_CAP,
         FONT_AWESOME_GEAR, FONT_AWESOME_BOOK_OPEN, FONT_AWESOME_GLOBE,
     };
+    static constexpr uint32_t kTileColors[kDockItemCount] = {
+        0x7357d9, 0xe04f5f, 0xe2aa36, 0x66707d, 0x29a58d, 0x3282d8,
+    };
+    static constexpr uint32_t kTileGradients[kDockItemCount] = {
+        0x3e2c91, 0x8f2535, 0x8a5c14, 0x343a43, 0x126354, 0x184c91,
+    };
+
     for (size_t i = 0; i < kDockItemCount; ++i) {
-        auto *btn = lv_obj_create(dock_);
+        auto *item = lv_obj_create(dock_);
+        lv_obj_remove_style_all(item);
+        lv_obj_set_size(item, kDockButtonSize + 2, kDockItemHeight);
+        lv_obj_clear_flag(item, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+        lv_obj_add_flag(item, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+
+        auto *btn = lv_obj_create(item);
         lv_obj_remove_style_all(btn);
-        lv_obj_set_size(btn, kDockHeight - 12, kDockHeight - 12);
-        lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(btn, Color(0x2a2a2e), 0);
+        lv_obj_set_size(btn, kDockButtonSize, kDockButtonSize);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_set_style_radius(btn, 14, 0);
+        lv_obj_set_style_bg_color(btn, Color(kTileColors[i]), 0);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_grad_color(btn, Color(kTileGradients[i]), 0);
+        lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_VER, 0);
+        lv_obj_set_style_border_width(btn, 1, 0);
+        lv_obj_set_style_border_color(btn, lv_color_white(), 0);
+        lv_obj_set_style_border_opa(btn, LV_OPA_30, 0);
+        lv_obj_set_style_shadow_color(btn, lv_color_black(), 0);
+        lv_obj_set_style_shadow_width(btn, 8, 0);
+        lv_obj_set_style_shadow_offset_y(btn, 3, 0);
+        lv_obj_set_style_shadow_opa(btn, LV_OPA_40, 0);
+        lv_obj_set_style_transform_pivot_x(btn, kDockButtonSize / 2, 0);
+        lv_obj_set_style_transform_pivot_y(btn, kDockButtonSize, 0);
+        lv_obj_set_style_transform_scale(btn, kDockScaleNormal, 0);
+        lv_obj_set_ext_click_area(btn, 4);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-        auto *lbl = lv_label_create(btn);
-        lv_obj_set_style_text_font(lbl, &BUILTIN_ICON_FONT, 0);
-        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
-        lv_label_set_text(lbl, icons[i]);
-        lv_obj_center(lbl);
-        lv_obj_add_event_cb(btn, OnDockButtonClicked, LV_EVENT_CLICKED, this);
+
+        dock_icon_cache_[i] = LvglImageFromFile(kIconFiles[i]);
+        if (dock_icon_cache_[i]) {
+            auto *icon = lv_image_create(btn);
+            lv_image_set_src(icon, dock_icon_cache_[i]->image_dsc());
+            lv_image_set_scale(icon, 146); // 72 px asset -> ~41 px on the dock.
+            lv_obj_center(icon);
+            lv_obj_clear_flag(icon, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+        } else {
+            auto *fallback = lv_label_create(btn);
+            lv_obj_set_style_text_font(fallback, &BUILTIN_ICON_FONT, 0);
+            lv_obj_set_style_text_color(fallback, lv_color_white(), 0);
+            lv_label_set_text(fallback, kFallbackIcons[i]);
+            lv_obj_center(fallback);
+        }
+
+        auto *indicator = lv_obj_create(item);
+        lv_obj_remove_style_all(indicator);
+        lv_obj_set_size(indicator, 5, 5);
+        lv_obj_set_style_radius(indicator, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(indicator, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(indicator, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_shadow_color(indicator, lv_color_black(), 0);
+        lv_obj_set_style_shadow_width(indicator, 4, 0);
+        lv_obj_set_style_shadow_opa(indicator, LV_OPA_40, 0);
+        lv_obj_align(indicator, LV_ALIGN_BOTTOM_MID, 0, -1);
+        lv_obj_clear_flag(indicator, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+        lv_obj_add_event_cb(btn, OnDockButtonEvent, LV_EVENT_ALL, this);
         dock_buttons_[i] = btn;
+        dock_indicators_[i] = indicator;
+    }
+}
+
+void Ds02HomeDisplay::SetDockActive(int index) {
+    dock_active_index_ = index;
+    for (size_t i = 0; i < kDockItemCount; ++i) {
+        if (!dock_indicators_[i]) continue;
+        lv_obj_set_style_bg_opa(dock_indicators_[i],
+                                static_cast<int>(i) == index ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     }
 }
 
@@ -410,9 +551,41 @@ void Ds02HomeDisplay::OnStandbyGesture(lv_event_t *e) {
     self->ApplyStandbyState();
 }
 
-void Ds02HomeDisplay::OnDockButtonClicked(lv_event_t *e) {
+void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
     lv_obj_t *target = lv_event_get_current_target_obj(e);
+    int focused = -1;
+    for (size_t i = 0; i < kDockItemCount; ++i) {
+        if (self->dock_buttons_[i] == target) {
+            focused = static_cast<int>(i);
+            break;
+        }
+    }
+    if (focused < 0) return;
+
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED) {
+        for (size_t i = 0; i < kDockItemCount; ++i) {
+            const int distance = std::abs(static_cast<int>(i) - focused);
+            const int scale = distance == 0 ? kDockScaleFocused
+                              : distance == 1 ? kDockScaleNeighbor
+                                              : kDockScaleNormal;
+            const int y = distance == 0 ? -10 : distance == 1 ? -3 : 0;
+            AnimateDockButton(self->dock_buttons_[i], scale, y);
+        }
+        return;
+    }
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        for (auto *button : self->dock_buttons_) {
+            AnimateDockButton(button, kDockScaleNormal, 0, 170);
+        }
+        return;
+    }
+    if (code != LV_EVENT_CLICKED) return;
+
+    self->SetDockActive(focused);
+    BounceDockButton(target);
+
     // Gear (index 3) -> WiFi settings; globe (index 5) -> Bluetooth settings.
     // All other dock buttons cycle the standby state as before.
     if (self->dock_buttons_[3] && target == self->dock_buttons_[3]) {
