@@ -43,9 +43,11 @@ struct RelativeMouseState {
     int fd = -1;
     int x = 0;
     int y = 0;
+    bool mousedev_protocol = false;
     lv_indev_state_t state = LV_INDEV_STATE_RELEASED;
     bool read_error_logged = false;
     bool motion_logged = false;
+    uint64_t poll_count = 0;
 };
 
 /* US-keyboard evdev keycode -> LVGL key. Returns 0 for unmapped / modifier-only
@@ -162,22 +164,44 @@ static void relative_mouse_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         return;
     }
 
-    struct input_event ev;
     ssize_t bytes = 0;
     bool moved = false;
-    while ((bytes = read(st->fd, &ev, sizeof(ev))) == (ssize_t)sizeof(ev)) {
-        if (ev.type == EV_REL) {
-            if (ev.code == REL_X) {
-                st->x += ev.value;
-                moved = moved || ev.value != 0;
-            }
-            else if (ev.code == REL_Y) {
-                st->y += ev.value;
-                moved = moved || ev.value != 0;
-            }
+
+    ++st->poll_count;
+    if (st->poll_count == 2) {
+        ESP_LOGI(TAG, "mouse: input polling active");
+    }
+
+    if (st->mousedev_protocol) {
+        /* /dev/input/mice uses the kernel's three-byte PS/2-compatible packet:
+         * flags/buttons, signed delta X, signed delta Y. Linux mouse Y is
+         * positive upwards, whereas LVGL screen Y is positive downwards. */
+        uint8_t packet[3];
+        while ((bytes = read(st->fd, packet, sizeof(packet))) == (ssize_t)sizeof(packet)) {
+            const int dx = static_cast<int8_t>(packet[1]);
+            const int dy = static_cast<int8_t>(packet[2]);
+            st->x += dx;
+            st->y -= dy;
+            moved = moved || dx != 0 || dy != 0;
+            st->state = (packet[0] & 0x01) ? LV_INDEV_STATE_PRESSED
+                                           : LV_INDEV_STATE_RELEASED;
         }
-        else if (ev.type == EV_KEY && ev.code == BTN_LEFT) {
-            st->state = ev.value ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    } else {
+        struct input_event ev;
+        while ((bytes = read(st->fd, &ev, sizeof(ev))) == (ssize_t)sizeof(ev)) {
+            if (ev.type == EV_REL) {
+                if (ev.code == REL_X) {
+                    st->x += ev.value;
+                    moved = moved || ev.value != 0;
+                }
+                else if (ev.code == REL_Y) {
+                    st->y += ev.value;
+                    moved = moved || ev.value != 0;
+                }
+            }
+            else if (ev.type == EV_KEY && ev.code == BTN_LEFT) {
+                st->state = ev.value ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+            }
         }
     }
 
@@ -198,7 +222,8 @@ static void relative_mouse_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         else if (st->y >= height) st->y = height - 1;
     }
     if (moved && !st->motion_logged) {
-        ESP_LOGI(TAG, "mouse: first REL_X/REL_Y event received at %d,%d", st->x, st->y);
+        ESP_LOGI(TAG, "mouse: first %s motion packet received at %d,%d",
+                 st->mousedev_protocol ? "mousedev" : "REL_X/REL_Y", st->x, st->y);
         st->motion_logged = true;
     }
 
@@ -542,13 +567,36 @@ void LvglRuntime::openMouse() {
         ESP_LOGW(TAG, "no evdev mouse found");
         return;
     }
-    int fd = open(devpath.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC);
+    /* Prefer the kernel's aggregate mousedev stream. It remains stable when
+     * event numbers change and works around HID receivers whose event node
+     * advertises REL_X/REL_Y but does not deliver motion to this process. A
+     * forced JETSON_MOUSE_DEVICE always wins. */
+    const bool forced_device = forced && forced[0];
+    std::string openpath = devpath;
+    bool mousedev_protocol = false;
+    if (!forced_device && access("/dev/input/mice", R_OK) == 0) {
+        openpath = "/dev/input/mice";
+        mousedev_protocol = true;
+    } else {
+        const size_t slash = openpath.find_last_of('/');
+        const std::string base = slash == std::string::npos ? openpath : openpath.substr(slash + 1);
+        mousedev_protocol = base == "mice" || base.rfind("mouse", 0) == 0;
+    }
+
+    int fd = open(openpath.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC);
+    if (fd < 0 && mousedev_protocol && !forced_device) {
+        ESP_LOGW(TAG, "mouse: open %s failed: %s; falling back to %s",
+                 openpath.c_str(), strerror(errno), devpath.c_str());
+        openpath = devpath;
+        mousedev_protocol = false;
+        fd = open(openpath.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC);
+    }
     if (fd < 0) {
-        ESP_LOGW(TAG, "mouse: open %s failed: %s", devpath.c_str(), strerror(errno));
+        ESP_LOGW(TAG, "mouse: open %s failed: %s", openpath.c_str(), strerror(errno));
         return;
     }
     if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
-        ESP_LOGW(TAG, "mouse: non-blocking mode failed for %s: %s", devpath.c_str(), strerror(errno));
+        ESP_LOGW(TAG, "mouse: non-blocking mode failed for %s: %s", openpath.c_str(), strerror(errno));
         close(fd);
         return;
     }
@@ -557,6 +605,7 @@ void LvglRuntime::openMouse() {
     st->fd = fd;
     st->x = lv_display_get_horizontal_resolution(display_) / 2;
     st->y = lv_display_get_vertical_resolution(display_) / 2;
+    st->mousedev_protocol = mousedev_protocol;
 
     lv_indev_t *m = lv_indev_create();
     if (!m) {
@@ -572,9 +621,19 @@ void LvglRuntime::openMouse() {
     /* Seed LVGL's current point before attaching the cursor so it appears in
      * the center rather than flashing once at (0, 0). */
     lv_indev_read(m);
+    /* Poll this input explicitly from StartHandler. This avoids depending on
+     * the generic LVGL indev timer, which did not run reliably on the fbdev
+     * loop on the Jetson Nano. */
+    lv_timer_pause(lv_indev_get_read_timer(m));
     attach_pointer_cursor(m);
     mouse_ = m;
-    ESP_LOGI(TAG, "mouse: %s (relative, start=%d,%d)", devpath.c_str(), st->x, st->y);
+    if (openpath != devpath) {
+        ESP_LOGI(TAG, "mouse: %s (mousedev, start=%d,%d, detected=%s)",
+                 openpath.c_str(), st->x, st->y, devpath.c_str());
+    } else {
+        ESP_LOGI(TAG, "mouse: %s (%s, start=%d,%d)", openpath.c_str(),
+                 mousedev_protocol ? "mousedev" : "evdev relative", st->x, st->y);
+    }
 }
 
 bool LvglRuntime::Init(int width, int height) {
@@ -617,8 +676,12 @@ void LvglRuntime::StartHandler() {
     running_ = true;
     handler_thread_ = std::thread([this]() {
         while (running_.load()) {
+            /* Read mouse immediately before rendering so cursor motion is
+             * flushed in this same LVGL cycle. */
+            if (mouse_) lv_indev_read(mouse_);
             uint32_t ms = lv_timer_handler();
-            if (ms == 0) ms = 5;
+            /* Never let a large "next timer" value stall interactive input. */
+            if (ms == 0 || ms > 5) ms = 5;
             std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         }
     });
