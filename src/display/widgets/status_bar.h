@@ -3,7 +3,7 @@
 /* iPhone-like Dynamic Island, parented to `lv_layer_top()` so it renders above
  * every full-screen view. The ordinary system information is deliberately
  * outside the island: time at the left, connectivity/battery/actions at the
- * right, and an opaque black sensor pill in the center.
+ * right, and an opaque black island pill in the center.
  *
  * A notification "blooms" the *same* pill into a larger rounded surface,
  * reveals a compact title/message, then smoothly returns to the sensor size.
@@ -43,7 +43,6 @@ public:
 private:
     lv_obj_t *status_strip_ = nullptr;
     lv_obj_t *pill_ = nullptr;
-    lv_obj_t *sensor_dot_ = nullptr;
     lv_obj_t *island_content_ = nullptr;
     lv_obj_t *island_icon_bg_ = nullptr;
     lv_obj_t *island_icon_ = nullptr;
@@ -69,6 +68,7 @@ private:
 
     std::chrono::steady_clock::time_point last_battery_read_{};
     int cached_battery_level_ = 100;
+    bool cached_battery_charging_ = false;
     bool has_battery_ = true;
     bool battery_read_done_ = false;
     bool low_warned_ = false;

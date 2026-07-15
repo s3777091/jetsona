@@ -67,44 +67,46 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     add_icon(&bt_label_, LV_SYMBOL_BLUETOOTH, OnBtClick);
     lv_obj_align(bt_label_, LV_ALIGN_RIGHT_MID, -154, 0);
 
-    battery_percent_label_ = lv_label_create(status_strip_);
-    lv_obj_set_style_text_font(battery_percent_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
-    lv_label_set_text(battery_percent_label_, "100%");
-    lv_obj_align(battery_percent_label_, LV_ALIGN_RIGHT_MID, -107, 0);
-
     battery_icon_root_ = lv_obj_create(status_strip_);
     lv_obj_remove_style_all(battery_icon_root_);
-    lv_obj_set_size(battery_icon_root_, 27, 16);
-    lv_obj_align(battery_icon_root_, LV_ALIGN_RIGHT_MID, -72, 0);
+    lv_obj_set_size(battery_icon_root_, 52, 20);
+    lv_obj_align(battery_icon_root_, LV_ALIGN_RIGHT_MID, -73, 0);
     lv_obj_clear_flag(battery_icon_root_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     battery_icon_body_ = lv_obj_create(battery_icon_root_);
     lv_obj_remove_style_all(battery_icon_body_);
-    lv_obj_set_size(battery_icon_body_, 23, 14);
-    lv_obj_set_pos(battery_icon_body_, 0, 1);
-    lv_obj_set_style_radius(battery_icon_body_, 3, 0);
+    lv_obj_set_size(battery_icon_body_, 47, 20);
+    lv_obj_set_pos(battery_icon_body_, 0, 0);
+    lv_obj_set_style_radius(battery_icon_body_, 6, 0);
     lv_obj_set_style_border_width(battery_icon_body_, 1, 0);
     lv_obj_set_style_border_color(battery_icon_body_, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(battery_icon_body_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(battery_icon_body_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(battery_icon_body_, LV_OPA_70, 0);
     lv_obj_clear_flag(battery_icon_body_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     battery_icon_fill_ = lv_obj_create(battery_icon_body_);
     lv_obj_remove_style_all(battery_icon_fill_);
-    lv_obj_set_size(battery_icon_fill_, 17, 10);
+    lv_obj_set_size(battery_icon_fill_, 41, 16);
     lv_obj_set_pos(battery_icon_fill_, 2, 1);
-    lv_obj_set_style_radius(battery_icon_fill_, 2, 0);
-    lv_obj_set_style_bg_color(battery_icon_fill_, lv_color_white(), 0);
+    lv_obj_set_style_radius(battery_icon_fill_, 4, 0);
+    lv_obj_set_style_bg_color(battery_icon_fill_, Color(0x34c759), 0);
     lv_obj_set_style_bg_opa(battery_icon_fill_, LV_OPA_COVER, 0);
     lv_obj_clear_flag(battery_icon_fill_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
+    // Percentage is drawn inside the battery body, above the colored fill.
+    battery_percent_label_ = lv_label_create(battery_icon_body_);
+    lv_obj_set_style_text_font(battery_percent_label_, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(battery_percent_label_, lv_color_black(), 0);
+    lv_label_set_text(battery_percent_label_, "100%");
+    lv_obj_center(battery_percent_label_);
+
     auto *nub = lv_obj_create(battery_icon_root_);
     lv_obj_remove_style_all(nub);
-    lv_obj_set_size(nub, 2, 6);
-    lv_obj_set_pos(nub, 24, 5);
+    lv_obj_set_size(nub, 3, 8);
+    lv_obj_set_pos(nub, 48, 6);
     lv_obj_set_style_radius(nub, 1, 0);
     lv_obj_set_style_bg_color(nub, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(nub, LV_OPA_COVER, 0);
@@ -135,21 +137,6 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_set_style_shadow_width(pill_, 12, 0);
     lv_obj_set_style_shadow_opa(pill_, LV_OPA_30, 0);
     lv_obj_clear_flag(pill_, LV_OBJ_FLAG_SCROLLABLE);
-
-    // A very subtle lens highlight keeps the resting capsule from reading as a
-    // generic rounded rectangle. It disappears whenever content expands.
-    sensor_dot_ = lv_obj_create(pill_);
-    lv_obj_remove_style_all(sensor_dot_);
-    lv_obj_set_size(sensor_dot_, 9, 9);
-    lv_obj_align(sensor_dot_, LV_ALIGN_RIGHT_MID, -14, 0);
-    lv_obj_set_style_radius(sensor_dot_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(sensor_dot_, Color(0x101b2d), 0);
-    lv_obj_set_style_bg_opa(sensor_dot_, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(sensor_dot_, 1, 0);
-    lv_obj_set_style_border_color(sensor_dot_, Color(0x284d72), 0);
-    lv_obj_set_style_border_opa(sensor_dot_, LV_OPA_50, 0);
-    lv_obj_clear_flag(sensor_dot_,
-                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     // Expanded content is already laid out inside the pill, but kept hidden
     // until the pill has started to bloom. This avoids a separate toast panel.
@@ -266,7 +253,6 @@ void StatusBar::Hide() {
         lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
         lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
     }
-    if (sensor_dot_) lv_obj_clear_flag(sensor_dot_, LV_OBJ_FLAG_HIDDEN);
     if (status_strip_) lv_obj_add_flag(status_strip_, LV_OBJ_FLAG_HIDDEN);
     island_expanded_ = false;
     if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN))
@@ -309,30 +295,42 @@ void StatusBar::RefreshBattery() {
         cached_battery_level_ = Clamp(level, 0, 100);
         last_battery_read_ = now;
         battery_read_done_ = true;
-        (void)charging;
+        cached_battery_charging_ = charging;
         (void)discharging;
     }
 
-    if (has_battery_) {
-        int level = cached_battery_level_;
-        if (battery_icon_fill_) {
+    // Some Jetson installations have no readable battery sensor. Keep the
+    // battery visual in that case (100%) instead of leaking the old "AC" text.
+    const int level = has_battery_ ? cached_battery_level_ : 100;
+    if (battery_icon_fill_) {
+        if (level <= 0) {
+            lv_obj_add_flag(battery_icon_fill_, LV_OBJ_FLAG_HIDDEN);
+        } else {
             lv_obj_clear_flag(battery_icon_fill_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_size(battery_icon_fill_, std::max(1, 17 * level / 100), 10);
+            lv_obj_set_size(battery_icon_fill_, std::max(1, 41 * level / 100), 16);
         }
-        if (battery_percent_label_) {
-            char buf[8];
-            std::snprintf(buf, sizeof(buf), "%d%%", level);
-            lv_label_set_text(battery_percent_label_, buf);
-        }
+        const uint32_t fill_color = cached_battery_charging_ || level > 50
+                                        ? 0x34c759
+                                        : (level > 20 ? 0xffcc00 : 0xff3b30);
+        lv_obj_set_style_bg_color(battery_icon_fill_, Color(fill_color), 0);
+    }
+    if (battery_percent_label_) {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "%d%%", level);
+        lv_label_set_text(battery_percent_label_, buf);
+        // Dark digits remain crisp over a mostly filled bright battery; white
+        // is clearer once the fill drops behind most of the percentage.
+        lv_obj_set_style_text_color(battery_percent_label_,
+                                    level >= 45 ? lv_color_black()
+                                                : lv_color_white(), 0);
+    }
+    if (has_battery_) {
         if (level <= 20 && !low_warned_) {
             low_warned_ = true;
             ShowNotification("Pin yếu — hãy sạc thiết bị");
         } else if (level > 25) {
             low_warned_ = false;
         }
-    } else {
-        if (battery_percent_label_) lv_label_set_text(battery_percent_label_, "AC");
-        if (battery_icon_fill_) lv_obj_add_flag(battery_icon_fill_, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -358,10 +356,9 @@ void StatusBar::AnimateIslandSize(int width, int height, bool collapsing) {
     lv_anim_set_var(&w, pill_);
     lv_anim_set_exec_cb(&w, OnIslandWidth);
     lv_anim_set_values(&w, from_w, width);
-    lv_anim_set_time(&w, collapsing ? 260 : 340);
-    lv_anim_set_delay(&w, collapsing ? 60 : 0);
-    lv_anim_set_path_cb(&w, collapsing ? lv_anim_path_ease_in_out
-                                       : lv_anim_path_overshoot);
+    lv_anim_set_time(&w, collapsing ? 320 : 420);
+    lv_anim_set_delay(&w, collapsing ? 40 : 0);
+    lv_anim_set_path_cb(&w, lv_anim_path_ease_in_out);
     lv_anim_start(&w);
 
     lv_anim_t h;
@@ -369,10 +366,9 @@ void StatusBar::AnimateIslandSize(int width, int height, bool collapsing) {
     lv_anim_set_var(&h, pill_);
     lv_anim_set_exec_cb(&h, OnIslandHeight);
     lv_anim_set_values(&h, from_h, height);
-    lv_anim_set_time(&h, collapsing ? 260 : 300);
-    lv_anim_set_delay(&h, collapsing ? 60 : 0);
-    lv_anim_set_path_cb(&h, collapsing ? lv_anim_path_ease_in_out
-                                       : lv_anim_path_overshoot);
+    lv_anim_set_time(&h, collapsing ? 320 : 420);
+    lv_anim_set_delay(&h, collapsing ? 40 : 0);
+    lv_anim_set_path_cb(&h, lv_anim_path_ease_in_out);
     if (collapsing) {
         lv_anim_set_completed_cb(&h, OnIslandCollapsed);
         lv_anim_set_user_data(&h, this);
@@ -396,7 +392,6 @@ void StatusBar::ShowIslandMessage(const char *title, const char *text,
     lv_obj_set_style_border_color(pill_, Color(accent), 0);
     lv_obj_set_style_border_opa(pill_, LV_OPA_40, 0);
 
-    if (sensor_dot_) lv_obj_add_flag(sensor_dot_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
     lv_anim_delete(island_content_, OnIslandContentOpa);
     lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
@@ -407,9 +402,9 @@ void StatusBar::ShowIslandMessage(const char *title, const char *text,
     lv_anim_set_var(&content, island_content_);
     lv_anim_set_exec_cb(&content, OnIslandContentOpa);
     lv_anim_set_values(&content, 0, 255);
-    lv_anim_set_delay(&content, 90);
-    lv_anim_set_time(&content, 190);
-    lv_anim_set_path_cb(&content, lv_anim_path_ease_out);
+    lv_anim_set_delay(&content, 140);
+    lv_anim_set_time(&content, 220);
+    lv_anim_set_path_cb(&content, lv_anim_path_ease_in_out);
     lv_anim_start(&content);
 
     island_expanded_ = true;
@@ -430,7 +425,6 @@ void StatusBar::CollapseIsland(bool animated) {
         lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
         lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
         lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
-        if (sensor_dot_) lv_obj_clear_flag(sensor_dot_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_border_color(pill_, Color(0x253142), 0);
         island_expanded_ = false;
         return;
@@ -605,8 +599,6 @@ void StatusBar::OnIslandCollapsed(lv_anim_t *a) {
         lv_obj_set_style_opa(self->island_content_, LV_OPA_0, 0);
         lv_obj_add_flag(self->island_content_, LV_OBJ_FLAG_HIDDEN);
     }
-    if (self->sensor_dot_)
-        lv_obj_clear_flag(self->sensor_dot_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_border_color(self->pill_, Color(0x253142), 0);
     self->island_expanded_ = false;
 }

@@ -1093,24 +1093,12 @@ void Ds02HomeDisplay::ShowOnboardSplash(int duration_ms) {
         logo = lv_image_create(splash_);
         lv_image_set_src(logo, splash_logo_->image_dsc());
         lv_image_set_scale(logo, (uint16_t)PngScaleToFit(kLogoPath, 130)); // ~130 px logo.
-        lv_obj_align(logo, LV_ALIGN_CENTER, 0, -62);
+        lv_obj_align(logo, LV_ALIGN_CENTER, 0, -30);
         lv_obj_clear_flag(logo, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     }
 
-    auto *hello = lv_label_create(splash_);
-    lv_obj_set_style_text_font(hello, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(hello, Color(0x62e6a7), 0);
-    lv_label_set_text(hello, "Xin chào");
-    lv_obj_align(hello, LV_ALIGN_CENTER, 0, 36);
-
-    auto *welcome = lv_label_create(splash_);
-    lv_obj_set_style_text_font(welcome, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(welcome, lv_color_white(), 0);
-    lv_label_set_text(welcome, "Chào mừng bạn đến với Ekko Land");
-    lv_obj_align(welcome, LV_ALIGN_CENTER, 0, 74);
-
-    // Staggered fades give the greeting a calm Apple-like reveal instead of
-    // abruptly painting every element on the first frame.
+    // Fade the logo in gently; the welcome copy belongs exclusively to the
+    // Dynamic Island after loading completes.
     auto fade_in = [](lv_obj_t *obj, uint32_t delay, uint32_t time) {
         if (!obj) return;
         lv_obj_set_style_opa(obj, LV_OPA_0, 0);
@@ -1125,8 +1113,6 @@ void Ds02HomeDisplay::ShowOnboardSplash(int duration_ms) {
         lv_anim_start(&a);
     };
     fade_in(logo, 100, 500);
-    fade_in(hello, 420, 420);
-    fade_in(welcome, 760, 420);
 
     // Progress bar near the bottom.
     auto *bar = lv_bar_create(splash_);

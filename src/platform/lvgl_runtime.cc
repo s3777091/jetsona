@@ -141,36 +141,72 @@ static void keyboard_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 }
 
 /* LVGL pointer indevs have no visible cursor by default; a relative mouse
- * moves the focus point but the user can't see where it is. Attach an
- * arrow-shaped cursor (macOS/Windows style) loaded from a small PNG.
+ * moves the focus point but the user can't see where it is. Attach a visible
+ * cursor -- the PNG at assets/icons/app/cursor.png when LVGL can decode it,
+ * otherwise a line-drawn arrow that needs no image decoder and always
+ * renders. The PNG path is preferred because the user supplies their own
+ * cursor artwork there; the line arrow is the guaranteed-visible fallback.
+ *
+ * Why validate with lv_image_decoder_get_info: an earlier build blindly
+ * called lv_image_set_src on the PNG descriptor and, when the file failed to
+ * decode, the cursor rendered nothing -- evdev still delivered REL_X/REL_Y +
+ * BTN_MOUSE but the pointer looked dead. Probing the decoder up front lets us
+ * pick the PNG only when it really renders, and fall back to the arrow
+ * otherwise, so the cursor is visible in either case.
  *
  * The cursor is parented to lv_layer_sys() -- the system layer renders above
- * lv_layer_top() and above the active screen, so the cursor stays on top of
- * every overlay/app view AND above the global status-bar pill and the
- * brightness/tone scrims (which all live on lv_layer_top()). Parenting it to
- * lv_layer_top() instead left it BELOW those objects: the centered status-bar
- * pill (created after the cursor) covered it, so the pointer "disappeared" and
- * the mouse seemed dead. lv_indev_set_cursor positions the object's top-left at
- * the pointer, and the arrow's tip sits at that corner, so the hot-spot is the
- * visible tip. The LvglImage is held in a function-local static so its buffer
- * outlives every cursor that references its dsc. */
+ * lv_layer_top() and above the active screen, so it stays on top of every
+ * overlay/app view AND above the global status-bar pill and the brightness/tone
+ * scrims (which all live on lv_layer_top()). Parenting it to lv_layer_top()
+ * instead left it BELOW those objects: the centered status-bar pill (created
+ * after the cursor) covered it, so the pointer "disappeared". lv_indev_set_cursor
+ * positions the object's top-left at the pointer, and the arrow's tip is at
+ * that corner (point 0,0), so the hot-spot is the visible tip. */
 static void attach_pointer_cursor(lv_indev_t *indev)
 {
     if (!indev) return;
-    lv_obj_t *cur = lv_image_create(lv_layer_sys());
-    lv_obj_remove_style_all(cur);
+
+    /* Probe the PNG artwork first. `static` so the decoded image buffer
+     * outlives the cursor object. */
     static auto cursor_img = LvglImageFromFile("assets/icons/app/cursor.png");
+    bool png_ok = false;
+    lv_image_header_t info = {};
     if (cursor_img) {
-        lv_image_set_src(cur, cursor_img->image_dsc());
-    } else {
-        /* Fallback: a small high-contrast circle if the PNG is missing. */
-        lv_obj_set_size(cur, 12, 12);
-        lv_obj_set_style_radius(cur, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(cur, lv_color_white(), 0);
-        lv_obj_set_style_bg_opa(cur, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(cur, 2, 0);
-        lv_obj_set_style_border_color(cur, lv_color_black(), 0);
+        png_ok = (lv_image_decoder_get_info(cursor_img->image_dsc(), &info) == LV_RESULT_OK);
     }
+
+    lv_obj_t *cur = lv_obj_create(lv_layer_sys());
+    lv_obj_remove_style_all(cur);
+    lv_obj_clear_flag(cur, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    if (png_ok) {
+        /* User's cursor artwork. lv_image auto-sizes to the PNG; the hot-spot
+         * is its top-left corner (the usual arrow-tip placement). */
+        lv_obj_t *img = lv_image_create(cur);
+        lv_image_set_src(img, cursor_img->image_dsc());
+        lv_obj_clear_flag(img, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+        lv_obj_set_size(cur, info.w, info.h);
+    } else {
+        /* Classic arrow outline, tip at (0,0) so it lands on the pointer hot-spot. */
+        static lv_point_precise_t pts[] = {
+            {0, 0}, {0, 17}, {4, 13}, {7, 17}, {9, 16}, {6, 12}, {11, 12}, {0, 0}
+        };
+        lv_obj_set_size(cur, 16, 20);
+        /* Black outline (wider, behind) then white core (narrower, on top): a white
+         * arrow with a high-contrast border that reads on any background. */
+        lv_obj_t *bl = lv_line_create(cur);
+        lv_obj_set_style_line_color(bl, lv_color_black(), 0);
+        lv_obj_set_style_line_width(bl, 5, 0);
+        lv_obj_set_style_line_rounded(bl, false, 0);
+        lv_line_set_points(bl, pts, sizeof(pts) / sizeof(pts[0]));
+
+        lv_obj_t *wl = lv_line_create(cur);
+        lv_obj_set_style_line_color(wl, lv_color_white(), 0);
+        lv_obj_set_style_line_width(wl, 3, 0);
+        lv_obj_set_style_line_rounded(wl, false, 0);
+        lv_line_set_points(wl, pts, sizeof(pts) / sizeof(pts[0]));
+    }
+
     lv_indev_set_cursor(indev, cur);
 }
 } // namespace
