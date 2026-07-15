@@ -156,7 +156,6 @@ private:
     static void OnBtRowDeleted(lv_event_t *e);
     static void OnOptDeleted(lv_event_t *e);
 
-    static void OnThemeToggle(lv_event_t *e);
     static void OnBrightChanged(lv_event_t *e);
     static void OnVolChanged(lv_event_t *e);
     static void OnMuteToggle(lv_event_t *e);

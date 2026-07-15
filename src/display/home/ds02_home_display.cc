@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <cstring>
+#include <fstream>
 #include <string>
 
 #define TAG "Ds02Home"
@@ -328,21 +329,19 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
     for (size_t i = 0; i < kDrawerItemCount; ++i) {
         auto *btn = lv_obj_create(app_grid_);
         lv_obj_remove_style_all(btn);
-        lv_obj_set_size(btn, cellW, 104);
-        lv_obj_set_style_radius(btn, 16, 0);
-        lv_obj_set_style_bg_color(btn, Color(p.row), 0);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_set_size(btn, cellW, 84);
+        // No "glass" tile behind the icon -- transparent, just a tap target.
+        lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_row(btn, 6, 0);
 
         drawer_icon_cache_[i] = LvglImageFromFile(kApps[i].icon);
         if (drawer_icon_cache_[i]) {
             auto *icon = lv_image_create(btn);
             lv_image_set_src(icon, drawer_icon_cache_[i]->image_dsc());
-            lv_image_set_scale(icon, (uint16_t)PngScaleToFit(kApps[i].icon, 52)); // ~52 px on the tile
+            lv_image_set_scale(icon, (uint16_t)PngScaleToFit(kApps[i].icon, 60)); // icon only, bigger
             lv_obj_center(icon);
             lv_obj_clear_flag(icon, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
         } else {
@@ -352,11 +351,6 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
             lv_label_set_text(fallback, LV_SYMBOL_IMAGE);
             lv_obj_center(fallback);
         }
-
-        auto *lbl = lv_label_create(btn);
-        lv_obj_set_style_text_font(lbl, &BUILTIN_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(lbl, Color(p.text), 0);
-        lv_label_set_text(lbl, kApps[i].label);
 
         auto *ctx = new AppCtx{this, kApps[i].id};
         lv_obj_add_event_cb(btn, OnAppButtonClicked, LV_EVENT_CLICKED, ctx);
@@ -1028,6 +1022,21 @@ void Ds02HomeDisplay::OnRefreshTimer(void *arg) {
     auto *self = static_cast<Ds02HomeDisplay *>(arg);
     self->UpdateStatusBar(false);
     self->CheckIdleDim();
+
+    // Memory leak watch: log our RSS every ~5 s so we can see when it grows
+    // (calendar open? wifi scan? idle-dim swap?). Read /proc/self/status only
+    // -- no image decoding, no allocations.
+    static int tick = 0;
+    if (++tick % 5 == 0) {
+        std::ifstream f("/proc/self/status");
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.rfind("VmRSS:", 0) == 0) {
+                ESP_LOGI("Mem", "%s", line.c_str());
+                break;
+            }
+        }
+    }
 }
 
 void Ds02HomeDisplay::CheckIdleDim() {

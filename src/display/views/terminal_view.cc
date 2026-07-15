@@ -94,6 +94,10 @@ TerminalView::TerminalView(lv_obj_t *parent, int width, int height, ClosedCb on_
     lv_obj_add_event_cb(input_, OnInputReady, LV_EVENT_READY, this);
     /* USB keyboard types into this textarea via the keypad group. */
     if (auto *g = jetson::LvglRuntime::Instance().keypad_group()) lv_group_add_obj(g, input_);
+    // Blinking white cursor on the dark input so it's obvious where typed keys
+    // land. The default-theme cursor is dark and invisible on the 0x2a2a2a bg.
+    lv_obj_set_style_bg_color(input_, lv_color_white(), LV_PART_CURSOR);
+    lv_obj_set_style_bg_opa(input_, LV_OPA_COVER, LV_PART_CURSOR);
 
     send_btn_ = lv_button_create(input_row);
     lv_obj_set_size(send_btn_, 80, 48);
@@ -123,6 +127,10 @@ void TerminalView::OnStart() {
         return;
     }
     SetStatus("Shell san sang");
+    // Focus the input so the USB keyboard types into it immediately and the
+    // blinking cursor shows (runs under the home opener's lv_lock; do not
+    // re-take here -- lv_lock is not recursive).
+    if (input_) lv_group_focus_obj(input_);
     reader_ = std::thread([this]() { ReaderLoop(); });
     // Coalesce reader output -> UI at ~12 Hz (80 ms). The reader only marks the
     // buffer dirty; this timer is the single path that re-renders the label, so

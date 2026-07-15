@@ -1,227 +1,177 @@
-# Jetson Nano DS-02 Firmware
+# Jetson Nano DS-02
 
-Standalone C++/CMake firmware that boots the **xiaozhi DS-02 home UI** on a
-**Jetson Nano 4GB B01** driving a **7" HDMI LCD B (800×480, touch)** panel.
+Giao diện LVGL 9.2 cho Jetson Nano 4GB B01 và màn hình HDMI cảm ứng
+800×480. Chương trình hỗ trợ lịch, trình duyệt tệp, Wi-Fi, Bluetooth, cài đặt,
+chat và terminal trực tiếp trên màn hình.
 
-This is **not** an Ubuntu desktop app. It is a self-contained firmware binary
-that talks to the panel directly through DRM/KMS (no X server, no compositor),
-renders the DS-02 standby/launcher/dock look with LVGL 9.2.2, and reads touch
-events via evdev. It boots straight to the UI and can run as a systemd service.
+## Chạy ngay sau khi build
 
-The reference firmware (`xiaozhi-esp32`, ESP-IDF + LVGL 9.5, ILI9341 320×240
-SPI panel) has been ported into this folder: ESP-IDF APIs (`esp_timer`,
-`esp_lcd`, FreeRTOS event groups/tasks, NVS, `esp_log`) are replaced by thin
-Linux shims backed by `std::thread` / `std::condition_variable` / a file-backed
-KV store, so the original DS-02 UI code compiles and runs unmodified in spirit.
+Khi terminal hiện:
 
-## Target hardware
-
-| Part | Detail |
-|---|---|
-| Board | Jetson Nano 4GB B01 (JetPack 4.x / Ubuntu 18.04, aarch64) |
-| Display | 7" HDMI LCD B, 800×480, capacitive touch (USB-HID / evdev) |
-| Power | Waveshare UPS Module B (5V/5A) — informational, no driver needed |
-| Storage | 32GB SD |
-
-## Layout
-
-```
-jetson/
-  CMakeLists.txt          # top build: options, libdrm/SDL2, vendored LVGL, src/**
-  lv_conf.h               # LVGL 9.2.2 config (DRM, evdev, lodepng, gif, tiny_ttf)
-  README.md               # this file
-  scripts/
-    fetch_deps.sh         # apt install build deps + (re)clone LVGL 9.2.2
-    install.sh            # install jetson_fw as a systemd boot service
-    jetson-fw.service     # systemd unit
-  third_party/lvgl/       # vendored LVGL 9.2.2 (cloned by fetch_deps.sh)
-  assets/
-    fonts/arial.ttf       # fallback font (LVGL built-in). Drop NotoSans-Regular.ttf here for Vietnamese diacritics.
-    backgrounds/*.png     # 10 DS-02 wallpaper PNGs (lodepng-decoded)
-  src/
-    shims/                # esp_log, esp_timer, esp_err, esp_lcd handles, heap_caps, esp_pm, freertos/{task,event_groups,semphr,FreeRTOS}, font_awesome
-    platform/             # runtime + reusable process/shell infrastructure
-    app/                  # application, board, settings, fonts, system_info, device_state, audio_codec/backlight/led/button stubs
-    display/
-      common/             # shared LVGL helpers, signal bars, background catalog
-      core/               # display abstractions and LVGL adapters
-      home/               # DS-02 home composition root
-      theme/              # runtime UI palette
-      views/              # feature screens and overlays
-      widgets/            # reusable input widgets (Telex IME)
-    net/                  # WiFi/Bluetooth contracts and Linux implementations
-    agent/                # LLM conversation and tool orchestration
-    power/                # INA219 power monitor
-    main.cc               # entry point (replaces app_main)
+```text
+[100%] Built target jetson_fw
+==> Built: /home/ekkohuynh/jetsona/build/jetson_fw
 ```
 
-### Source boundaries
-
-- `display/core` does not depend on feature views.
-- `display/views` composes shared widgets/components and talks to WiFi/Bluetooth
-  through interfaces, so alternate implementations and test doubles can be
-  injected without changing UI code.
-- `app/board` is the process composition root: it selects concrete Linux
-  services and injects them into `display/home`, which owns feature-view
-  lifetimes.
-- Cross-module includes use source-root-qualified paths; reusable platform and
-  display helpers live outside individual features.
-
-## Prerequisites (on the Jetson)
+chạy bản SDL toàn màn hình bằng:
 
 ```bash
-cd jetson
-./scripts/fetch_deps.sh
+cd /home/ekkohuynh/jetsona
+sudo env SDL_VIDEODRIVER=kmsdrm ./build/jetson_fw
 ```
 
-This installs `build-essential cmake git pkg-config libdrm-dev libgbm-dev
-libegl-dev libgles2-dev libsdl2-dev libsdl2-ttf-dev libcurl4-openssl-dev
-libopus-dev libasound2-dev nlohmann-json-dev` and clones LVGL 9.2.2 into
-`third_party/lvgl/` if it is not already present.
+Nhấn `Ctrl+C` để dừng. Log ứng dụng, Wi-Fi và Bluetooth được in trực tiếp
+trên terminal này.
 
-> The LVGL source is vendored in this repo, so on a fresh clone you can skip the
-> network clone by leaving `third_party/lvgl/` in place — `fetch_deps.sh` only
-> clones when the directory is missing.
-
-## Build
+Nếu đang chạy bên trong Ubuntu Desktop và muốn mở thành cửa sổ:
 
 ```bash
-bash ./scripts/build.sh
+cd /home/ekkohuynh/jetsona
+./build/jetson_fw
 ```
 
-Produces `build/jetson_fw`. A POST_BUILD step copies `assets/` next to the
-binary so the default relative assets path works when run from `build/`.
+## Cài dependency và build
 
-`scripts/build.sh` resolves the source directory from its own location, so it
-also works when called from outside the repository or when the clone directory
-has a different name. For example:
+Chỉ cần cài dependency một lần:
 
 ```bash
-bash ~/xiaozhi-esp32-server/scripts/build.sh
+cd /home/ekkohuynh/jetsona
+bash scripts/fetch_deps.sh
 ```
 
-Do not run `cmake .` or `cmake ..` from `~`: that makes CMake search the home
-directory instead of this repository and produces the "does not appear to
-contain CMakeLists.txt" error.
-
-### CMake options
-
-| Option | Default | Meaning |
-|---|---|---|
-| `JETSON_DISPLAY_BACKEND` | `DRM` | `DRM` (KMS direct, firmware-style) or `SDL` (fallback window) |
-| `JETSON_DISPLAY_WIDTH` | `800` | Panel width |
-| `JETSON_DISPLAY_HEIGHT` | `480` | Panel height |
-| `JETSON_ASSETS_DIR` | `assets` | Assets dir, relative to CWD or absolute |
-
-## Run
+Build SDL, phù hợp để kiểm tra nhanh và chạy qua `kmsdrm`:
 
 ```bash
-sudo ./build/jetson_fw          # DRM/KMS needs root or the video/render group
+cd /home/ekkohuynh/jetsona
+JETSON_DISPLAY_BACKEND=SDL bash scripts/build.sh
 ```
 
-You should see the DS-02 home UI on the HDMI panel: gradient wallpaper +
-wallpaper PNG, clock (top-right), system bar (Wi-Fi icon + drawn battery +
-status), and the bottom dock. Touch works: tap a dock button to cycle
-`Dim → Awake → Launcher` (the launcher shows the DS-02 avatar sphere).
+Binary và assets được tạo tại:
 
-### SDL fallback (if Tegra DRM mode-set misbehaves)
-
-```bash
-JETSON_DISPLAY_BACKEND=SDL bash ./scripts/build.sh
-SDL_VIDEODRIVER=kmsdrm ./build/jetson_fw
+```text
+build/jetson_fw
+build/assets/
 ```
 
-### Environment variables
+### Build bằng backend khác
 
-| Var | Default | Purpose |
-|---|---|---|
-| `JETSON_DRM_CARD` | `/dev/dri/card0` | DRM device node |
-| `JETSON_TOUCH_DEVICE` | (auto: first usable `/dev/input/eventN`) | Force a specific evdev touch node |
-| `JETSON_ASSETS_DIR` | `assets` (compile-time) | Override assets path at runtime |
-| `JETSON_SETTINGS_FILE` | `~/.jetson-fw/settings.kv` | Settings KV file (replaces NVS) |
-
-## Install as a boot service
+DRM/KMS trực tiếp:
 
 ```bash
+JETSON_BUILD_DIR=build-drm JETSON_DISPLAY_BACKEND=DRM bash scripts/build.sh
+sudo ./build-drm/jetson_fw
+```
+
+Framebuffer `/dev/fb0` cho JetPack/kernel cũ:
+
+```bash
+JETSON_BUILD_DIR=build-fbdev JETSON_DISPLAY_BACKEND=FBDEV bash scripts/build.sh
+sudo ./build-fbdev/jetson_fw
+```
+
+Không dùng chung một build directory cho nhiều backend; dùng `build`,
+`build-drm`, `build-fbdev` riêng để tránh CMake cache nhầm cấu hình.
+
+## Phần cứng và dịch vụ cần có
+
+- Jetson Nano 4GB B01.
+- Màn hình HDMI 800×480 và USB touch/keyboard/mouse.
+- USB Wi-Fi dongle và NetworkManager cho Wi-Fi.
+- USB Bluetooth dongle và BlueZ cho Bluetooth.
+
+Jetson Nano không có Wi-Fi/Bluetooth tích hợp. Kiểm tra thiết bị bằng:
+
+```bash
+nmcli device
+nmcli device wifi list --rescan yes
+bluetoothctl show
+bluetoothctl devices
+```
+
+## Chạy tự động khi khởi động
+
+Script cài đặt lấy binary từ `build/jetson_fw`:
+
+```bash
+cd /home/ekkohuynh/jetsona
 sudo ./scripts/install.sh
 ```
 
-Copies `jetson_fw` + `assets/` to `/opt/jetson-fw`, installs
-`jetson-fw.service`, and enables it. The unit runs as `root` (DRM access) and
-logs to `/var/log/jetson-fw.log`.
+Các lệnh quản lý service:
 
 ```bash
 sudo systemctl status jetson-fw
-sudo journalctl -u jetson-fw -f      # or: tail -f /var/log/jetson-fw.log
-sudo systemctl disable --now jetson-fw   # stop booting to it
+sudo systemctl restart jetson-fw
+tail -f /var/log/jetson-fw.log
+sudo systemctl disable --now jetson-fw
 ```
 
-## Fonts & Vietnamese diacritics
+DRM/FBDEV phù hợp nhất cho systemd. Khi debug lỗi giao diện hoặc quét mạng,
+nên dừng service và chạy binary trực tiếp để xem log ngay trên terminal:
 
-The firmware loads text via LVGL `tiny_ttf` from `assets/fonts/`. It prefers
-`NotoSans-Regular.ttf` and falls back to the bundled `arial.ttf`. To render
-Vietnamese diacritics cleanly, drop a `NotoSans-Regular.ttf` (or any TTF with
-full Vietnamese coverage) into `assets/fonts/` and rebuild — no code change
-needed.
+```bash
+sudo systemctl stop jetson-fw
+sudo env SDL_VIDEODRIVER=kmsdrm ./build/jetson_fw
+```
 
-## Settings (replaces NVS)
+## Biến cấu hình thường dùng
 
-A file-backed KV store (`tab`-separated `namespace.key<TAB>value`) at
-`~/.jetson-fw/settings.kv` provides the same `Settings` API the ESP firmware
-had (`GetString` / `SetString` / `GetInt` / `GetBool` / `EraseKey` …) with
-namespaces. Set `JETSON_SETTINGS_FILE` to relocate it.
+| Biến | Công dụng |
+|---|---|
+| `JETSON_DISPLAY_BACKEND` | Backend lúc build: `SDL`, `DRM` hoặc `FBDEV` |
+| `JETSON_BUILD_DIR` | Thư mục build, mặc định là `build` |
+| `JETSON_DRM_CARD` | DRM card, mặc định `/dev/dri/card0` |
+| `JETSON_FB_DEVICE` | Framebuffer, mặc định `/dev/fb0` |
+| `JETSON_TOUCH_DEVICE` | Ép dùng một `/dev/input/eventN` cho touch |
+| `JETSON_KEYBOARD_DEVICE` | Ép thiết bị bàn phím evdev |
+| `JETSON_MOUSE_DEVICE` | Ép thiết bị chuột evdev |
+| `JETSON_FILES_HOME` | Thư mục gốc của ứng dụng Tệp |
+| `JETSON_SETTINGS_FILE` | Đường dẫn file lưu cài đặt |
 
-## What works now (phase 1 — UI-first scaffold)
+Ví dụ ép touch và thư mục Home:
 
-- DRM/KMS direct rendering at 800×480 (SDL fallback behind a build switch).
-- evdev touch → LVGL pointer indev (DS-02 dock tap + swipe gestures).
-- DS-02 home UI: wallpaper (10 PNGs, pre-resized to 800×480 and shown 1:1),
-  clock, date, system bar (Wi-Fi icon + drawn battery + status/notification),
-  bottom dock (7 PNG icons under `assets/icons/dock/`), and a swipe-up app
-  drawer (8 PNG tiles under `assets/icons/drawer/`). The macOS-style glass
-  dock uses PNG icons, touch magnification, click bounce, and an active-app
-  indicator. Dock taps launch the backed apps (calendar / gallery / WiFi /
-  Bluetooth / settings / chat / terminal). 1 Hz clock/status refresh.
-- **On-screen WiFi provisioning:** tap the dock button to open
-  a WiFi screen that scans networks (`nmcli`), lists them with signal bars, and
-  shows an on-screen keyboard for entering the password. Requires a **USB WiFi
-  dongle** (the Jetson Nano 4GB B01 has no onboard WiFi) and NetworkManager
-  running (`systemctl status NetworkManager`). See `src/net/wifi_manager.*` and
-  `src/display/views/wifi_settings_view.*`.
-- **On-screen Bluetooth settings:** tap the globe dock button to open a
-  Bluetooth screen that scans devices (`bluetoothctl`/BlueZ), lists them with
-  RSSI bars + Paired/Connected state, and pairs + connects on tap (no password
-  entry — pairing goes through bluetoothctl's default-agent). Requires a **USB
-  Bluetooth dongle** and `bluez` installed (`apt install bluez`). See
-  `src/net/bluetooth_manager.*` and `src/display/views/bluetooth_settings_view.*`.
-- **On-screen Terminal:** the launcher app drawer has a "Terminal" tile (tap it)
-  that opens an interactive root shell over a pseudo-terminal (`forkpty` +
-  `/bin/sh -i`). It runs `sudo`, pipes, redirects, and any program that reads
-  stdin (e.g. a `sudo` password prompt) — the firmware service runs as root, so
-  every command has full privileges. Output scrolls in a black panel; type a
-  command in the input box and press **Gui**/**Enter** (on-screen keyboard) to
-  run it. See `src/display/views/terminal_view.*`. Build note: `forkpty` needs
-  `libutil` on older glibc (JetPack 4.x / Ubuntu 18.04); `CMakeLists.txt` links
-  it when present.
-- Linux shims for the full ESP-IDF API surface the ported code uses.
-- File-backed `Settings`, `Board` singleton, `Application` event loop,
-  dummy audio codec + network stub.
+```bash
+sudo env \
+  SDL_VIDEODRIVER=kmsdrm \
+  JETSON_TOUCH_DEVICE=/dev/input/event3 \
+  JETSON_FILES_HOME=/home/ekkohuynh \
+  ./build/jetson_fw
+```
 
-## What is deferred (later phases)
+## Xử lý lỗi nhanh
 
-- **Phase 1b:** drop in the full upstream `ds02_home_display` (calendar,
-  settings panel, app drawer, background gallery) with the stubs it needs
-  (`WifiManager`, `Lang`, `cbin_font`, embedded `Assets`).
-- **Phase 2:** ALSA `AudioCodec` + libopus encode/decode + websocket protocol
-  (`libwebsockets`) against the xiaozhi / protexa-agent backend.
-- **Phase 3:** wake word (openWakeWord / whisper.cpp), AEC/VAD (WebRTC APM),
-  OTA self-update.
+### Không lên hình
 
-## Build verification note
+Thử lần lượt SDL/KMSDRM, DRM và FBDEV. Kiểm tra device node:
 
-The build host for this source is Windows; the target is aarch64 Linux on the
-Jetson, so **the firmware is compiled and verified on the Jetson itself**. If a
-build fails on the Jetson, paste the compiler error and it will be fixed in
-place — the shim layer and display stack are designed to be iterated against
-real Jetson compiler output. The first on-device iteration is expected to be
-the full `ds02_home_display` port (phase 1b).
+```bash
+ls -l /dev/dri /dev/fb0
+```
+
+### Touch không hoạt động
+
+Liệt kê input và xem log dòng `touch:` khi chương trình khởi động:
+
+```bash
+ls -l /dev/input/event* /dev/input/by-id/
+```
+
+Sau đó chạy lại với `JETSON_TOUCH_DEVICE=/dev/input/eventN`.
+
+### Wi-Fi/Bluetooth không quét hoặc giao diện đứng
+
+Mọi lệnh quét đều chạy nền và có timeout. Xem terminal hoặc
+`/var/log/jetson-fw.log` để tìm các tag `Wifi`, `Bt`, `SettingsView` và
+`Ds02Home`.
+
+## Thư mục chính
+
+```text
+assets/                 font, wallpaper và icon
+scripts/build.sh        cấu hình và build
+scripts/install.sh      cài systemd service
+src/display/            giao diện LVGL
+src/net/                Wi-Fi và Bluetooth
+src/platform/           runtime LVGL/Linux
+third_party/lvgl/       LVGL 9.2.2
+```

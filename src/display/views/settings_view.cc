@@ -328,14 +328,13 @@ lv_obj_t *SettingsView::MakeButton(lv_obj_t *parent, const char *text, uint32_t 
 void SettingsView::BuildAppearance() {
     SectionTitle("Giao diện");
     const auto &p = jetson::UiTheme::Instance().Palette();
-    auto *row = MakeRow("Chủ đề sáng/tối",
-                        jetson::UiTheme::Instance().Mode() == jetson::UiMode::Light ? "Sáng" : "Tối");
-    auto *sw = lv_switch_create(row);
-    lv_obj_set_size(sw, 60, 28);
-    if (jetson::UiTheme::Instance().Mode() == jetson::UiMode::Light)
-        lv_obj_add_state(sw, LV_STATE_CHECKED);
-    lv_obj_add_event_cb(sw, OnThemeToggle, LV_EVENT_VALUE_CHANGED, this);
-    (void)p;
+    MakeRow("Chủ đề", "Tối (dark)");
+    auto *note = lv_label_create(detail_);
+    lv_obj_set_style_text_font(note, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(note, Color(p.sub_text), 0);
+    lv_obj_set_width(note, lv_pct(100));
+    lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(note, "Giao diện cố định tối. Chế độ sáng đã bỏ.");
 }
 
 void SettingsView::BuildDisplay() {
@@ -1166,14 +1165,6 @@ void SettingsView::OnBtRowDeleted(lv_event_t *e) {
 }
 void SettingsView::OnOptDeleted(lv_event_t *e) {
     delete static_cast<OptCtx *>(lv_event_get_user_data(e));
-}
-
-void SettingsView::OnThemeToggle(lv_event_t *e) {
-    LvLockGuard lock;
-    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
-    jetson::UiTheme::Instance().Toggle();
-    self->ShowCategory(Cat::Appearance); // rebuild to refresh the "Sáng/Tối" sub
-    self->SetStatus("Đã đổi giao diện");
 }
 
 void SettingsView::OnBrightChanged(lv_event_t *e) {

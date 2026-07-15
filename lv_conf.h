@@ -128,7 +128,7 @@
     #define LV_TINY_TTF_FILE_SUPPORT 1
     #define LV_TINY_TTF_FILE_CACHE_SIZE 4096
 #endif
-#define LV_USE_GIF 1
+#define LV_USE_GIF 0
 #define LV_USE_BIN_DECODER 1
 #define LV_USE_BMP 0
 #define LV_USE_RLE 0

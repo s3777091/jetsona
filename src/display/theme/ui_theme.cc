@@ -65,9 +65,9 @@ UiTheme::UiTheme() {
 }
 
 void UiTheme::Load() {
-    Settings s("ui", false);
-    std::string v = s.GetString("theme_mode", "dark");
-    mode_ = (v == "light") ? UiMode::Light : UiMode::Dark;
+    // Light mode was removed -- the UI is dark-only. Ignore any "light" value
+    // persisted from an older build so a stale setting can't flip the UI back.
+    mode_ = UiMode::Dark;
 }
 
 void UiTheme::Save() {

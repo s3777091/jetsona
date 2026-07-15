@@ -120,21 +120,38 @@ std::vector<WifiNetwork> WifiManager::Scan() {
         return nets;
     }
 
+    // Force a REAL scan of all surrounding APs (not just the connected one).
+    // `nmcli ... list --rescan yes` can return in ~100 ms with the stale cache
+    // (NetworkManager throttles redundant rescan requests, and the connect
+    // operation only cached the joined BSSID). A separate `device wifi rescan`
+    // blocks until a fresh scan completes (~2-5 s), so the list that follows
+    // reflects the real surroundings. Ignore its rc -- some drivers reject a
+    // rescan while associated, in which case we still list the cached APs.
+    std::string rescanOut;
+    int rescanRc = RunShellCommand("nmcli -w 15 device wifi rescan", rescanOut);
+    if (rescanRc != 0) {
+        ESP_LOGW(TAG, "rescan request failed (rc=%d): %s -- listing cached APs",
+                 rescanRc, rescanOut.c_str());
+    } else {
+        ESP_LOGI(TAG, "rescan done");
+    }
+
     // --escape no so SSID text is literal; we parse from the right to tolerate
-    // SSIDs that contain ':'.
+    // SSIDs that contain ':'. --rescan no: we just rescanned above, don't
+    // trigger another (throttled) request.
     std::string out;
-    int rc = RunShellCommand("nmcli -w 20 -t --escape no -f IN-USE,SSID,SIGNAL,SECURITY "
-                    "device wifi list --rescan yes", out);
+    int rc = RunShellCommand("nmcli -w 10 -t --escape no -f IN-USE,SSID,SIGNAL,SECURITY "
+                    "device wifi list --rescan no", out);
     if (rc != 0) {
         last_error_ = "scan failed: " + out;
-        ESP_LOGW(TAG, "active rescan failed (rc=%d), using cached AP list: %s",
+        ESP_LOGW(TAG, "AP list failed (rc=%d), retrying with rescan: %s",
                  rc, out.c_str());
-        // Fall back to a no-rescan list (still useful).
-        rc = RunShellCommand("nmcli -w 5 -t --escape no -f IN-USE,SSID,SIGNAL,SECURITY "
-                             "device wifi list --rescan no", out);
+        // Fall back to letting nmcli rescan itself.
+        rc = RunShellCommand("nmcli -w 20 -t --escape no -f IN-USE,SSID,SIGNAL,SECURITY "
+                             "device wifi list --rescan yes", out);
         if (rc != 0) {
-            last_error_ = "cached scan failed: " + out;
-            ESP_LOGE(TAG, "cached AP list failed (rc=%d): %s", rc, out.c_str());
+            last_error_ = "scan failed: " + out;
+            ESP_LOGE(TAG, "AP list failed (rc=%d): %s", rc, out.c_str());
             return nets;
         }
     }
