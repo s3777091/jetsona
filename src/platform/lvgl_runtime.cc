@@ -384,15 +384,19 @@ void LvglRuntime::openKeyboard() {
 
 void LvglRuntime::openMouse() {
     /* Register a single USB (relative) mouse as the LVGL pointer indev -- one
-     * mouse, one cursor. A relative mouse has REL_X (rel bit 0); a touch panel
-     * has ABS_X+ABS_Y or ABS_MT (owned by openTouch), and a keyboard (e.g. a
-     * "Hyperwork" USB keyboard) may also report REL_X yet is not a mouse, so
-     * skip anything with KEY_Q (key bit 16) -- that's how openKeyboard detects
-     * a real keyboard. Taking only the first qualifying device avoids the
-     * "two cursors" symptom when a keyboard/combo node also exposes REL_X.
-     * LVGL's evdev driver accumulates REL_X/REL_Y for pointer devices, so a
-     * relative mouse works without ABS axes (it logs a harmless EVIOCGABS
-     * error at create time). Override with JETSON_MOUSE_DEVICE if needed. */
+     * mouse, one cursor. A real relative mouse reports BOTH REL_X (rel bit 0)
+     * and REL_Y (rel bit 1); a touch panel instead has ABS_X+ABS_Y or ABS_MT
+     * (owned by openTouch). Some keyboards (e.g. a "Hyperwork" USB keyboard)
+     * spuriously report REL_X alone (a volume/wheel axis) -- requiring REL_Y
+     * too filters those out without dropping a genuine combo keyboard+mouse,
+     * which has REL_X+REL_Y AND keys (KEY_Q). We do NOT skip on KEY_Q: opening
+     * the same evdev node as both a keypad (openKeyboard) and a pointer
+     * (here) is fine on Linux -- each indev keeps only the events it cares
+     * about, and only this one creates a cursor, so there is no "two cursors"
+     * symptom. LVGL's evdev driver accumulates REL_X/REL_Y for pointer
+     * devices, so a relative mouse works without ABS axes (it logs a harmless
+     * EVIOCGABS error at create time). Override with JETSON_MOUSE_DEVICE if
+     * needed. */
     std::string devpath;
     const char *forced = std::getenv("JETSON_MOUSE_DEVICE");
     if (forced && forced[0]) {
@@ -405,21 +409,17 @@ void LvglRuntime::openMouse() {
             std::snprintf(sysp, sizeof(sysp),
                           "/sys/class/input/event%d/device/capabilities/rel", i);
             unsigned long rel = readSysFirstHexWord(sysp);
-            if ((rel & 0x1UL) == 0) continue; /* REL_X => relative pointer */
+            if ((rel & 0x3UL) != 0x3UL) continue; /* need REL_X+REL_Y => real pointer */
             std::snprintf(sysp, sizeof(sysp),
                           "/sys/class/input/event%d/device/capabilities/key", i);
             unsigned long key = readSysFirstHexWord(sysp);
             std::snprintf(sysp, sizeof(sysp),
                           "/sys/class/input/event%d/device/capabilities/abs", i);
             unsigned long abs = readSysFirstHexWord(sysp);
-            /* Log every candidate that has REL_X so we can see why the mouse
-             * is/isn't selected (combo devices, misclassified touch, etc.). */
+            /* Log every candidate that has REL_X+REL_Y so we can see why the
+             * mouse is/isn't selected (combo devices, misclassified touch). */
             ESP_LOGI(TAG, "mouse scan: event%d rel=0x%lx key=0x%lx abs=0x%lx",
                      i, rel, key, abs);
-            if ((key >> 16) & 0x1UL) {
-                ESP_LOGI(TAG, "mouse scan: event%d skipped (KEY_Q -> keyboard/combo)", i);
-                continue; /* KEY_Q => keyboard, not a mouse */
-            }
             if ((abs & 0x3UL) == 0x3UL) {
                 ESP_LOGI(TAG, "mouse scan: event%d skipped (ABS_X+ABS_Y -> touch)", i);
                 continue; /* ABS_X+ABS_Y => touch, not mouse */
@@ -431,7 +431,9 @@ void LvglRuntime::openMouse() {
             char path[32];
             std::snprintf(path, sizeof(path), "/dev/input/event%d", i);
             devpath = path;
-            ESP_LOGI(TAG, "mouse scan: event%d selected as mouse", i);
+            bool combo = (key >> 16) & 0x1UL; /* KEY_Q => also a keyboard */
+            ESP_LOGI(TAG, "mouse scan: event%d selected as mouse%s",
+                     i, combo ? " (combo with keyboard)" : "");
             break; /* one mouse is enough -> a single cursor */
         }
     }
