@@ -12,6 +12,7 @@
  * PIN/Just-Works pairing automatically. */
 
 #include <string>
+#include <mutex>
 #include <vector>
 
 namespace jetson {
@@ -62,10 +63,14 @@ public:
     bool Disconnect(const std::string &address) override;
     bool Remove(const std::string &address) override;
 
-    std::string LastError() const override { return last_error_; }
+    std::string LastError() const override {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return last_error_;
+    }
 
 private:
     BluetoothManager() = default;
+    mutable std::recursive_mutex mutex_;
     mutable std::string last_error_;
 };
 

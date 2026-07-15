@@ -6,6 +6,7 @@
 #include "net/wifi_manager.h"
 
 #include <lvgl.h>
+#include <atomic>
 #include <functional>
 #include <string>
 #include <vector>
@@ -65,12 +66,16 @@ private:
     lv_obj_t *wifi_list_ = nullptr;
     std::vector<jetson::WifiNetwork> wifi_nets_;
     bool wifi_scanned_ = false;
+    bool wifi_enabled_ = false;
+    std::atomic<bool> wifi_busy_{false};
 
     // Bluetooth pane.
     lv_obj_t *bt_switch_ = nullptr;
     lv_obj_t *bt_list_ = nullptr;
     std::vector<jetson::BtDevice> bt_devs_;
     bool bt_scanned_ = false;
+    bool bt_powered_ = false;
+    std::atomic<bool> bt_busy_{false};
 
     // Keyboard pane.
     TelexInput *kbd_demo_ = nullptr;

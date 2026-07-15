@@ -52,13 +52,20 @@ const char *kTimezones[] = {
 };
 
 std::string CurrentTimezone() {
-    std::string tz = RunCapture("timedatectl show -p Timezone --value");
-    if (tz.empty()) {
-        // Fallback: read the symlink target of /etc/localtime.
-        tz = RunCapture("readlink /etc/localtime");
+    // Keep category switching non-blocking: do not shell out to timedatectl
+    // while the LVGL event mutex is held.  Prefer our persisted value, then
+    // resolve /etc/localtime directly with readlink(2).
+    std::string tz = Settings("system", false).GetString("timezone", "");
+    if (!tz.empty()) return tz;
+    char target[512]{};
+    const ssize_t n = ::readlink("/etc/localtime", target, sizeof(target) - 1);
+    if (n > 0) {
+        target[n] = '\0';
+        tz.assign(target);
         auto p = tz.find("zoneinfo/");
-        if (p != std::string::npos) tz = tz.substr(p + 8);
+        if (p != std::string::npos) tz = tz.substr(p + 9);
     }
+    if (tz.empty()) tz = "Asia/Ho_Chi_Minh";
     return tz;
 }
 
@@ -104,7 +111,7 @@ void SettingsView::BuildShell() {
     lv_obj_set_style_pad_column(body_, 8, 0);
     lv_obj_clear_flag(body_, LV_OBJ_FLAG_SCROLLABLE);
 
-    int body_h = (height_ - 80) - 16;
+    int body_h = (height_ - 48) - 16;
 
     // ---- Sidebar ----
     sidebar_ = lv_obj_create(body_);
@@ -572,30 +579,40 @@ void SettingsView::BuildAbout() {
 
 void SettingsView::WifiRefreshSwitch() {
     if (!wifi_switch_) return;
-    bool on = wifi_.IsEnabled();
-    if (on) lv_obj_add_state(wifi_switch_, LV_STATE_CHECKED);
+    if (wifi_enabled_) lv_obj_add_state(wifi_switch_, LV_STATE_CHECKED);
     else lv_obj_clear_state(wifi_switch_, LV_STATE_CHECKED);
 }
 
 void SettingsView::WifiRescan() {
     if (!wifi_list_) return;
-    if (!wifi_.IsEnabled()) {
-        SetStatus("WiFi đang tắt");
-        wifi_nets_.clear();
-        WifiRenderList();
-        return;
-    }
+    if (wifi_busy_.exchange(true)) return;
     SetStatus("Đang quét WiFi...");
+    ESP_LOGI(TAG, "WiFi scan requested from Settings");
     std::thread([self = Self()]() {
-        auto nets = self->wifi_.Scan();
+        const bool enabled = self->wifi_.IsEnabled();
+        std::vector<jetson::WifiNetwork> nets;
+        std::string active;
+        if (enabled) {
+            nets = self->wifi_.Scan();
+            active = self->wifi_.ActiveSsid();
+        }
+        const std::string error = self->wifi_.LastError();
         LvLockGuard lock;
-        if (self) {
-            self->wifi_nets_ = std::move(nets);
-            self->wifi_scanned_ = true;
-            self->WifiRenderList();
-            auto active = self->wifi_.ActiveSsid();
+        self->wifi_busy_ = false;
+        self->wifi_enabled_ = enabled;
+        self->wifi_nets_ = std::move(nets);
+        self->wifi_scanned_ = enabled;
+        self->WifiRefreshSwitch();
+        if (self->wifi_list_) self->WifiRenderList();
+        if (!enabled) {
+            self->SetStatus("WiFi đang tắt");
+        } else if (self->wifi_nets_.empty() && !error.empty()) {
+            self->SetStatus(("Lỗi quét WiFi: " + error).c_str());
+            ESP_LOGE(TAG, "WiFi scan failed: %s", error.c_str());
+        } else {
             self->SetStatus(active.empty() ? "Chạm mạng để xem/kết nối"
                                            : ("Đã kết nối: " + active).c_str());
+            ESP_LOGI(TAG, "WiFi scan rendered %zu networks", self->wifi_nets_.size());
         }
     }).detach();
 }
@@ -736,25 +753,54 @@ void SettingsView::WifiOpenModal(const WifiRowCtx &info) {
 }
 
 void SettingsView::WifiDoConnect(const std::string &ssid, const std::string &pw) {
+    if (wifi_busy_.exchange(true)) return;
     SetStatus(("Đang kết nối " + ssid + "...").c_str());
     std::thread([self = Self(), ssid, pw]() {
         bool ok = self->wifi_.Connect(ssid, pw);
+        std::vector<jetson::WifiNetwork> nets;
+        std::string active;
+        if (ok) {
+            nets = self->wifi_.Scan();
+            active = self->wifi_.ActiveSsid();
+        }
+        const std::string error = self->wifi_.LastError();
         LvLockGuard lock;
-        if (self) {
-            if (ok) { self->SetStatus(("Đã kết nối: " + ssid).c_str()); self->WifiRescan(); }
-            else self->SetStatus(("Lỗi: " + self->wifi_.LastError()).c_str());
+        self->wifi_busy_ = false;
+        if (ok) {
+            self->wifi_enabled_ = true;
+            self->wifi_nets_ = std::move(nets);
+            self->wifi_scanned_ = true;
+            if (self->wifi_list_) self->WifiRenderList();
+            self->SetStatus(("Đã kết nối: " + (active.empty() ? ssid : active)).c_str());
+            ESP_LOGI(TAG, "WiFi connected: %s", ssid.c_str());
+        } else {
+            self->SetStatus(("Lỗi: " + error).c_str());
+            ESP_LOGE(TAG, "WiFi connection failed for %s: %s", ssid.c_str(), error.c_str());
         }
     }).detach();
 }
 
 void SettingsView::WifiDoForget(const std::string &ssid) {
+    if (wifi_busy_.exchange(true)) return;
     std::thread([self = Self(), ssid]() {
         bool ok = self->wifi_.Forget(ssid);
+        std::vector<jetson::WifiNetwork> nets;
+        std::string active;
+        if (ok && self->wifi_.IsEnabled()) {
+            nets = self->wifi_.Scan();
+            active = self->wifi_.ActiveSsid();
+        }
+        const std::string error = self->wifi_.LastError();
         LvLockGuard lock;
-        if (self) {
-            self->SetStatus(ok ? ("Đã quên: " + ssid).c_str()
-                               : ("Lỗi: " + self->wifi_.LastError()).c_str());
-            self->WifiRescan();
+        self->wifi_busy_ = false;
+        if (ok) {
+            self->wifi_nets_ = std::move(nets);
+            if (self->wifi_list_) self->WifiRenderList();
+            self->SetStatus(active.empty() ? ("Đã quên: " + ssid).c_str()
+                                           : ("Đã kết nối: " + active).c_str());
+        } else {
+            self->SetStatus(("Lỗi: " + error).c_str());
+            ESP_LOGE(TAG, "forget WiFi failed for %s: %s", ssid.c_str(), error.c_str());
         }
     }).detach();
 }
@@ -765,28 +811,35 @@ void SettingsView::WifiDoForget(const std::string &ssid) {
 
 void SettingsView::BtRefreshSwitch() {
     if (!bt_switch_) return;
-    bool on = bluetooth_.IsPowered();
-    if (on) lv_obj_add_state(bt_switch_, LV_STATE_CHECKED);
+    if (bt_powered_) lv_obj_add_state(bt_switch_, LV_STATE_CHECKED);
     else lv_obj_clear_state(bt_switch_, LV_STATE_CHECKED);
 }
 
 void SettingsView::BtRescan() {
     if (!bt_list_) return;
-    if (!bluetooth_.IsPowered()) {
-        SetStatus("Bluetooth đang tắt");
-        bt_devs_.clear();
-        BtRenderList();
-        return;
-    }
+    if (bt_busy_.exchange(true)) return;
     SetStatus("Đang quét Bluetooth...");
+    ESP_LOGI(TAG, "Bluetooth scan requested from Settings");
     std::thread([self = Self()]() {
-        auto devs = self->bluetooth_.Scan(8);
+        const bool powered = self->bluetooth_.IsPowered();
+        std::vector<jetson::BtDevice> devs;
+        if (powered) devs = self->bluetooth_.Scan(8);
+        const std::string error = self->bluetooth_.LastError();
         LvLockGuard lock;
-        if (self) {
-            self->bt_devs_ = std::move(devs);
-            self->bt_scanned_ = true;
-            self->BtRenderList();
+        self->bt_busy_ = false;
+        self->bt_powered_ = powered;
+        self->bt_devs_ = std::move(devs);
+        self->bt_scanned_ = powered;
+        self->BtRefreshSwitch();
+        if (self->bt_list_) self->BtRenderList();
+        if (!powered) {
+            self->SetStatus("Bluetooth đang tắt hoặc không có adapter");
+        } else if (self->bt_devs_.empty() && !error.empty()) {
+            self->SetStatus(("Lỗi quét Bluetooth: " + error).c_str());
+            ESP_LOGE(TAG, "Bluetooth scan failed: %s", error.c_str());
+        } else {
             self->SetStatus("Chạm thiết bị để kết nối/ngắt/quên");
+            ESP_LOGI(TAG, "Bluetooth scan rendered %zu devices", self->bt_devs_.size());
         }
     }).detach();
 }
@@ -917,25 +970,45 @@ void SettingsView::BtOpenModal(const std::string &addr) {
 }
 
 void SettingsView::BtDoAction(const std::string &addr, bool connected) {
+    if (bt_busy_.exchange(true)) return;
     SetStatus(connected ? "Đang ngắt..." : "Đang kết nối...");
     std::thread([self = Self(), addr, connected]() {
         bool ok = connected ? self->bluetooth_.Disconnect(addr)
                             : self->bluetooth_.PairAndConnect(addr);
+        std::vector<jetson::BtDevice> devs;
+        if (ok) devs = self->bluetooth_.Scan(4);
+        const std::string error = self->bluetooth_.LastError();
         LvLockGuard lock;
-        if (self) {
-            self->SetStatus(ok ? "Xong" : ("Lỗi: " + self->bluetooth_.LastError()).c_str());
-            self->BtRescan();
+        self->bt_busy_ = false;
+        if (ok) {
+            self->bt_powered_ = true;
+            self->bt_devs_ = std::move(devs);
+            self->bt_scanned_ = true;
+            if (self->bt_list_) self->BtRenderList();
+            self->SetStatus(connected ? "Đã ngắt kết nối" : "Đã kết nối");
+        } else {
+            self->SetStatus(("Lỗi: " + error).c_str());
+            ESP_LOGE(TAG, "Bluetooth action failed for %s: %s", addr.c_str(), error.c_str());
         }
     }).detach();
 }
 
 void SettingsView::BtDoRemove(const std::string &addr) {
+    if (bt_busy_.exchange(true)) return;
     std::thread([self = Self(), addr]() {
         bool ok = self->bluetooth_.Remove(addr);
+        std::vector<jetson::BtDevice> devs;
+        if (ok && self->bluetooth_.IsPowered()) devs = self->bluetooth_.Scan(4);
+        const std::string error = self->bluetooth_.LastError();
         LvLockGuard lock;
-        if (self) {
-            self->SetStatus(ok ? "Đã quên thiết bị" : ("Lỗi: " + self->bluetooth_.LastError()).c_str());
-            self->BtRescan();
+        self->bt_busy_ = false;
+        if (ok) {
+            self->bt_devs_ = std::move(devs);
+            if (self->bt_list_) self->BtRenderList();
+            self->SetStatus("Đã quên thiết bị");
+        } else {
+            self->SetStatus(("Lỗi: " + error).c_str());
+            ESP_LOGE(TAG, "Bluetooth remove failed for %s: %s", addr.c_str(), error.c_str());
         }
     }).detach();
 }
@@ -1060,13 +1133,16 @@ void SettingsView::OpenPinModal() {
 // =========================================================================
 
 void SettingsView::OnStart() {
-    SetStatus("Chọn mục bên trái");
+    SetStatus("");
 }
 
-void SettingsView::OnResize(int /*w*/, int /*h*/) {
+void SettingsView::OnResize(int /*w*/, int h) {
     // Runs under the base class lock. Rebuild the current pane into the (already
     // resized) detail container. Sidebar/detail heights are % / flex-grown so
     // they reflow; only the pane content needs rebuilding.
+    const int pane_h = std::max(240, h - 16);
+    if (sidebar_) lv_obj_set_height(sidebar_, pane_h);
+    if (detail_) lv_obj_set_height(detail_, pane_h);
     ShowCategory(current_);
 }
 
@@ -1133,15 +1209,34 @@ void SettingsView::OnWifiSwitch(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     bool on = lv_obj_has_state(self->wifi_switch_, LV_STATE_CHECKED);
+    if (self->wifi_busy_.exchange(true)) {
+        self->WifiRefreshSwitch();
+        return;
+    }
     std::thread([self = self->Self(), on]() {
-        self->wifi_.Enable(on);
+        const bool ok = self->wifi_.Enable(on);
+        std::vector<jetson::WifiNetwork> nets;
+        std::string active;
+        if (ok && on) {
+            nets = self->wifi_.Scan();
+            active = self->wifi_.ActiveSsid();
+        }
+        const std::string error = self->wifi_.LastError();
         LvLockGuard lock;
-        if (self) {
+        self->wifi_busy_ = false;
+        if (ok) {
+            self->wifi_enabled_ = on;
             self->wifi_scanned_ = false;
-            self->SetStatus(on ? "Đang bật WiFi..." : "Đã tắt WiFi");
-            if (self->wifi_list_) lv_obj_clean(self->wifi_list_);
-            if (on) self->WifiRescan();
-            else { self->wifi_nets_.clear(); }
+            self->wifi_nets_ = std::move(nets);
+            self->wifi_scanned_ = on;
+            if (self->wifi_list_) self->WifiRenderList();
+            self->SetStatus(on ? (active.empty() ? "Đã bật WiFi"
+                                                 : ("Đã kết nối: " + active).c_str())
+                               : "Đã tắt WiFi");
+        } else {
+            self->WifiRefreshSwitch();
+            self->SetStatus(("Lỗi WiFi: " + error).c_str());
+            ESP_LOGE(TAG, "WiFi power change failed: %s", error.c_str());
         }
     }).detach();
 }
@@ -1163,16 +1258,28 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     bool on = lv_obj_has_state(self->bt_switch_, LV_STATE_CHECKED);
+    if (self->bt_busy_.exchange(true)) {
+        self->BtRefreshSwitch();
+        return;
+    }
     std::thread([self = self->Self(), on]() {
-        if (on) self->bluetooth_.PowerOn();
-        else self->bluetooth_.PowerOff();
+        const bool ok = on ? self->bluetooth_.PowerOn() : self->bluetooth_.PowerOff();
+        std::vector<jetson::BtDevice> devs;
+        if (ok && on) devs = self->bluetooth_.Scan(8);
+        const std::string error = self->bluetooth_.LastError();
         LvLockGuard lock;
-        if (self) {
+        self->bt_busy_ = false;
+        if (ok) {
+            self->bt_powered_ = on;
             self->bt_scanned_ = false;
-            self->SetStatus(on ? "Đang bật Bluetooth..." : "Đã tắt Bluetooth");
-            if (self->bt_list_) lv_obj_clean(self->bt_list_);
-            if (on) self->BtRescan();
-            else self->bt_devs_.clear();
+            self->bt_devs_ = std::move(devs);
+            self->bt_scanned_ = on;
+            if (self->bt_list_) self->BtRenderList();
+            self->SetStatus(on ? "Đã bật Bluetooth" : "Đã tắt Bluetooth");
+        } else {
+            self->BtRefreshSwitch();
+            self->SetStatus(("Lỗi Bluetooth: " + error).c_str());
+            ESP_LOGE(TAG, "Bluetooth power change failed: %s", error.c_str());
         }
     }).detach();
 }

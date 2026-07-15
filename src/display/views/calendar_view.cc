@@ -3,8 +3,10 @@
 #include "fonts.h"
 #include "settings.h"
 #include "display/theme/ui_theme.h"
+#include "esp_log.h"
 
 #include <lvgl.h>
+#include <algorithm>
 #include <ctime>
 #include <cstdio>
 #include <cstring>
@@ -14,6 +16,8 @@
 #include <vector>
 
 namespace home {
+
+#define TAG "CalendarView"
 
 namespace {
 using jetson::ui::Color;
@@ -39,8 +43,8 @@ CalendarView::CalendarView(lv_obj_t *parent, int width, int height, ClosedCb on_
     std::tm *t = std::localtime(&now);
     year_ = t->tm_year + 1900;
     month_ = t->tm_mon;
-    BuildBody();
     LoadTaskDates();
+    BuildBody();
 }
 
 int CalendarView::DaysInMonth(int y, int m) {
@@ -175,17 +179,23 @@ bool CalendarView::IsValidTime(const std::string &t) {
 void CalendarView::BuildBody() {
     const auto &p = jetson::UiTheme::Instance().Palette();
 
+    lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(body_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(body_, 4, 0);
+    lv_obj_clear_flag(body_, LV_OBJ_FLAG_SCROLLABLE);
+
     // Top row: prev | month label (grow) | "Hôm nay" | next
-    auto *top = lv_obj_create(body_);
-    lv_obj_remove_style_all(top);
-    lv_obj_set_size(top, width_ - 16, 44);
-    lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(top, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(top, 8, 0);
-    lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+    top_bar_ = lv_obj_create(body_);
+    lv_obj_remove_style_all(top_bar_);
+    lv_obj_set_size(top_bar_, width_ - 16, 44);
+    lv_obj_set_flex_flow(top_bar_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(top_bar_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(top_bar_, 8, 0);
+    lv_obj_clear_flag(top_bar_, LV_OBJ_FLAG_SCROLLABLE);
 
     auto makeNav = [&](const char *sym, lv_event_cb_t cb) {
-        auto *b = lv_button_create(top);
+        auto *b = lv_button_create(top_bar_);
         lv_obj_set_size(b, 44, 36);
         lv_obj_set_style_bg_color(b, Color(p.button), 0);
         lv_obj_set_style_radius(b, 8, 0);
@@ -199,12 +209,14 @@ void CalendarView::BuildBody() {
     };
     makeNav(LV_SYMBOL_LEFT, OnPrev);
 
-    month_label_ = lv_label_create(top);
+    month_label_ = lv_label_create(top_bar_);
     lv_obj_set_flex_grow(month_label_, 1);
     lv_obj_set_style_text_font(month_label_, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(month_label_, Color(p.text), 0);
 
-    today_btn_ = lv_button_create(top);
+    lv_obj_set_style_text_align(month_label_, LV_TEXT_ALIGN_CENTER, 0);
+
+    today_btn_ = lv_button_create(top_bar_);
     lv_obj_set_height(today_btn_, 36);
     lv_obj_set_style_bg_color(today_btn_, Color(p.row_active), 0);
     lv_obj_set_style_radius(today_btn_, 8, 0);
@@ -221,13 +233,13 @@ void CalendarView::BuildBody() {
     makeNav(LV_SYMBOL_RIGHT, OnNext);
 
     // Weekday header (7 columns).
-    auto *wd = lv_obj_create(body_);
-    lv_obj_remove_style_all(wd);
-    lv_obj_set_size(wd, width_ - 16, 24);
-    lv_obj_set_flex_flow(wd, LV_FLEX_FLOW_ROW);
-    lv_obj_clear_flag(wd, LV_OBJ_FLAG_SCROLLABLE);
+    weekday_bar_ = lv_obj_create(body_);
+    lv_obj_remove_style_all(weekday_bar_);
+    lv_obj_set_size(weekday_bar_, width_ - 16, 28);
+    lv_obj_set_flex_flow(weekday_bar_, LV_FLEX_FLOW_ROW);
+    lv_obj_clear_flag(weekday_bar_, LV_OBJ_FLAG_SCROLLABLE);
     for (int i = 0; i < 7; ++i) {
-        auto *l = lv_label_create(wd);
+        auto *l = lv_label_create(weekday_bar_);
         lv_obj_set_flex_grow(l, 1);
         lv_obj_set_style_text_font(l, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(l, Color(p.sub_text), 0);
@@ -238,34 +250,49 @@ void CalendarView::BuildBody() {
     // Day grid: 7 cols x 6 rows via flex-wrap.
     grid_ = lv_obj_create(body_);
     lv_obj_remove_style_all(grid_);
-    lv_obj_set_size(grid_, width_ - 16, height_ - 80 - 44 - 24 - 16);
     lv_obj_set_flex_flow(grid_, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(grid_, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(grid_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(grid_, 0, 0);
     lv_obj_set_style_pad_row(grid_, 4, 0);
     lv_obj_set_style_pad_column(grid_, 4, 0);
     lv_obj_clear_flag(grid_, LV_OBJ_FLAG_SCROLLABLE);
 
+    const int calendar_w = width_ - 16;
+    const int grid_h = (height_ - 48 - 16) - 44 - 28 - 8;
+    const int cell_w = (calendar_w - 6 * 4) / 7;
+    const int cell_h = (grid_h - 5 * 4) / 6;
+    lv_obj_set_size(grid_, calendar_w, grid_h);
+
     for (int i = 0; i < 42; ++i) {
         auto *cell = lv_obj_create(grid_);
         lv_obj_remove_style_all(cell);
-        lv_obj_set_flex_grow(cell, 1);
-        lv_obj_set_height(cell, 48);
-        lv_obj_set_style_radius(cell, 12, 0);
-        lv_obj_set_style_bg_opa(cell, LV_OPA_TRANSP, 0);
+        lv_obj_set_size(cell, cell_w, cell_h);
         lv_obj_set_style_pad_all(cell, 0, 0);
         lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
-        auto *num = lv_label_create(cell);
+
+        // A fixed 42px badge keeps each day aligned in a true 7 x 6 grid.
+        // Previously all cells only had flex_grow and zero base width, so LVGL
+        // put all 42 day numbers on one long row.
+        auto *badge = lv_obj_create(cell);
+        lv_obj_remove_style_all(badge);
+        lv_obj_set_size(badge, 42, 42);
+        lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_TRANSP, 0);
+        lv_obj_align(badge, LV_ALIGN_CENTER, 0, -2);
+        lv_obj_clear_flag(badge, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+        auto *num = lv_label_create(badge);
         lv_obj_set_style_text_font(num, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(num, Color(p.text), 0);
-        lv_obj_align(num, LV_ALIGN_TOP_MID, 0, 6);
+        lv_obj_center(num);
         auto *dot = lv_obj_create(cell);
         lv_obj_remove_style_all(dot);
         lv_obj_set_size(dot, 6, 6);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(dot, Color(p.accent), 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
-        lv_obj_align(dot, LV_ALIGN_BOTTOM_MID, 0, -4);
+        lv_obj_align(dot, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_clear_flag(dot, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
         auto *ctx = new DayCtx{this, 0};
         day_ctxs_[i] = ctx;
@@ -275,6 +302,21 @@ void CalendarView::BuildBody() {
     }
 
     UpdateGrid();
+    ESP_LOGI(TAG, "calendar grid ready: %04d-%02d, cell=%dx%d",
+             year_, month_ + 1, cell_w, cell_h);
+}
+
+void CalendarView::LayoutCalendar(int body_width, int body_height) {
+    const int calendar_w = std::max(320, body_width - 16);
+    const int grid_h = std::max(240, body_height - 16 - 44 - 28 - 8);
+    const int cell_w = (calendar_w - 6 * 4) / 7;
+    const int cell_h = (grid_h - 5 * 4) / 6;
+    if (top_bar_) lv_obj_set_width(top_bar_, calendar_w);
+    if (weekday_bar_) lv_obj_set_width(weekday_bar_, calendar_w);
+    if (grid_) lv_obj_set_size(grid_, calendar_w, grid_h);
+    for (auto *cell : cells_) {
+        if (cell) lv_obj_set_size(cell, cell_w, cell_h);
+    }
 }
 
 void CalendarView::UpdateGrid() {
@@ -300,7 +342,8 @@ void CalendarView::UpdateGrid() {
     for (int i = 0; i < 42; ++i) {
         int day = i - mondayOffset + 1;
         lv_obj_t *cell = cells_[i];
-        lv_obj_t *num = lv_obj_get_child(cell, 0);
+        lv_obj_t *badge = lv_obj_get_child(cell, 0);
+        lv_obj_t *num = badge ? lv_obj_get_child(badge, 0) : nullptr;
         lv_obj_t *dot = lv_obj_get_child(cell, 1);
         day_ctxs_[i]->day = 0;
         if (day >= 1 && day <= dim) {
@@ -311,18 +354,19 @@ void CalendarView::UpdateGrid() {
             lv_obj_clear_flag(cell, LV_OBJ_FLAG_HIDDEN);
             bool today = IsToday(year_, month_, day);
             bool has_tasks = task_dates_.count(Key(year_, month_, day)) > 0;
-            // macOS today: filled accent circle, white number.
-            lv_obj_set_style_bg_color(cell, Color(p.accent), 0);
-            lv_obj_set_style_bg_opa(cell, today ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
+            // macOS today: a small filled accent circle, not the entire cell.
+            lv_obj_set_style_bg_color(badge, Color(p.accent), 0);
+            lv_obj_set_style_bg_opa(badge, today ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
             lv_obj_set_style_text_color(num, today ? lv_color_white() : Color(p.text), 0);
             // Task dot below the number (accent on normal days, white on today).
             lv_obj_set_style_bg_color(dot, today ? lv_color_white() : Color(p.accent), 0);
             lv_obj_set_style_bg_opa(dot, has_tasks ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
         } else {
             lv_label_set_text(num, "");
-            lv_obj_set_style_bg_opa(cell, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_bg_opa(badge, LV_OPA_TRANSP, 0);
             lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
-            lv_obj_clear_flag(cell, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(cell, LV_OBJ_FLAG_CLICKABLE);
         }
     }
 }
@@ -332,6 +376,7 @@ void CalendarView::ChangeMonth(int delta) {
     while (month_ < 0) { month_ += 12; year_ -= 1; }
     while (month_ > 11) { month_ -= 12; year_ += 1; }
     UpdateGrid();
+    ESP_LOGI(TAG, "showing %04d-%02d", year_, month_ + 1);
 }
 
 void CalendarView::GoToday() {
@@ -580,7 +625,11 @@ void CalendarView::DeleteTask(const std::string &date, int idx) {
 }
 
 void CalendarView::OnStart() {
-    SetStatus("Chạm ngày để xem / thêm nhắc việc");
+    SetStatus("");
+}
+
+void CalendarView::OnResize(int w, int h) {
+    LayoutCalendar(w, h);
 }
 
 // ---- event handlers (run on handler_thread; take the LVGL lock) ----

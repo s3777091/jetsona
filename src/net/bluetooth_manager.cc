@@ -3,6 +3,7 @@
 #include "platform/shell_command.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -18,7 +19,10 @@ using platform::RunShellCommand;
 
 // Run a multi-line bluetoothctl command script (piped to stdin).
 int runBt(const std::string &script, std::string &out) {
-    std::string cmd = "printf '%s' " + QuoteShellArgument(script) + " | bluetoothctl";
+    // A missing/half-initialized BlueZ controller must never leave a detached
+    // worker blocked in bluetoothctl forever.
+    std::string cmd = "printf '%s' " + QuoteShellArgument(script) +
+                      " | timeout --signal=TERM 30s bluetoothctl";
     return RunShellCommand(cmd, out);
 }
 
@@ -52,48 +56,116 @@ BluetoothManager &BluetoothManager::Instance() {
 }
 
 bool BluetoothManager::Available() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::string out;
-    int rc = RunShellCommand("bluetoothctl show", out);
-    if (rc != 0) { last_error_ = "bluetoothctl not available"; return false; }
+    int rc = RunShellCommand("timeout --signal=TERM 5s bluetoothctl show", out);
+    if (rc != 0) {
+        last_error_ = "bluetoothctl not available: " + out;
+        ESP_LOGE(TAG, "availability check failed (rc=%d): %s", rc, out.c_str());
+        return false;
+    }
     // `bluetoothctl show` prints "Controller <addr> <name>" when a controller
     // exists; otherwise "No default controller available".
-    return contains(out, "Controller");
+    const bool found = contains(out, "Controller");
+    if (!found) {
+        last_error_ = "no Bluetooth controller: " + out;
+        ESP_LOGE(TAG, "%s", last_error_.c_str());
+    }
+    else last_error_.clear();
+    return found;
 }
 
 bool BluetoothManager::PowerOn() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::string out;
-    int rc = runBt("power on\n", out);
-    if (rc != 0) { last_error_ = out; return false; }
+    int rc = RunShellCommand("timeout --signal=TERM 6s bluetoothctl power on", out);
+    if (rc != 0) {
+        last_error_ = out.empty() ? "bluetoothctl power on failed" : out;
+        ESP_LOGE(TAG, "power on failed (rc=%d): %s", rc, out.c_str());
+        return false;
+    }
+
+    // BlueZ output wording differs between versions. Verify the controller
+    // state instead of depending on a particular "succeeded" message.
+    std::string state;
+    const int stateRc = RunShellCommand("timeout --signal=TERM 5s bluetoothctl show", state);
+    if (stateRc != 0 || !fieldBool(state, "Powered")) {
+        last_error_ = state.empty() ? "Bluetooth adapter did not turn on" : state;
+        ESP_LOGE(TAG, "adapter stayed off (rc=%d): %s", stateRc, state.c_str());
+        return false;
+    }
+    last_error_.clear();
+    ESP_LOGI(TAG, "adapter powered on");
     return true;
 }
 
 bool BluetoothManager::PowerOff() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::string out;
-    int rc = runBt("power off\n", out);
-    if (rc != 0) { last_error_ = out; return false; }
+    int rc = RunShellCommand("timeout --signal=TERM 6s bluetoothctl power off", out);
+    if (rc != 0) {
+        last_error_ = out.empty() ? "bluetoothctl power off failed" : out;
+        ESP_LOGE(TAG, "power off failed (rc=%d): %s", rc, out.c_str());
+        return false;
+    }
+
+    std::string state;
+    const int stateRc = RunShellCommand("timeout --signal=TERM 5s bluetoothctl show", state);
+    if (stateRc != 0 || fieldBool(state, "Powered")) {
+        last_error_ = state.empty() ? "Bluetooth adapter did not turn off" : state;
+        ESP_LOGE(TAG, "adapter stayed on (rc=%d): %s", stateRc, state.c_str());
+        return false;
+    }
+    last_error_.clear();
+    ESP_LOGI(TAG, "adapter powered off");
     return true;
 }
 
 bool BluetoothManager::IsPowered() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!Available()) return false;
     std::string out;
-    RunShellCommand("bluetoothctl show", out);
-    return fieldBool(out, "Powered");
+    const int rc = RunShellCommand("timeout --signal=TERM 5s bluetoothctl show", out);
+    if (rc != 0) {
+        last_error_ = out;
+        ESP_LOGE(TAG, "power state failed (rc=%d): %s", rc, out.c_str());
+        return false;
+    }
+    const bool powered = fieldBool(out, "Powered");
+    last_error_.clear();
+    return powered;
 }
 
 std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    duration_s = std::max(1, std::min(duration_s, 15));
+    const auto started = std::chrono::steady_clock::now();
     std::vector<BtDevice> devs;
-    if (!Available()) return devs;
-    PowerOn();
+    ESP_LOGI(TAG, "scan started (%d seconds)", duration_s);
+    if (!Available()) {
+        ESP_LOGE(TAG, "scan stopped: %s", last_error_.c_str());
+        return devs;
+    }
+    if (!PowerOn()) {
+        ESP_LOGE(TAG, "cannot power adapter: %s", last_error_.c_str());
+        return devs;
+    }
 
     // Warm up the scan for a few seconds so fresh devices appear, then list.
-    std::string scanCmd = "timeout " + std::to_string(duration_s) +
-                          " bluetoothctl scan on";
+    std::string scanCmd = "timeout --signal=INT " + std::to_string(duration_s) +
+                          "s bluetoothctl scan on";
     std::string junk;
     RunShellCommand(scanCmd, junk);
+    std::string stopOut;
+    RunShellCommand("timeout --signal=TERM 5s bluetoothctl scan off", stopOut);
 
     std::string devicesOut;
-    runBt("devices\n", devicesOut);
+    int listRc = RunShellCommand("timeout --signal=TERM 5s bluetoothctl devices", devicesOut);
+    if (listRc != 0) {
+        last_error_ = devicesOut;
+        ESP_LOGE(TAG, "device list failed (rc=%d): %s", listRc, devicesOut.c_str());
+        return devs;
+    }
 
     std::istringstream iss(devicesOut);
     std::string line;
@@ -116,7 +188,8 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
 
         // Per-device info for state + RSSI.
         std::string info;
-        runBt("info " + d.address + "\n", info);
+        RunShellCommand("timeout --signal=TERM 4s bluetoothctl info " +
+                        QuoteShellArgument(d.address), info);
         d.paired = fieldBool(info, "Paired");
         d.connected = fieldBool(info, "Connected");
         std::string rssi = field(info, "RSSI");
@@ -131,12 +204,23 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
         if (a.paired != b.paired) return a.paired;
         return a.rssi > b.rssi; // stronger (closer to 0) first
     });
+    for (const auto &dev : devs) {
+        ESP_LOGI(TAG, "device name='%s' address=%s rssi=%d paired=%d connected=%d",
+                 dev.name.c_str(), dev.address.c_str(), dev.rssi,
+                 dev.paired ? 1 : 0, dev.connected ? 1 : 0);
+    }
+    last_error_.clear();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    ESP_LOGI(TAG, "scan completed: %zu devices in %lld ms",
+             devs.size(), static_cast<long long>(elapsed));
     return devs;
 }
 
 bool BluetoothManager::PairAndConnect(const std::string &address) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!Available()) return false;
-    PowerOn();
+    if (!PowerOn()) return false;
     std::string script =
         "agent on\n"
         "default-agent\n"
@@ -148,8 +232,10 @@ bool BluetoothManager::PairAndConnect(const std::string &address) {
     (void)rc; // bluetoothctl exits 0 even on partial failure; verify via info.
 
     std::string info;
-    runBt("info " + address + "\n", info);
+    RunShellCommand("timeout --signal=TERM 5s bluetoothctl info " +
+                    QuoteShellArgument(address), info);
     if (fieldBool(info, "Connected")) {
+        last_error_.clear();
         ESP_LOGI(TAG, "connected to %s", address.c_str());
         return true;
     }
@@ -159,19 +245,35 @@ bool BluetoothManager::PairAndConnect(const std::string &address) {
 }
 
 bool BluetoothManager::Disconnect(const std::string &address) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::string out;
-    runBt("disconnect " + address + "\n", out);
+    RunShellCommand("timeout --signal=TERM 8s bluetoothctl disconnect " +
+                    QuoteShellArgument(address), out);
     std::string info;
-    runBt("info " + address + "\n", info);
-    if (!fieldBool(info, "Connected")) return true;
+    RunShellCommand("timeout --signal=TERM 5s bluetoothctl info " +
+                    QuoteShellArgument(address), info);
+    if (!fieldBool(info, "Connected")) {
+        last_error_.clear();
+        ESP_LOGI(TAG, "disconnected from %s", address.c_str());
+        return true;
+    }
     last_error_ = out;
+    ESP_LOGE(TAG, "disconnect %s failed: %s", address.c_str(), out.c_str());
     return false;
 }
 
 bool BluetoothManager::Remove(const std::string &address) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::string out;
-    int rc = runBt("remove " + address + "\n", out);
-    if (rc != 0) { last_error_ = out; return false; }
+    int rc = RunShellCommand("timeout --signal=TERM 8s bluetoothctl remove " +
+                             QuoteShellArgument(address), out);
+    if (rc != 0) {
+        last_error_ = out;
+        ESP_LOGE(TAG, "remove %s failed (rc=%d): %s", address.c_str(), rc, out.c_str());
+        return false;
+    }
+    last_error_.clear();
+    ESP_LOGI(TAG, "removed %s", address.c_str());
     return true;
 }
 

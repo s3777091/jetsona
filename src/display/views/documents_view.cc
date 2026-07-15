@@ -2,6 +2,7 @@
 #include "display/common/lvgl_utils.h"
 #include "fonts.h"
 #include "display/theme/ui_theme.h"
+#include "esp_log.h"
 
 #include <lvgl.h>
 
@@ -11,10 +12,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <pwd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 namespace home {
+
+#define TAG "DocumentsView"
 
 using jetson::ui::Color;
 using jetson::ui::LvglLockGuard;
@@ -27,20 +32,56 @@ bool CaseLess(const std::string &a, const std::string &b) {
     };
     return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), cmp);
 }
+
+bool IsDirectory(const std::string &path) {
+    struct stat st{};
+    return !path.empty() && ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// The service often runs as root, so HOME points at /root even though the real
+// desktop files live in /home/<user>.  Prefer an explicit override, then the
+// login user, and finally the first real home directory on the device.
+std::string ResolveFilesHome() {
+    if (const char *p = std::getenv("JETSON_FILES_HOME"); p && IsDirectory(p)) return p;
+
+    const char *user = std::getenv("SUDO_USER");
+    if (!user || !*user || std::strcmp(user, "root") == 0) user = std::getenv("USER");
+    if (user && *user && std::strcmp(user, "root") != 0) {
+        if (struct passwd *pw = ::getpwnam(user); pw && pw->pw_dir && IsDirectory(pw->pw_dir)) {
+            return pw->pw_dir;
+        }
+    }
+
+    if (const char *h = std::getenv("HOME"); h && *h && std::strcmp(h, "/root") != 0 &&
+                                             IsDirectory(h)) {
+        return h;
+    }
+
+    if (DIR *homes = ::opendir("/home")) {
+        std::string found;
+        while (dirent *de = ::readdir(homes)) {
+            if (de->d_name[0] == '.') continue;
+            std::string candidate = std::string("/home/") + de->d_name;
+            if (IsDirectory(candidate)) { found = std::move(candidate); break; }
+        }
+        ::closedir(homes);
+        if (!found.empty()) return found;
+    }
+
+    if (const char *h = std::getenv("HOME"); h && IsDirectory(h)) return h;
+    return "/";
+}
 } // namespace
 
 DocumentsView::DocumentsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
-    : OverlayView(parent, width, height, "Documents", std::move(on_closed)) {
-    const char *h = std::getenv("HOME");
-    root_path_ = (h && *h) ? (std::string(h) + "/Documents") : "Documents";
-    // Best-effort: create the folder so an empty-but-valid listing shows
-    // instead of an "unreadable" error on a fresh device.
-    ::mkdir(root_path_.c_str(), 0755);
+    : OverlayView(parent, width, height, "Tệp", std::move(on_closed)) {
+    root_path_ = ResolveFilesHome();
     current_path_ = root_path_;
     history_.push_back(current_path_);
     hist_idx_ = 0;
     body_w_ = width_ - 16;
-    body_h_ = (height_ - 80) - 16;
+    body_h_ = (height_ - 48) - 16;
+    ESP_LOGI(TAG, "opening file browser at %s", root_path_.c_str());
     BuildBody();
     Rescan();
     BuildGrid();
@@ -148,7 +189,8 @@ void DocumentsView::BuildToolbar() {
 }
 
 void DocumentsView::ClearGrid() {
-    for (auto *c : cells_) if (c) lv_obj_del(c);
+    // Also removes the dedicated empty-state label (which is not a file cell).
+    if (grid_) lv_obj_clean(grid_);
     cells_.clear();
     ctxs_.clear();
 }
@@ -156,8 +198,10 @@ void DocumentsView::ClearGrid() {
 void DocumentsView::BuildGrid() {
     ClearGrid();
     const auto &p = jetson::UiTheme::Instance().Palette();
-    const int cellW = 76;
-    const int cellH = 84;
+    constexpr int gap = 10;
+    const int columns = std::max(4, (body_w_ + gap) / (118 + gap));
+    const int cellW = std::max(92, (body_w_ - gap * (columns - 1)) / columns);
+    const int cellH = 106;
 
     for (size_t i = 0; i < entries_.size(); ++i) {
         const auto &e = entries_[i];
@@ -178,33 +222,40 @@ void DocumentsView::BuildGrid() {
         // Glyph (folder shape vs. file tile with the extension).
         auto *glyph = lv_obj_create(cell);
         lv_obj_remove_style_all(glyph);
-        lv_obj_set_size(glyph, 48, 48);
-        lv_obj_clear_flag(glyph, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_size(glyph, 56, 56);
+        lv_obj_clear_flag(glyph, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                                 LV_OBJ_FLAG_CLICKABLE));
         if (e.is_dir) {
             // Folder: a blue body with a small tab on the top-left.
             auto *body = lv_obj_create(glyph);
             lv_obj_remove_style_all(body);
-            lv_obj_set_size(body, 46, 34);
+            lv_obj_set_size(body, 54, 40);
             lv_obj_set_style_radius(body, 6, 0);
             lv_obj_set_style_bg_color(body, Color(0x3dabf5), 0);
             lv_obj_set_style_bg_opa(body, LV_OPA_COVER, 0);
             lv_obj_align(body, LV_ALIGN_BOTTOM_MID, 0, 0);
+            lv_obj_clear_flag(body, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                                    LV_OBJ_FLAG_CLICKABLE));
             auto *tab = lv_obj_create(glyph);
             lv_obj_remove_style_all(tab);
-            lv_obj_set_size(tab, 20, 9);
+            lv_obj_set_size(tab, 24, 10);
             lv_obj_set_style_radius(tab, 4, 0);
             lv_obj_set_style_bg_color(tab, Color(0x3dabf5), 0);
             lv_obj_set_style_bg_opa(tab, LV_OPA_COVER, 0);
             lv_obj_align(tab, LV_ALIGN_TOP_LEFT, 1, 4);
+            lv_obj_clear_flag(tab, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                                   LV_OBJ_FLAG_CLICKABLE));
         } else {
             // File: a light tile with the uppercase extension centered.
             auto *tile = lv_obj_create(glyph);
             lv_obj_remove_style_all(tile);
-            lv_obj_set_size(tile, 40, 48);
+            lv_obj_set_size(tile, 46, 54);
             lv_obj_set_style_radius(tile, 6, 0);
             lv_obj_set_style_bg_color(tile, lv_color_white(), 0);
             lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
             lv_obj_align(tile, LV_ALIGN_CENTER, 0, 0);
+            lv_obj_clear_flag(tile, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                                    LV_OBJ_FLAG_CLICKABLE));
             auto *ext = lv_label_create(tile);
             lv_obj_set_style_text_font(ext, &BUILTIN_TEXT_FONT, 0);
             lv_obj_set_style_text_color(ext, Color(0x84848a), 0);
@@ -218,7 +269,7 @@ void DocumentsView::BuildGrid() {
         lv_obj_set_style_text_color(name, Color(p.sub_text), 0);
         lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(name, cellW - 6);
-        lv_obj_set_height(name, 26);
+        lv_obj_set_height(name, 34);
         lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(name, e.name.c_str());
 
@@ -230,7 +281,13 @@ void DocumentsView::BuildGrid() {
     }
 
     if (entries_.empty()) {
-        SetStatus("Thư mục trống");
+        auto *empty = lv_label_create(grid_);
+        lv_obj_set_style_text_font(empty, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(empty, Color(p.sub_text), 0);
+        lv_obj_set_width(empty, body_w_ - 16);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(empty, "Thư mục này đang trống");
+        SetStatus("");
     } else {
         SetStatus("");
     }
@@ -238,11 +295,11 @@ void DocumentsView::BuildGrid() {
 
 void DocumentsView::Rescan() {
     // Caller holds the LVGL lock (DisplayLockGuard during construction, or
-    // LvglLockGuard from the click handlers), so it is not re-taken here -- lv_lock
-    // is not recursive (see ~OverlayView / ~BackgroundGalleryView).
+    // LvglLockGuard from the click handlers), so it is not re-taken here.
     entries_.clear();
     DIR *d = opendir(current_path_.c_str());
     if (!d) {
+        ESP_LOGE(TAG, "cannot open directory: %s", current_path_.c_str());
         SetStatus("Không mở được thư mục");
         return;
     }
@@ -270,9 +327,11 @@ void DocumentsView::Rescan() {
         if (a.is_dir != b.is_dir) return a.is_dir; // folders first
         return CaseLess(a.name, b.name);
     });
+    ESP_LOGI(TAG, "listed %zu entries in %s", entries_.size(), current_path_.c_str());
 }
 
 void DocumentsView::NavigateTo(const std::string &path, bool push_history) {
+    ESP_LOGI(TAG, "navigate to %s", path.c_str());
     if (push_history) {
         history_.resize(hist_idx_ + 1);
         history_.push_back(path);
@@ -318,7 +377,7 @@ void DocumentsView::UpdateNavButtons() {
 
 void DocumentsView::UpdatePathLabel() {
     if (!path_label_) return;
-    std::string label = (current_path_ == root_path_) ? "Documents" : BaseName(current_path_);
+    std::string label = (current_path_ == root_path_) ? "Home" : BaseName(current_path_);
     lv_label_set_text(path_label_, label.c_str());
 }
 
@@ -390,17 +449,19 @@ void DocumentsView::ClosePopup() {
 }
 
 void DocumentsView::OnStart() {
-    SetStatus("Chạm thư mục để mở, chạm file để xem thông tin");
+    // Folder cells are directly clickable; no permanent instruction strip.
+    SetStatus("");
 }
 
 void DocumentsView::OnResize(int w, int h) {
     // Runs under the base class's lock (OnZoomBtn -> ToggleZoom -> OnResize),
-    // so the lock is not re-taken here -- lv_lock is not recursive.
+    // so the lock is not re-taken here.
     body_w_ = w - 16;
     body_h_ = h - 16;
     if (toolbar_) lv_obj_set_width(toolbar_, body_w_);
     if (grid_) lv_obj_set_size(grid_, body_w_, body_h_ - 44 - 8);
-    // path_label_ has flex_grow=1, so it reflows with the toolbar automatically.
+    // Recalculate touch-target widths for the new window size.
+    BuildGrid();
 }
 
 void DocumentsView::OnBack(lv_event_t *e) {

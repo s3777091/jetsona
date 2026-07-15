@@ -258,22 +258,42 @@ void WifiSettingsView::RenderList(const std::vector<jetson::WifiNetwork> &nets) 
 }
 
 void WifiSettingsView::StartScan() {
-    if (!wifi_.Available()) {
-        SetStatus("NetworkManager không sẵn sàng (cắm USB WiFi + kiểm tra nmcli).");
-        return;
-    }
     if (scanning_.exchange(true)) return;
     SetStatus("Đang quét WiFi...");
+    ESP_LOGI(TAG, "scan requested");
     std::thread([self = shared_from_this()]() {
-        auto nets = self->wifi_.Scan();
+        const bool available = self->wifi_.Available();
+        std::vector<jetson::WifiNetwork> nets;
+        std::string active;
+        std::string error;
+        if (available) {
+            nets = self->wifi_.Scan();
+            active = self->wifi_.ActiveSsid();
+            error = self->wifi_.LastError();
+        } else {
+            error = self->wifi_.LastError();
+        }
+
         LvLockGuard lock;
         self->scanning_ = false;
         if (!self->closed_.load()) {
+            if (!available) {
+                self->SetStatus(("Lỗi WiFi: " + error).c_str());
+                ESP_LOGE(TAG, "scan unavailable: %s", error.c_str());
+                return;
+            }
             self->last_networks_ = std::move(nets);
             self->RenderList(self->last_networks_);
-            auto active = self->wifi_.ActiveSsid();
-            self->SetStatus(active.empty() ? "Chạm vào mạng để kết nối"
-                                           : ("Đã kết nối: " + active).c_str());
+            if (self->last_networks_.empty() && !error.empty()) {
+                self->SetStatus(("Lỗi quét WiFi: " + error).c_str());
+                ESP_LOGE(TAG, "scan returned no networks: %s", error.c_str());
+            } else if (self->last_networks_.empty()) {
+                self->SetStatus("Không tìm thấy mạng WiFi");
+            } else {
+                self->SetStatus(active.empty() ? "Chạm vào mạng để kết nối"
+                                               : ("Đã kết nối: " + active).c_str());
+            }
+            ESP_LOGI(TAG, "rendered %zu networks", self->last_networks_.size());
         }
     }).detach();
 }
@@ -293,17 +313,29 @@ void WifiSettingsView::HideKeyboard() {
 }
 
 void WifiSettingsView::DoConnect(const std::string &ssid, const std::string &password) {
+    if (scanning_.exchange(true)) return;
     HideKeyboard();
     SetStatus(("Đang kết nối " + ssid + "...").c_str());
     std::thread([self = shared_from_this(), ssid, password]() {
         bool ok = self->wifi_.Connect(ssid, password);
+        std::vector<jetson::WifiNetwork> nets;
+        std::string active;
+        std::string error = self->wifi_.LastError();
+        if (ok) {
+            nets = self->wifi_.Scan();
+            active = self->wifi_.ActiveSsid();
+        }
         LvLockGuard lock;
+        self->scanning_ = false;
         if (!self->closed_.load()) {
             if (ok) {
-                self->SetStatus(("Đã kết nối: " + ssid).c_str());
-                self->StartScan();
+                self->last_networks_ = std::move(nets);
+                self->RenderList(self->last_networks_);
+                self->SetStatus(("Đã kết nối: " + (active.empty() ? ssid : active)).c_str());
+                ESP_LOGI(TAG, "connection complete: %s", ssid.c_str());
             } else {
-                self->SetStatus(("Lỗi: " + self->wifi_.LastError()).c_str());
+                self->SetStatus(("Lỗi: " + error).c_str());
+                ESP_LOGE(TAG, "connection failed for %s: %s", ssid.c_str(), error.c_str());
             }
         }
     }).detach();

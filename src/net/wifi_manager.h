@@ -11,6 +11,7 @@
  * nmcli invocation); they do not touch LVGL. */
 
 #include <string>
+#include <mutex>
 #include <vector>
 
 namespace jetson {
@@ -62,10 +63,14 @@ public:
     bool Disconnect() override;
     bool Forget(const std::string &ssid) override;
 
-    std::string LastError() const override { return last_error_; }
+    std::string LastError() const override {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return last_error_;
+    }
 
 private:
     WifiManager() = default;
+    mutable std::recursive_mutex mutex_;
     mutable std::string last_error_;
 };
 

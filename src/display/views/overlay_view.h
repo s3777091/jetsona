@@ -1,10 +1,9 @@
 #pragma once
 
 /* Base for full-screen overlay views (calendar / background gallery / settings)
- * sharing the same shell: an overlay covering the screen, a 48px header with a
- * macOS-style traffic-light cluster (close / minimize / zoom) on the left and a
- * centered title (+ optional right button), a status line, and a body container
- * the subclass fills.
+ * sharing the same shell: an overlay covering the screen, a compact 48px header
+ * with a macOS-style traffic-light cluster and centered title, a body container,
+ * and a bottom status pill that is hidden when unused.
  *
  * Threading + lifetime mirror WifiSettingsView: the subclass is shared_ptr-owned
  * so worker threads (scans, etc.) can outlive the on-screen overlay; the back

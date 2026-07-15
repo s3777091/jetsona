@@ -367,6 +367,7 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
 void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
     auto *ctx = static_cast<AppCtx *>(lv_event_get_user_data(e));
     auto *self = ctx->self;
+    ESP_LOGI(TAG, "drawer click: app_id=%d", ctx->id);
     // Most drawer apps are the upcoming app set with no backing view yet, so a
     // tap just announces "coming soon". The "Ảnh" tile (id 5) opens the
     // wallpaper gallery, which moved here from the dock so the dock's folder
@@ -655,6 +656,11 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
 
     self->SetDockActive(focused);
     BounceDockButton(target);
+
+    static const char *kDockNames[] = {
+        "finder", "calendar", "files", "wifi", "bluetooth", "settings", "chat", "terminal"
+    };
+    ESP_LOGI(TAG, "dock click: %s (index=%d)", kDockNames[focused], focused);
 
     // Dock icons (in file order): finder, calendar, folder, music, reminders,
     // settings, siri, terminal. The finder icon toggles the app drawer

@@ -8,9 +8,8 @@
 
 namespace home {
 
-/* macOS-Finder-style Documents browser (the dock "folder" app). A minimal,
- * embedded-tailored take on the React file-system reference: an icon grid of
- * the entries in a real directory (~/Documents by default), folder/file
+/* Touch-first file browser (the dock "folder" app): an icon grid of
+ * the entries in the real login user's home directory, folder/file
  * glyphs, back/forward navigation, and a small info popup when a file is
  * tapped (name + size + type). Folders are opened by tapping them.
  *

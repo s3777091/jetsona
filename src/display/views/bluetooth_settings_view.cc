@@ -197,39 +197,58 @@ void BluetoothSettingsView::RenderList(const std::vector<jetson::BtDevice> &devs
 }
 
 void BluetoothSettingsView::StartScan() {
-    if (!bluetooth_.Available()) {
-        SetStatus("Bluetooth không sẵn sàng (cắm USB BT + cài bluez).");
-        return;
-    }
     if (scanning_.exchange(true)) return;
     SetStatus("Đang quét Bluetooth...");
+    ESP_LOGI(TAG, "scan requested");
     std::thread([self = shared_from_this()]() {
-        auto devs = self->bluetooth_.Scan(8);
+        const bool available = self->bluetooth_.Available();
+        std::vector<jetson::BtDevice> devs;
+        std::string error;
+        if (available) devs = self->bluetooth_.Scan(8);
+        error = self->bluetooth_.LastError();
+
         LvglLockGuard lock;
         self->scanning_ = false;
         if (!self->closed_.load()) {
+            if (!available) {
+                self->SetStatus(("Lỗi Bluetooth: " + error).c_str());
+                ESP_LOGE(TAG, "scan unavailable: %s", error.c_str());
+                return;
+            }
             self->RenderList(devs);
             int connected = 0;
             for (const auto &d : devs) if (d.connected) ++connected;
-            self->SetStatus(connected > 0
+            self->SetStatus(devs.empty() ? "Không tìm thấy thiết bị Bluetooth"
+                            : connected > 0
                                 ? (std::to_string(connected) + " thiết bị đang kết nối").c_str()
                                 : "Chạm thiết bị để pair + kết nối");
+            ESP_LOGI(TAG, "rendered %zu devices", devs.size());
         }
     }).detach();
 }
 
 void BluetoothSettingsView::DoAction(const std::string &address, bool connected) {
+    if (scanning_.exchange(true)) return;
     SetStatus(connected ? ("Đang ngắt " + address + "...").c_str()
                         : ("Đang pair + kết nối " + address + "...").c_str());
     std::thread([self = shared_from_this(), address, connected]() {
         bool ok = connected ? self->bluetooth_.Disconnect(address)
                             : self->bluetooth_.PairAndConnect(address);
+        std::string error = self->bluetooth_.LastError();
+        std::vector<jetson::BtDevice> devs;
+        if (ok) devs = self->bluetooth_.Scan(4);
         LvglLockGuard lock;
+        self->scanning_ = false;
         if (!self->closed_.load()) {
-            if (ok) self->SetStatus(connected ? "Đã ngắt kết nối" : "Đã kết nối");
-            else self->SetStatus(("Lỗi: " + self->bluetooth_.LastError()).c_str());
-            self->scanning_ = false;
-            self->StartScan();
+            if (ok) {
+                self->RenderList(devs);
+                self->SetStatus(connected ? "Đã ngắt kết nối" : "Đã kết nối");
+                ESP_LOGI(TAG, "device action complete: %s", address.c_str());
+            } else {
+                self->SetStatus(("Lỗi: " + error).c_str());
+                ESP_LOGE(TAG, "device action failed for %s: %s",
+                         address.c_str(), error.c_str());
+            }
         }
     }).detach();
 }

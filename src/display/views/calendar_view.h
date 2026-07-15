@@ -29,6 +29,7 @@ public:
 
 protected:
     void OnStart() override;
+    void OnResize(int w, int h) override;
 
 private:
     struct Task {
@@ -50,6 +51,8 @@ private:
     int month_ = 0;   // 0..11
     lv_obj_t *month_label_ = nullptr;
     lv_obj_t *today_btn_ = nullptr;
+    lv_obj_t *top_bar_ = nullptr;
+    lv_obj_t *weekday_bar_ = nullptr;
     lv_obj_t *grid_ = nullptr;
     std::array<lv_obj_t *, 42> cells_{};
     std::array<DayCtx *, 42> day_ctxs_{};
@@ -66,6 +69,7 @@ private:
     std::vector<RowCtx *> popup_rows_;  // RowCtx owned by the current modal
 
     void BuildBody();
+    void LayoutCalendar(int body_width, int body_height);
     void UpdateGrid();
     void ChangeMonth(int delta);
     void GoToday();

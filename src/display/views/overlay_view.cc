@@ -2,11 +2,14 @@
 #include "display/common/lvgl_utils.h"
 #include "fonts.h"
 #include "display/theme/ui_theme.h"
+#include "esp_log.h"
 
 #include <lvgl.h>
 #include <cstring>
 
 namespace home {
+
+#define TAG "OverlayView"
 
 using jetson::ui::Color;
 using jetson::ui::LvglLockGuard;
@@ -80,25 +83,45 @@ void OverlayView::BuildShell(const char *title) {
     lv_label_set_text(title_label_, title ? title : "");
     lv_obj_center(title_label_);
 
-    // ---- Status (24px) ----
-    status_label_ = lv_label_create(overlay_);
-    lv_obj_set_style_text_font(status_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(status_label_, Color(p.sub_text), 0);
-    lv_obj_set_pos(status_label_, 12, 54);
-    lv_obj_set_width(status_label_, width_ - 24);
-    lv_label_set_text(status_label_, "");
-
-    // ---- Body (fills remaining space) ----
+    // ---- Body (fills everything below the compact title bar) ----
+    // The old shell permanently reserved another 32 px for instructional text
+    // ("tap a folder...", "tap a day...").  On a 480 px panel that strip was
+    // both redundant and expensive.  Status is now a transient bottom pill;
+    // normal app content starts immediately below the title bar.
     body_ = lv_obj_create(overlay_);
     lv_obj_remove_style_all(body_);
-    lv_obj_set_pos(body_, 0, 80);
-    lv_obj_set_size(body_, width_, height_ - 80);
+    lv_obj_set_pos(body_, 0, 48);
+    lv_obj_set_size(body_, width_, height_ - 48);
     lv_obj_set_style_bg_opa(body_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(body_, 8, 0);
+
+    status_label_ = lv_label_create(overlay_);
+    lv_obj_set_style_text_font(status_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(status_label_, Color(p.text), 0);
+    lv_obj_set_style_bg_color(status_label_, Color(p.row), 0);
+    lv_obj_set_style_bg_opa(status_label_, LV_OPA_90, 0);
+    lv_obj_set_style_radius(status_label_, 10, 0);
+    lv_obj_set_style_pad_hor(status_label_, 10, 0);
+    lv_obj_set_style_pad_ver(status_label_, 5, 0);
+    lv_obj_set_width(status_label_, width_ - 24);
+    lv_label_set_long_mode(status_label_, LV_LABEL_LONG_DOT);
+    lv_obj_align(status_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_label_set_text(status_label_, "");
+    lv_obj_add_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
 }
 
 void OverlayView::SetStatus(const char *text) {
-    if (status_label_) lv_label_set_text(status_label_, text ? text : "");
+    if (!status_label_) return;
+    const char *message = text ? text : "";
+    if (!message[0]) {
+        lv_label_set_text(status_label_, "");
+        lv_obj_add_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    ESP_LOGI(TAG, "%s: %s", title_.c_str(), message);
+    lv_label_set_text(status_label_, message);
+    lv_obj_clear_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(status_label_);
 }
 
 void OverlayView::SetRightButton(const char *icon_symbol, RightCb cb) {
@@ -211,8 +234,9 @@ void OverlayView::ToggleZoom() {
     lv_obj_set_size(overlay_, w, h);
     lv_obj_set_width(header_, w);
     lv_obj_set_width(status_label_, w - 24);
-    lv_obj_set_size(body_, w, h - 80);
-    OnResize(w, h - 80);
+    lv_obj_align(status_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_set_size(body_, w, h - 48);
+    OnResize(w, h - 48);
 }
 
 void OverlayView::OnRight(lv_event_t *e) {
