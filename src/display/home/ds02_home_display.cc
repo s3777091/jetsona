@@ -29,6 +29,8 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
+#include <unistd.h>
 
 #define TAG "Ds02Home"
 
@@ -36,15 +38,12 @@ namespace {
 int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 using jetson::ui::Color;
 
-// Brightness (15..100) -> black-scrim opacity for the full-screen brightness
-// overlay. The scrim is CAPPED at LV_OPA_70 (~70% black) so the lowest setting
-// never makes the home screen unreadable -- otherwise a persisted-low brightness
-// darkens the dock/menu bar so the user can't see to open Settings and raise it
-// back (the pointer still works, but there's nothing visible to click).
+// Brightness (20..100) -> black-scrim opacity for the full-screen brightness
+// overlay. At the requested 20% minimum this becomes 80% black; mapping the
+// whole range linearly keeps every slider step visually meaningful.
 lv_opa_t BrightnessToOpa(int pct) {
-    int o = (100 - pct) * 255 / 100;
-    if (o > LV_OPA_70) o = LV_OPA_70;
-    return (lv_opa_t)o;
+    pct = Clamp(pct, 20, 100);
+    return (lv_opa_t)((100 - pct) * 255 / 100);
 }
 
 // Read PNG pixel dimensions from the IHDR chunk (width@16, height@20, big-endian)
@@ -182,6 +181,32 @@ void Ds02HomeDisplay::SetupUI() {
     CreateSystemBarObjects();
     CreateDockObjects();
 
+    // A simulated screen-off surface above the home UI but below app overlays.
+    // It consumes taps so an accidental touch cannot launch a dock app while
+    // the display is black; tap-to-wake can explicitly restore the home screen.
+    screen_off_overlay_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(screen_off_overlay_);
+    lv_obj_set_size(screen_off_overlay_, lv_pct(100), lv_pct(100));
+    lv_obj_set_pos(screen_off_overlay_, 0, 0);
+    lv_obj_set_style_bg_color(screen_off_overlay_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(screen_off_overlay_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(screen_off_overlay_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(screen_off_overlay_,
+                    (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN));
+    lv_obj_add_event_cb(screen_off_overlay_, OnScreenOffClicked, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(screen_off_overlay_, OnScreenOffClicked, LV_EVENT_LONG_PRESSED, this);
+
+    // True Tone / Night Shift color-temperature layer. It sits below the
+    // brightness scrim so both effects compose across the complete UI.
+    tone_overlay_ = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(tone_overlay_);
+    lv_obj_set_size(tone_overlay_, lv_pct(100), lv_pct(100));
+    lv_obj_set_pos(tone_overlay_, 0, 0);
+    lv_obj_set_style_bg_color(tone_overlay_, Color(0xffb05a), 0);
+    lv_obj_set_style_bg_opa(tone_overlay_, 0, 0);
+    lv_obj_clear_flag(tone_overlay_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
     // Brightness is emulated with a scrim because the HDMI panel has no
     // controllable backlight. Put it on LVGL's top layer so it also covers
     // full-screen app views (including Settings itself); a root_ child would
@@ -197,10 +222,12 @@ void Ds02HomeDisplay::SetupUI() {
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     {
         int b = Settings("display").GetInt("brightness", 100);
-        if (b < 15) b = 15;
+        if (b < 20) b = 20;
         if (b > 100) b = 100;
         lv_obj_set_style_bg_opa(brightness_overlay_, BrightnessToOpa(b), 0);
     }
+
+    ApplyDisplayPreferences();
 
     Settings s("display", false);
     background_files_ = jetson::ui::backgrounds::ListBackgroundFiles();
@@ -375,24 +402,37 @@ void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
 }
 
 void Ds02HomeDisplay::CreateSystemBarObjects() {
-    /* The wifi/bt/battery/volume/clock bar lives on lv_layer_top() (not root_)
-     * so it renders above every full-screen overlay and stays visible on every
-     * screen. The StatusBar self-refreshes its clock + battery; home only wires
-     * the click hooks. Created here, before brightness_overlay_ (which is also
-     * on layer_top), so the brightness scrim ends up above the bar and dims it
-     * together with the rest of the UI. */
+    /* The Dynamic-Island bar (wifi/bt/battery/EN-VI/power on the left, weekday
+     * + date + time on the right) lives on lv_layer_top() (not root_) so it
+     * renders above every full-screen overlay and stays visible on every
+     * screen. The StatusBar self-refreshes its clock + battery + language;
+     * home wires the click hooks (wifi/bt/lock/reboot/shutdown). Created here,
+     * before brightness_overlay_ (also on layer_top), so the brightness scrim
+     * ends up above the bar and dims it together with the rest of the UI. */
     volume_muted_ = Settings("display").GetBool("muted", false);
     status_bar_ = std::make_unique<StatusBar>(lv_layer_top());
     status_bar_->SetWifiAction([this]() { OpenWifiSettings(); });
     status_bar_->SetBluetoothAction([this]() { OpenBluetoothSettings(); });
-    status_bar_->SetVolumeAction([this]() { ToggleVolume(); });
+    status_bar_->SetLockAction([this]() { OpenLockScreen(); });
+    // Reboot/shutdown shell out exactly like Settings > Power does (system()
+    // on a detached thread). The power menu's open+tap is the 2-step confirm.
+    status_bar_->SetRebootAction([]() {
+        std::thread([]() { sync(); int r = std::system("reboot"); (void)r; }).detach();
+    });
+    status_bar_->SetShutdownAction([]() {
+        std::thread([]() { sync(); int r = std::system("poweroff"); (void)r; }).detach();
+    });
 
     // Reuse the base class status/notification labels (created on the screen by
-    // LvglDisplay) as a centered toast just below the menu bar.
+    // LvglDisplay) for the device-state status line.
     const int bar_h = 28;
-    if (status_label_) lv_obj_align(status_label_, LV_ALIGN_TOP_MID, 0, bar_h + 8);
+    // The device-state status ("Ready"/"Listening"/...) sits at the top-LEFT
+    // (not top-center) so it does not collide with the centered Dynamic-Island
+    // bar above it or its notification drop panel. Notifications now surface on
+    // the island, so the base notification_label_ stays hidden.
+    if (status_label_) lv_obj_align(status_label_, LV_ALIGN_TOP_LEFT, 8, bar_h + 8);
     if (notification_label_) {
-        lv_obj_align(notification_label_, LV_ALIGN_TOP_MID, 0, bar_h + 8);
+        lv_obj_align(notification_label_, LV_ALIGN_TOP_LEFT, 8, bar_h + 8);
         lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -515,24 +555,59 @@ void Ds02HomeDisplay::SetDockActive(int index) {
 
 void Ds02HomeDisplay::ApplyStandbyState() {
     if (!standby_layer_ || !launcher_layer_) return;
+    Settings display("display", false);
+    const bool always_on = display.GetBool("always_on", true);
+    const bool show_wallpaper = display.GetBool("aod_wallpaper", true);
+    const bool blur_wallpaper = display.GetBool("aod_blur", true);
     switch (standby_state_) {
     case StandbyState::Dim:
         // A sleep-screen wallpaper (if set) replaces the desktop wallpaper
         // while dim; only a light scrim is drawn over it so it stays visible.
         ApplyWallpaperForState();
         lv_obj_set_style_bg_opa(dim_overlay_,
-                                sleep_background_file_.empty() ? LV_OPA_60 : LV_OPA_20, 0);
+                                show_wallpaper
+                                    ? (sleep_background_file_.empty() ? LV_OPA_60 : LV_OPA_20)
+                                    : LV_OPA_90,
+                                0);
+        if (wallpaper_image_obj_) {
+            lv_obj_set_style_image_opa(wallpaper_image_obj_,
+                                       show_wallpaper ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            lv_obj_set_style_image_recolor(wallpaper_image_obj_, Color(0x30343a), 0);
+            lv_obj_set_style_image_recolor_opa(wallpaper_image_obj_,
+                                               blur_wallpaper ? LV_OPA_30 : LV_OPA_TRANSP, 0);
+        }
         lv_obj_clear_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
+        if (screen_off_overlay_) {
+            lv_obj_set_style_bg_opa(screen_off_overlay_,
+                                    always_on ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+            lv_obj_clear_flag(screen_off_overlay_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (status_bar_) {
+            if (always_on) status_bar_->Show();
+            else status_bar_->Hide();
+        }
         break;
     case StandbyState::Awake:
         ApplyWallpaperForState();
         lv_obj_set_style_bg_opa(dim_overlay_, 0, 0);
+        if (wallpaper_image_obj_) {
+            lv_obj_set_style_image_opa(wallpaper_image_obj_, LV_OPA_COVER, 0);
+            lv_obj_set_style_image_recolor_opa(wallpaper_image_obj_, LV_OPA_TRANSP, 0);
+        }
+        if (screen_off_overlay_) lv_obj_add_flag(screen_off_overlay_, LV_OBJ_FLAG_HIDDEN);
+        if (status_bar_) status_bar_->Show();
         lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
         break;
     case StandbyState::Launcher:
         ApplyWallpaperForState();
         lv_obj_set_style_bg_opa(dim_overlay_, 0, 0);
+        if (wallpaper_image_obj_) {
+            lv_obj_set_style_image_opa(wallpaper_image_obj_, LV_OPA_COVER, 0);
+            lv_obj_set_style_image_recolor_opa(wallpaper_image_obj_, LV_OPA_TRANSP, 0);
+        }
+        if (screen_off_overlay_) lv_obj_add_flag(screen_off_overlay_, LV_OBJ_FLAG_HIDDEN);
+        if (status_bar_) status_bar_->Show();
         lv_obj_clear_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
         break;
     }
@@ -618,6 +693,8 @@ void Ds02HomeDisplay::OpenWifiSettings() {
     wifi_view_ = std::make_shared<WifiSettingsView>(
         root_, width_, height_, wifi_,
         [this]() { wifi_view_.reset(); });
+    wifi_view_->SetNotifyCb(
+        [this](const char *msg) { ShowNotification(msg, 2500); });
     wifi_view_->Start();
 }
 
@@ -628,6 +705,8 @@ void Ds02HomeDisplay::OpenBluetoothSettings() {
     bt_view_ = std::make_shared<BluetoothSettingsView>(
         root_, width_, height_, bluetooth_,
         [this]() { bt_view_.reset(); });
+    bt_view_->SetNotifyCb(
+        [this](const char *msg) { ShowNotification(msg, 2500); });
     bt_view_->Start();
 }
 
@@ -680,6 +759,7 @@ void Ds02HomeDisplay::OpenSettings() {
     // whole panel via the scrim, volume toggles the menu-bar icon, and the
     // lock request raises the full-screen PIN lock.
     settings_view_->SetBrightnessApplier([this](int b) { SetBrightness(b); });
+    settings_view_->SetDisplayPreferencesApplier([this]() { ApplyDisplayPreferences(); });
     settings_view_->SetVolumeApplier(
         [this](int v, bool muted) {
             volume_muted_ = muted;
@@ -693,12 +773,43 @@ void Ds02HomeDisplay::OpenSettings() {
 
 void Ds02HomeDisplay::SetBrightness(int pct) {
     DisplayLockGuard lock(this);
-    if (pct < 15) pct = 15;
+    if (pct < 20) pct = 20;
     if (pct > 100) pct = 100;
     if (brightness_overlay_) {
         lv_obj_set_style_bg_opa(brightness_overlay_, BrightnessToOpa(pct), 0);
     }
     Settings("display", true).SetInt("brightness", pct);
+}
+
+void Ds02HomeDisplay::ApplyDisplayPreferences() {
+    DisplayLockGuard lock(this);
+    Settings display("display", false);
+    const bool night_shift = display.GetBool("night_shift", false);
+    const bool true_tone = display.GetBool("true_tone", false);
+    const int warmth = Clamp(display.GetInt("night_warmth", 55), 0, 100);
+    if (tone_overlay_) {
+        // True Tone is intentionally subtle. Night Shift uses the selected
+        // warmth and overrides it with a stronger amber layer.
+        const int opacity = night_shift ? (18 + warmth * 52 / 100)
+                                         : (true_tone ? 16 : 0);
+        lv_obj_set_style_bg_color(tone_overlay_,
+                                  Color(night_shift ? 0xff9b3d : 0xffd3a0), 0);
+        lv_obj_set_style_bg_opa(tone_overlay_, (lv_opa_t)opacity, 0);
+    }
+    ApplyStandbyState();
+}
+
+void Ds02HomeDisplay::OnScreenOffClicked(lv_event_t *e) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
+    if (!self) return;
+    const bool touch_to_wake = Settings("display", false).GetBool("touch_to_wake", true);
+    // A long press remains an escape hatch when tap-to-wake is disabled, since
+    // this panel has no separate hardware wake key wired into the application.
+    if (!touch_to_wake && lv_event_get_code(e) != LV_EVENT_LONG_PRESSED) return;
+    DisplayLockGuard lock(self);
+    self->standby_state_ = StandbyState::Awake;
+    self->ApplyStandbyState();
+    lv_disp_trig_activity(nullptr);
 }
 
 void Ds02HomeDisplay::OpenLockScreen() {
@@ -918,12 +1029,19 @@ void Ds02HomeDisplay::CheckIdleDim() {
     int timeout = Settings("display").GetInt("sleep_timeout", 0);
     if (timeout <= 0) return;
     DisplayLockGuard lock(this);
+    if (HasOpenOverlay()) return;
     if (standby_state_ != StandbyState::Awake) return;
     uint32_t idle_ms = lv_disp_get_inactive_time(nullptr);
     if (idle_ms >= (uint32_t)timeout * 1000u) {
         standby_state_ = StandbyState::Dim;
         ApplyStandbyState();
     }
+}
+
+bool Ds02HomeDisplay::HasOpenOverlay() const {
+    return wifi_view_ || bt_view_ || calendar_view_ || documents_view_ ||
+           gallery_view_ || settings_view_ || chat_view_ || terminal_view_ ||
+           lock_screen_view_;
 }
 
 void Ds02HomeDisplay::SetStatus(const char *status) {
@@ -936,7 +1054,14 @@ void Ds02HomeDisplay::SetStatus(const char *status) {
 }
 
 void Ds02HomeDisplay::ShowNotification(const char *notification, int duration_ms) {
-    LvglDisplay::ShowNotification(notification, duration_ms);
+    if (standby_state_ == StandbyState::Dim) {
+        Settings display("display", false);
+        if (!display.GetBool("always_on", true) ||
+            !display.GetBool("aod_notifications", true)) return;
+    }
+    // Toasts now surface as the Dynamic-Island drop notification (visible on
+    // every screen) instead of the old centered base-class toast.
+    if (status_bar_) status_bar_->ShowNotification(notification, duration_ms);
 }
 
 void Ds02HomeDisplay::SetChatMessage(const char *role, const char *content) {

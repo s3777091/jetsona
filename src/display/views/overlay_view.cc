@@ -84,7 +84,9 @@ void OverlayView::BuildShell(const char *title) {
     lv_obj_set_style_text_font(title_label_, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(title_label_, Color(p.text), 0);
     lv_label_set_text(title_label_, title ? title : "");
-    lv_obj_center(title_label_);
+    // Title sits on the left, just after the traffic-light controls, so it
+    // does not sit under the centered Dynamic-Island bar at the top.
+    lv_obj_align_to(title_label_, zoom_btn_, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
 
     // ---- Body (fills everything below the compact title bar) ----
     // Normal app content starts immediately below the title bar. The old shell

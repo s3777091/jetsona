@@ -89,12 +89,6 @@ void WifiSettingsView::BuildUi() {
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
     lv_obj_center(back_lbl);
 
-    title_label_ = lv_label_create(header);
-    lv_obj_set_style_text_font(title_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(title_label_, lv_color_white(), 0);
-    lv_label_set_text(title_label_, "WiFi");
-    lv_obj_center(title_label_);
-
     rescan_btn_ = lv_button_create(header);
     lv_obj_set_size(rescan_btn_, 40, 40);
     // Sit next to the back button on the left so the top-right corner is free
@@ -108,6 +102,14 @@ void WifiSettingsView::BuildUi() {
     lv_obj_set_style_text_color(res_lbl, lv_color_white(), 0);
     lv_label_set_text(res_lbl, LV_SYMBOL_REFRESH);
     lv_obj_center(res_lbl);
+
+    title_label_ = lv_label_create(header);
+    lv_obj_set_style_text_font(title_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title_label_, lv_color_white(), 0);
+    lv_label_set_text(title_label_, "WiFi");
+    // Title sits on the left (after the back + rescan buttons) so it does not
+    // sit under the centered Dynamic-Island bar at the top.
+    lv_obj_align_to(title_label_, rescan_btn_, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
 
     // ---- Status (24px) ----
     status_label_ = lv_label_create(overlay_);
@@ -335,6 +337,9 @@ void WifiSettingsView::DoConnect(const std::string &ssid, const std::string &pas
                 self->last_networks_ = std::move(nets);
                 self->RenderList(self->last_networks_);
                 self->SetStatus(("Đã kết nối: " + (active.empty() ? ssid : active)).c_str());
+                if (self->notify_cb_)
+                    self->notify_cb_(("Đã kết nối WiFi: " +
+                                       (active.empty() ? ssid : active)).c_str());
                 ESP_LOGI(TAG, "connection complete: %s", ssid.c_str());
             } else {
                 self->SetStatus(("Lỗi: " + error).c_str());

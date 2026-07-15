@@ -28,6 +28,7 @@ namespace home {
 class WifiSettingsView : public std::enable_shared_from_this<WifiSettingsView> {
 public:
     using ClosedCb = std::function<void()>;
+    using NotifyCb = std::function<void(const char *)>;
 
     WifiSettingsView(lv_obj_t *parent, int width, int height,
                      jetson::IWifiManager &wifi, ClosedCb on_closed);
@@ -37,6 +38,10 @@ public:
     // shared_ptr (i.e. after make_shared returns), because StartScan uses
     // shared_from_this(); calling it from the constructor would throw.
     void Start();
+
+    // Surface a short user-facing message (e.g. "Đã kết nối WiFi: <ssid>") on
+    // the home Dynamic-Island notification. Home wires this to ShowNotification.
+    void SetNotifyCb(NotifyCb cb) { notify_cb_ = std::move(cb); }
 
     // Hide + mark closed; the actual destruction is deferred (see file header).
     void RequestClose();
@@ -78,6 +83,7 @@ private:
     int width_ = 0;
     int height_ = 0;
     ClosedCb on_closed_;
+    NotifyCb notify_cb_;
 
     std::vector<jetson::WifiNetwork> last_networks_;
     std::string pending_ssid_;          // network awaiting password entry

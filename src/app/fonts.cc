@@ -96,6 +96,7 @@ void InitBuiltinFonts(const char *assets_dir) {
         joinPath(assets_dir, "fonts/arialbd.ttf"),
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
     };
     for (const auto &candidate : bold_candidates) {
         if (FileExists(candidate)) { g_bold_path = candidate; break; }

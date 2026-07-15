@@ -44,8 +44,24 @@ std::string RunCapture(const std::string &cmd) {
 // Sidebar glyphs (FONT_AWESOME / LV_SYMBOL).
 struct SleepOpt { int seconds; const char *label; };
 const SleepOpt kSleepOpts[] = {
-    {15, "15 giây"}, {30, "30 giây"}, {60, "1 phút"}, {300, "5 phút"}, {0, "Không"},
+    {30, "30 giây"}, {60, "1 phút"}, {120, "2 phút"}, {180, "3 phút"},
+    {240, "4 phút"}, {300, "5 phút"}, {0, "Không"},
 };
+constexpr int kFontSizes[] = {22, 24, 26, 28, 30, 32, 34};
+
+int FontStepForSize(int size) {
+    int best = 0;
+    for (int i = 1; i < (int)(sizeof(kFontSizes) / sizeof(kFontSizes[0])); ++i) {
+        if (std::abs(kFontSizes[i] - size) < std::abs(kFontSizes[best] - size)) best = i;
+    }
+    return best;
+}
+
+const char *SleepLabel(int seconds) {
+    for (const auto &option : kSleepOpts)
+        if (option.seconds == seconds) return option.label;
+    return "Không";
+}
 const char *kTimezones[] = {
     "Asia/Ho_Chi_Minh", "Asia/Bangkok", "Asia/Tokyo", "Asia/Shanghai",
     "Asia/Singapore", "Asia/Hong_Kong", "Asia/Kolkata", "Asia/Dubai",
@@ -138,7 +154,7 @@ void SettingsView::BuildShell() {
 
     struct Entry { Cat cat; const char *glyph; const char *label; };
     const Entry cats[] = {
-        {Cat::Display, LV_SYMBOL_EYE_OPEN, "Hiển thị"},
+        {Cat::Display, LV_SYMBOL_EYE_OPEN, "Màn hình"},
         {Cat::Sound, LV_SYMBOL_VOLUME_MAX, "Âm thanh"},
         {Cat::Wifi, LV_SYMBOL_WIFI, "WiFi"},
         {Cat::Bluetooth, LV_SYMBOL_BLUETOOTH, "Bluetooth"},
@@ -243,6 +259,10 @@ void SettingsView::ClearDetail() {
     bt_switch_ = nullptr;
     bt_list_ = nullptr;
     bright_slider_ = nullptr; // (declared via locals; reset modal refs below)
+    bright_value_label_ = nullptr;
+    text_size_slider_ = nullptr;
+    text_size_value_label_ = nullptr;
+    night_warmth_slider_ = nullptr;
     vol_slider_ = nullptr;
     mute_switch_ = nullptr;
     // Any open modal belongs to overlay_, not detail_; leave it.
@@ -268,6 +288,7 @@ lv_obj_t *SettingsView::MakeRow(const char *title, const char *sub) {
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_left(row, 14, 0);
     lv_obj_set_style_pad_right(row, 14, 0);
+    lv_obj_set_style_pad_column(row, 12, 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
@@ -294,7 +315,15 @@ lv_obj_t *SettingsView::MakeRow(const char *title, const char *sub) {
 
 lv_obj_t *SettingsView::MakeSwitch(lv_obj_t *parent, bool on, lv_event_cb_t cb) {
     auto *sw = lv_switch_create(parent);
-    lv_obj_set_size(sw, 60, 28);
+    lv_obj_set_size(sw, 52, 28);
+    lv_obj_set_style_bg_color(sw, Color(0x55565a), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, Color(0x30c967), LV_PART_MAIN | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, lv_color_white(), LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_shadow_color(sw, lv_color_black(), LV_PART_KNOB);
+    lv_obj_set_style_shadow_width(sw, 5, LV_PART_KNOB);
+    lv_obj_set_style_shadow_opa(sw, LV_OPA_30, LV_PART_KNOB);
     if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
     lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, this);
     return sw;
@@ -304,8 +333,18 @@ lv_obj_t *SettingsView::MakeSlider(lv_obj_t *parent, int minv, int maxv, int val
                                    lv_event_cb_t cb) {
     auto *sl = lv_slider_create(parent);
     lv_obj_set_width(sl, 220);
+    lv_obj_set_height(sl, 6);
     lv_slider_set_range(sl, minv, maxv);
     lv_slider_set_value(sl, val, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(sl, Color(0x68696d), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_50, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sl, Color(0x1597f4), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(sl, lv_color_white(), LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_shadow_color(sl, lv_color_black(), LV_PART_KNOB);
+    lv_obj_set_style_shadow_width(sl, 8, LV_PART_KNOB);
+    lv_obj_set_style_shadow_opa(sl, LV_OPA_30, LV_PART_KNOB);
     lv_obj_add_event_cb(sl, cb, LV_EVENT_VALUE_CHANGED, this);
     return sl;
 }
@@ -326,24 +365,329 @@ lv_obj_t *SettingsView::MakeButton(lv_obj_t *parent, const char *text, uint32_t 
     return b;
 }
 
+lv_obj_t *SettingsView::DisplayCard() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *card = lv_obj_create(detail_);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_width(card, lv_pct(100));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_style_radius(card, 14, 0);
+    lv_obj_set_style_bg_color(card, Color(p.bg), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, Color(p.border), 0);
+    lv_obj_set_style_border_opa(card, LV_OPA_60, 0);
+    lv_obj_set_style_pad_all(card, 0, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    return card;
+}
+
+lv_obj_t *SettingsView::DisplayRow(lv_obj_t *card, const char *title,
+                                   const char *sub, int height) {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *row = lv_obj_create(card);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, lv_pct(100));
+    lv_obj_set_height(row, height);
+    lv_obj_set_style_pad_left(row, 14, 0);
+    lv_obj_set_style_pad_right(row, 14, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    if (title && *title) {
+        auto *left = lv_obj_create(row);
+        lv_obj_remove_style_all(left);
+        lv_obj_set_flex_grow(left, 1);
+        lv_obj_set_height(left, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(left, 1, 0);
+        lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
+
+        auto *label = lv_label_create(left);
+        lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(p.text), 0);
+        lv_label_set_text(label, title);
+        if (sub) {
+            auto *caption = lv_label_create(left);
+            lv_obj_set_style_text_font(caption, &BUILTIN_SMALL_TEXT_FONT, 0);
+            lv_obj_set_style_text_color(caption, Color(p.sub_text), 0);
+            lv_label_set_text(caption, sub);
+        }
+    }
+    return row;
+}
+
+void SettingsView::DisplayDivider(lv_obj_t *card) {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *line = lv_obj_create(card);
+    lv_obj_remove_style_all(line);
+    lv_obj_set_size(line, lv_pct(100), 1);
+    lv_obj_set_style_bg_color(line, Color(p.border), 0);
+    lv_obj_set_style_bg_opa(line, LV_OPA_70, 0);
+    lv_obj_clear_flag(line, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+}
+
+void SettingsView::DisplayPageHeader(const char *title, bool show_back) {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *header = lv_obj_create(detail_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 42);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+    if (show_back) {
+        auto *back = lv_obj_create(header);
+        lv_obj_remove_style_all(back);
+        lv_obj_set_size(back, 36, 36);
+        lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(back, Color(p.button), 0);
+        lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+        lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_add_event_cb(back, OnDisplayBack, LV_EVENT_CLICKED, this);
+        auto *arrow = lv_label_create(back);
+        lv_obj_set_style_text_font(arrow, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(arrow, Color(p.text), 0);
+        lv_label_set_text(arrow, LV_SYMBOL_LEFT);
+        lv_obj_center(arrow);
+    }
+
+    auto *label = lv_label_create(header);
+    lv_obj_set_style_text_font(label, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(label, Color(p.text), 0);
+    lv_label_set_text(label, title);
+    lv_obj_align(label, show_back ? LV_ALIGN_LEFT_MID : LV_ALIGN_CENTER, show_back ? 48 : 0, 0);
+}
+
+void SettingsView::DisplayCaption(const char *text) {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *caption = lv_label_create(detail_);
+    lv_obj_set_width(caption, lv_pct(100));
+    lv_obj_set_style_text_font(caption, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(caption, Color(p.sub_text), 0);
+    lv_label_set_long_mode(caption, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(caption, text);
+}
+
+void SettingsView::MakeDisplayNavigationRow(lv_obj_t *card, const char *title,
+                                            const char *value, lv_event_cb_t cb) {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *row = DisplayRow(card, title, nullptr);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, this);
+
+    auto *right = lv_obj_create(row);
+    lv_obj_remove_style_all(right);
+    lv_obj_set_height(right, LV_SIZE_CONTENT);
+    lv_obj_set_width(right, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(right, 8, 0);
+    lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
+    if (value && *value) {
+        auto *status = lv_label_create(right);
+        lv_obj_set_style_text_font(status, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(status, Color(p.sub_text), 0);
+        lv_label_set_text(status, value);
+    }
+    auto *chevron = lv_label_create(right);
+    lv_obj_set_style_text_font(chevron, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(chevron, Color(p.sub_text), 0);
+    lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
+}
+
 // =========================================================================
 // Panes
 // =========================================================================
 
 void SettingsView::BuildDisplay() {
-    SectionTitle("Độ sáng");
+    switch (display_page_) {
+        case DisplayPage::Main: BuildDisplayMain(); break;
+        case DisplayPage::TextSize: BuildTextSizePage(); break;
+        case DisplayPage::NightShift: BuildNightShiftPage(); break;
+        case DisplayPage::AutoLock: BuildAutoLockPage(); break;
+        case DisplayPage::AlwaysOn: BuildAlwaysOnPage(); break;
+    }
+}
+
+void SettingsView::BuildDisplayMain() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    DisplayPageHeader("Màn hình & Độ sáng", false);
+
+    auto *text_card = DisplayCard();
+    const int font_size = Settings("display", false).GetInt("font_size", 28);
+    char font_value[24];
+    if (font_size == 28) std::snprintf(font_value, sizeof(font_value), "Mặc định");
+    else std::snprintf(font_value, sizeof(font_value), "%d%%", font_size * 100 / 28);
+    MakeDisplayNavigationRow(text_card, "Cỡ chữ", font_value, OnOpenTextSize);
+    DisplayDivider(text_card);
+    auto *bold_row = DisplayRow(text_card, "Chữ đậm", nullptr);
+    MakeSwitch(bold_row, Settings("display", false).GetBool("bold_text", false), OnBoldToggle);
+
+    auto *brightness_title = lv_label_create(detail_);
+    lv_obj_set_style_text_font(brightness_title, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(brightness_title, Color(p.sub_text), 0);
+    lv_label_set_text(brightness_title, "ĐỘ SÁNG");
+
     int v = Settings("display", true).GetInt("brightness", 100);
-    if (v < 15) v = 15;
+    if (v < 20) v = 20;
     if (v > 100) v = 100;
-    char sub[32];
-    std::snprintf(sub, sizeof(sub), "%d%%", v);
-    auto *row = MakeRow("Độ sáng màn hình", sub);
-    auto *sl = lv_slider_create(row);
-    lv_obj_set_width(sl, 220);
-    lv_slider_set_range(sl, 15, 100);
-    lv_slider_set_value(sl, v, LV_ANIM_OFF);
-    lv_obj_add_event_cb(sl, OnBrightChanged, LV_EVENT_VALUE_CHANGED, this);
-    bright_slider_ = sl;
+    auto *brightness_card = DisplayCard();
+    auto *slider_row = DisplayRow(brightness_card, "", nullptr, 58);
+    auto *sun_small = lv_label_create(slider_row);
+    lv_obj_set_style_text_font(sun_small, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(sun_small, Color(p.sub_text), 0);
+    lv_label_set_text(sun_small, "☀");
+    bright_slider_ = MakeSlider(slider_row, 20, 100, v, OnBrightChanged);
+    lv_obj_set_flex_grow(bright_slider_, 1);
+    lv_obj_set_width(bright_slider_, 1);
+    char value[16];
+    std::snprintf(value, sizeof(value), "%d%%", v);
+    bright_value_label_ = lv_label_create(slider_row);
+    lv_obj_set_style_text_font(bright_value_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(bright_value_label_, Color(p.text), 0);
+    lv_label_set_text(bright_value_label_, value);
+    DisplayDivider(brightness_card);
+    auto *tone_row = DisplayRow(brightness_card, "True Tone", nullptr);
+    MakeSwitch(tone_row, Settings("display", false).GetBool("true_tone", false),
+               OnTrueToneToggle);
+    DisplayCaption("Tự động làm dịu tông màu hiển thị để nội dung dễ nhìn và nhất quán hơn.");
+
+    auto *night_card = DisplayCard();
+    MakeDisplayNavigationRow(night_card, "Night Shift",
+                             Settings("display", false).GetBool("night_shift", false)
+                                 ? "Bật" : "Tắt",
+                             OnOpenNightShift);
+
+    auto *lock_card = DisplayCard();
+    const int sleep = Settings("display", false).GetInt("sleep_timeout", 0);
+    MakeDisplayNavigationRow(lock_card, "Tự động khóa", SleepLabel(sleep), OnOpenAutoLock);
+    DisplayDivider(lock_card);
+    auto *wake_row = DisplayRow(lock_card, "Chạm để bật", nullptr);
+    MakeSwitch(wake_row, Settings("display", false).GetBool("touch_to_wake", true),
+               OnTouchWakeToggle);
+
+    auto *always_card = DisplayCard();
+    MakeDisplayNavigationRow(always_card, "Màn hình luôn bật",
+                             Settings("display", false).GetBool("always_on", true)
+                                 ? "Bật" : "Tắt",
+                             OnOpenAlwaysOn);
+    DisplayCaption("Khi bật, màn hình chờ vẫn hiển thị thông tin bằng độ sáng thấp.");
+}
+
+void SettingsView::BuildTextSizePage() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    DisplayPageHeader("Cỡ chữ", true);
+    DisplayCaption("Các màn hình trong hệ thống sẽ điều chỉnh theo kích cỡ đọc ưa thích của bạn.");
+
+    auto *preview = DisplayCard();
+    auto *preview_row = DisplayRow(preview, "Văn bản mẫu", "Jetson DS-02 • Dễ đọc, rõ ràng", 64);
+    (void)preview_row;
+
+    auto *size_card = DisplayCard();
+    auto *size_row = DisplayRow(size_card, "", nullptr, 70);
+    auto *small_a = lv_label_create(size_row);
+    lv_obj_set_style_text_font(small_a, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(small_a, Color(p.sub_text), 0);
+    lv_label_set_text(small_a, "A");
+    const int size = Settings("display", false).GetInt("font_size", 28);
+    text_size_slider_ = MakeSlider(size_row, 0, 6, FontStepForSize(size), OnTextSizeChanged);
+    lv_obj_set_flex_grow(text_size_slider_, 1);
+    lv_obj_set_width(text_size_slider_, 1);
+    auto *large_a = lv_label_create(size_row);
+    lv_obj_set_style_text_font(large_a, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(large_a, Color(p.text), 0);
+    lv_label_set_text(large_a, "A");
+
+    char value[20];
+    std::snprintf(value, sizeof(value), "%d%%", size * 100 / 28);
+    text_size_value_label_ = lv_label_create(detail_);
+    lv_obj_set_width(text_size_value_label_, lv_pct(100));
+    lv_obj_set_style_text_align(text_size_value_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(text_size_value_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(text_size_value_label_, Color(p.sub_text), 0);
+    lv_label_set_text(text_size_value_label_, value);
+}
+
+void SettingsView::BuildNightShiftPage() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    DisplayPageHeader("Night Shift", true);
+    DisplayCaption("Night Shift phủ một tông màu ấm lên màn hình để dịu mắt hơn trong môi trường tối.");
+
+    auto *toggle_card = DisplayCard();
+    auto *toggle_row = DisplayRow(toggle_card, "Bật thủ công", nullptr);
+    MakeSwitch(toggle_row, Settings("display", false).GetBool("night_shift", false),
+               OnNightShiftToggle);
+
+    auto *warmth_title = lv_label_create(detail_);
+    lv_obj_set_style_text_font(warmth_title, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(warmth_title, Color(p.sub_text), 0);
+    lv_label_set_text(warmth_title, "NHIỆT ĐỘ MÀU");
+    auto *warmth_card = DisplayCard();
+    auto *warmth_row = DisplayRow(warmth_card, "", nullptr, 62);
+    auto *less = lv_label_create(warmth_row);
+    lv_obj_set_style_text_font(less, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(less, Color(p.sub_text), 0);
+    lv_label_set_text(less, "Ít ấm");
+    const int warmth = std::clamp(Settings("display", false).GetInt("night_warmth", 55), 0, 100);
+    night_warmth_slider_ = MakeSlider(warmth_row, 0, 100, warmth, OnNightWarmthChanged);
+    lv_obj_set_flex_grow(night_warmth_slider_, 1);
+    lv_obj_set_width(night_warmth_slider_, 1);
+    auto *more = lv_label_create(warmth_row);
+    lv_obj_set_style_text_font(more, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(more, Color(0xffa33a), 0);
+    lv_label_set_text(more, "Ấm hơn");
+}
+
+void SettingsView::BuildAutoLockPage() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    DisplayPageHeader("Tự động khóa", true);
+    const int current = Settings("display", false).GetInt("sleep_timeout", 0);
+    auto *card = DisplayCard();
+    for (size_t i = 0; i < sizeof(kSleepOpts) / sizeof(kSleepOpts[0]); ++i) {
+        const auto &option = kSleepOpts[i];
+        auto *row = DisplayRow(card, option.label, nullptr, 44);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        auto *ctx = new OptCtx{this, std::to_string(option.seconds)};
+        lv_obj_add_event_cb(row, OnSleepSelected, LV_EVENT_CLICKED, ctx);
+        lv_obj_add_event_cb(row, OnOptDeleted, LV_EVENT_DELETE, ctx);
+        if (current == option.seconds) {
+            auto *check = lv_label_create(row);
+            lv_obj_set_style_text_font(check, &BUILTIN_ICON_FONT, 0);
+            lv_obj_set_style_text_color(check, Color(p.accent), 0);
+            lv_label_set_text(check, LV_SYMBOL_OK);
+        }
+        if (i + 1 < sizeof(kSleepOpts) / sizeof(kSleepOpts[0])) DisplayDivider(card);
+    }
+}
+
+void SettingsView::BuildAlwaysOnPage() {
+    DisplayPageHeader("Màn hình luôn bật", true);
+    DisplayCaption("Màn hình chờ giảm độ sáng để hiển thị thời gian và thông tin với mức tiêu thụ điện thấp.");
+    DisplayCaption("Màn hình sẽ tự chuyển sang trạng thái chờ sau khoảng thời gian Tự động khóa.");
+
+    auto *options = DisplayCard();
+    auto *wallpaper = DisplayRow(options, "Hiển thị hình nền", nullptr);
+    MakeSwitch(wallpaper, Settings("display", false).GetBool("aod_wallpaper", true),
+               OnAlwaysOnWallpaperToggle);
+    DisplayDivider(options);
+    auto *blur = DisplayRow(options, "Làm mờ hình nền", nullptr);
+    MakeSwitch(blur, Settings("display", false).GetBool("aod_blur", true),
+               OnAlwaysOnBlurToggle);
+    DisplayDivider(options);
+    auto *notifications = DisplayRow(options, "Hiển thị thông báo", nullptr);
+    MakeSwitch(notifications,
+               Settings("display", false).GetBool("aod_notifications", true),
+               OnAlwaysOnNotificationsToggle);
+
+    auto *master = DisplayCard();
+    auto *master_row = DisplayRow(master, "Màn hình luôn bật", nullptr);
+    MakeSwitch(master_row, Settings("display", false).GetBool("always_on", true),
+               OnAlwaysOnToggle);
+    DisplayCaption("Khi tắt, màn hình sẽ chuyển sang màu đen sau khi tự động khóa.");
 }
 
 void SettingsView::BuildSound() {
@@ -471,36 +815,6 @@ void SettingsView::BuildDateTime() {
 
 void SettingsView::BuildPower() {
     SectionTitle("Nguồn & Khóa");
-
-    // Sleep timeout.
-    int cur = Settings("display", true).GetInt("sleep_timeout", 0);
-    const char *curLabel = "Không";
-    for (const auto &o : kSleepOpts) if (o.seconds == cur) { curLabel = o.label; break; }
-    auto *sleepRow = MakeRow("Tự tắt màn hình", curLabel);
-    (void)sleepRow;
-    auto *sopts = lv_obj_create(detail_);
-    lv_obj_remove_style_all(sopts);
-    lv_obj_set_width(sopts, lv_pct(100));
-    lv_obj_set_flex_flow(sopts, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_column(sopts, 6, 0);
-    lv_obj_set_style_pad_row(sopts, 6, 0);
-    lv_obj_clear_flag(sopts, LV_OBJ_FLAG_SCROLLABLE);
-    for (const auto &o : kSleepOpts) {
-        const auto &p = jetson::UiTheme::Instance().Palette();
-        bool sel = (o.seconds == cur);
-        auto *b = lv_button_create(sopts);
-        lv_obj_set_height(b, 34);
-        lv_obj_set_style_bg_color(b, sel ? Color(p.accent) : Color(p.bg), 0);
-        lv_obj_set_style_radius(b, 8, 0);
-        auto *l = lv_label_create(b);
-        lv_obj_set_style_text_font(l, &BUILTIN_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(l, sel ? lv_color_white() : Color(p.text), 0);
-        lv_label_set_text(l, o.label);
-        lv_obj_center(l);
-        auto *ctx = new OptCtx{this, std::to_string(o.seconds)};
-        lv_obj_add_event_cb(b, OnSleepSelected, LV_EVENT_CLICKED, ctx);
-        lv_obj_add_event_cb(b, OnOptDeleted, LV_EVENT_DELETE, ctx);
-    }
 
     // Lock + PIN.
     MakeButton(MakeRow("Khóa màn hình ngay", nullptr), "Khóa", 0x2b6fd6, OnLockNow);
@@ -1441,7 +1755,10 @@ void SettingsView::OnResize(int /*w*/, int h) {
 void SettingsView::OnSideClicked(lv_event_t *e) {
     LvLockGuard lock;
     auto *ctx = static_cast<SideCtx *>(lv_event_get_user_data(e));
-    if (ctx) ctx->self->ShowCategory(ctx->cat);
+    if (ctx) {
+        if (ctx->cat == Cat::Display) ctx->self->display_page_ = DisplayPage::Main;
+        ctx->self->ShowCategory(ctx->cat);
+    }
 }
 void SettingsView::OnSideDeleted(lv_event_t *e) {
     delete static_cast<SideCtx *>(lv_event_get_user_data(e));
@@ -1460,10 +1777,143 @@ void SettingsView::OnBrightChanged(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     int v = lv_slider_get_value(self->bright_slider_);
-    if (v < 15) { v = 15; lv_slider_set_value(self->bright_slider_, 15, LV_ANIM_OFF); }
+    if (v < 20) { v = 20; lv_slider_set_value(self->bright_slider_, 20, LV_ANIM_OFF); }
     Settings("display", true).SetInt("brightness", v);
     if (self->brightness_cb_) self->brightness_cb_(v);
+    if (self->bright_value_label_) {
+        char value[16];
+        std::snprintf(value, sizeof(value), "%d%%", v);
+        lv_label_set_text(self->bright_value_label_, value);
+    }
     self->SetStatus(("Độ sáng: " + std::to_string(v) + "%").c_str());
+}
+
+void SettingsView::OnDisplayBack(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    self->display_page_ = DisplayPage::Main;
+    self->ShowCategory(Cat::Display);
+}
+
+void SettingsView::OnOpenTextSize(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    self->display_page_ = DisplayPage::TextSize;
+    self->ShowCategory(Cat::Display);
+}
+
+void SettingsView::OnOpenNightShift(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    self->display_page_ = DisplayPage::NightShift;
+    self->ShowCategory(Cat::Display);
+}
+
+void SettingsView::OnOpenAutoLock(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    self->display_page_ = DisplayPage::AutoLock;
+    self->ShowCategory(Cat::Display);
+}
+
+void SettingsView::OnOpenAlwaysOn(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    self->display_page_ = DisplayPage::AlwaysOn;
+    self->ShowCategory(Cat::Display);
+}
+
+void SettingsView::OnTextSizeChanged(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const int step = std::clamp((int)lv_slider_get_value(self->text_size_slider_), 0, 6);
+    const int size = kFontSizes[step];
+    const bool bold = Settings("display", false).GetBool("bold_text", false);
+    jetson::ApplyBuiltinTypography(size, bold);
+    if (self->text_size_value_label_) {
+        char value[20];
+        std::snprintf(value, sizeof(value), "%d%%", size * 100 / 28);
+        lv_label_set_text(self->text_size_value_label_, value);
+    }
+    self->SetStatus(("Cỡ chữ: " + std::to_string(size) + " px").c_str());
+}
+
+void SettingsView::OnBoldToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    const int size = Settings("display", false).GetInt("font_size", 28);
+    jetson::ApplyBuiltinTypography(size, on);
+    self->SetStatus(on ? "Đã bật chữ đậm" : "Đã tắt chữ đậm");
+}
+
+void SettingsView::OnTrueToneToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    Settings("display", true).SetBool("true_tone", on);
+    if (self->display_preferences_cb_) self->display_preferences_cb_();
+    self->SetStatus(on ? "True Tone: Bật" : "True Tone: Tắt");
+}
+
+void SettingsView::OnNightShiftToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    Settings("display", true).SetBool("night_shift", on);
+    if (self->display_preferences_cb_) self->display_preferences_cb_();
+    self->SetStatus(on ? "Night Shift: Bật" : "Night Shift: Tắt");
+}
+
+void SettingsView::OnNightWarmthChanged(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const int warmth = lv_slider_get_value(self->night_warmth_slider_);
+    Settings("display", true).SetInt("night_warmth", warmth);
+    if (self->display_preferences_cb_) self->display_preferences_cb_();
+    self->SetStatus(("Độ ấm Night Shift: " + std::to_string(warmth) + "%").c_str());
+}
+
+void SettingsView::OnTouchWakeToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    Settings("display", true).SetBool("touch_to_wake", on);
+    if (self->display_preferences_cb_) self->display_preferences_cb_();
+    self->SetStatus(on ? "Chạm để bật: Bật" : "Chạm để bật: Tắt");
+}
+
+void SettingsView::OnAlwaysOnToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    Settings("display", true).SetBool("always_on", on);
+    if (self->display_preferences_cb_) self->display_preferences_cb_();
+    self->SetStatus(on ? "Màn hình luôn bật: Bật" : "Màn hình luôn bật: Tắt");
+}
+
+void SettingsView::OnAlwaysOnWallpaperToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    Settings("display", true).SetBool("aod_wallpaper", on);
+    if (self->display_preferences_cb_) self->display_preferences_cb_();
+}
+
+void SettingsView::OnAlwaysOnBlurToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    Settings("display", true).SetBool("aod_blur", on);
+    if (self->display_preferences_cb_) self->display_preferences_cb_();
+}
+
+void SettingsView::OnAlwaysOnNotificationsToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    Settings("display", true).SetBool("aod_notifications", on);
+    if (self->display_preferences_cb_) self->display_preferences_cb_();
 }
 
 void SettingsView::OnVolChanged(lv_event_t *e) {
@@ -1638,7 +2088,12 @@ void SettingsView::OnSleepSelected(lv_event_t *e) {
     Settings("display", true).SetInt("sleep_timeout", secs);
     ctx->self->SetStatus(secs == 0 ? "Tự tắt: Không"
                                    : ("Tự tắt sau " + std::to_string(secs) + "s").c_str());
-    ctx->self->ShowCategory(Cat::Power);
+    if (ctx->self->current_ == Cat::Display &&
+        ctx->self->display_page_ == DisplayPage::AutoLock) {
+        ctx->self->ShowCategory(Cat::Display);
+    } else {
+        ctx->self->ShowCategory(Cat::Power);
+    }
 }
 
 void SettingsView::OnLockNow(lv_event_t *e) {

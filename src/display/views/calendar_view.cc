@@ -178,6 +178,41 @@ bool CalendarView::IsValidTime(const std::string &t) {
     return hh < 24 && mm < 60;
 }
 
+std::string CalendarView::FormatTime(int minutes) {
+    if (minutes < 0 || minutes >= 24 * 60) return "";
+    char buf[6];
+    std::snprintf(buf, sizeof(buf), "%02d:%02d", minutes / 60, minutes % 60);
+    return buf;
+}
+
+bool CalendarView::IsPastDate(const std::string &date) {
+    std::time_t now = std::time(nullptr);
+    std::tm *t = std::localtime(&now);
+    return date < Key(t->tm_year + 1900, t->tm_mon, t->tm_mday);
+}
+
+bool CalendarView::IsPopupDateToday() const {
+    std::time_t now = std::time(nullptr);
+    std::tm *t = std::localtime(&now);
+    return popup_date_ == Key(t->tm_year + 1900, t->tm_mon, t->tm_mday);
+}
+
+int CalendarView::MinimumSelectableTime(bool for_end) const {
+    int minimum = 0;
+    if (IsPopupDateToday()) {
+        std::time_t now = std::time(nullptr);
+        std::tm *t = std::localtime(&now);
+        const int seconds = t->tm_hour * 3600 + t->tm_min * 60 + t->tm_sec;
+        // Five-minute wheels always land on the first slot that is still in
+        // the future, never on a minute that has partly elapsed already.
+        minimum = ((seconds + 299) / 300) * 5;
+    }
+    if (for_end && popup_start_minutes_ >= 0) {
+        minimum = std::max(minimum, popup_start_minutes_ + 5);
+    }
+    return minimum;
+}
+
 // ---- body / grid ----
 
 void CalendarView::BuildBody() {
@@ -357,12 +392,18 @@ void CalendarView::UpdateGrid() {
             lv_label_set_text(num, b);
             lv_obj_clear_flag(cell, LV_OBJ_FLAG_HIDDEN);
             bool today = IsToday(year_, month_, day);
+            bool past = IsPastDate(Key(year_, month_, day));
             bool has_tasks = task_dates_.count(Key(year_, month_, day)) > 0;
-            lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
+            if (past) lv_obj_clear_flag(cell, LV_OBJ_FLAG_CLICKABLE);
+            else lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_opa(cell, past ? LV_OPA_40 : LV_OPA_COVER, 0);
             // macOS today: a small filled accent circle, not the entire cell.
             lv_obj_set_style_bg_color(badge, Color(p.accent), 0);
             lv_obj_set_style_bg_opa(badge, today ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-            lv_obj_set_style_text_color(num, today ? lv_color_white() : Color(p.text), 0);
+            lv_obj_set_style_text_color(num,
+                                        today ? lv_color_white()
+                                              : Color(past ? p.sub_text : p.text),
+                                        0);
             // Task dot below the number (accent on normal days, white on today).
             lv_obj_set_style_bg_color(dot, today ? lv_color_white() : Color(p.accent), 0);
             lv_obj_set_style_bg_opa(dot, has_tasks ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
@@ -370,6 +411,7 @@ void CalendarView::UpdateGrid() {
             lv_label_set_text(num, "");
             lv_obj_set_style_bg_opa(badge, LV_OPA_TRANSP, 0);
             lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_opa(cell, LV_OPA_COVER, 0);
             lv_obj_clear_flag(cell, LV_OBJ_FLAG_CLICKABLE);
         }
     }
@@ -397,7 +439,23 @@ void CalendarView::OpenDayModal(int day) {
     if (day <= 0) return;
     if (popup_) CloseDayModal();
     const auto &p = jetson::UiTheme::Instance().Palette();
-    popup_date_ = Key(year_, month_, day);
+    const std::string selected_date = Key(year_, month_, day);
+    if (IsPastDate(selected_date)) {
+        SetStatus("Không thể đặt lịch trong quá khứ");
+        return;
+    }
+    popup_date_ = selected_date;
+
+    std::time_t now = std::time(nullptr);
+    std::tm *local = std::localtime(&now);
+    const int now_seconds = local->tm_hour * 3600 + local->tm_min * 60 + local->tm_sec;
+    int suggested_start = ((now_seconds + 299) / 300) * 5;
+    if (!IsPopupDateToday()) suggested_start = std::min(suggested_start, 23 * 60 + 50);
+    popup_start_minutes_ = suggested_start < 24 * 60 ? suggested_start : -1;
+    popup_end_minutes_ = popup_start_minutes_ >= 0
+                             ? std::min(popup_start_minutes_ + 60, 23 * 60 + 55)
+                             : -1;
+    if (popup_end_minutes_ <= popup_start_minutes_) popup_end_minutes_ = -1;
 
     const int overlay_w = lv_obj_get_width(overlay_);
     const int overlay_h = lv_obj_get_height(overlay_);
@@ -599,25 +657,38 @@ void CalendarView::OpenDayModal(int day) {
     lv_obj_add_event_cb(popup_all_day_, OnAllDayChanged, LV_EVENT_VALUE_CHANGED, this);
     make_divider(timing);
 
-    auto make_time_row = [&](const char *title, TelexInput **out) {
+    auto make_time_row = [&](const char *title, bool for_end,
+                             lv_obj_t **button_out, lv_obj_t **label_out) {
         auto *row = make_info_row(timing, title, 48);
         auto *date = make_text_label(row, date_text, p.sub_text);
-        lv_obj_set_width(date, 98);
-        *out = new TelexInput(row, 74, 34);
-        (*out)->SetTelex(false);
-        (*out)->SetMaxLen(5);
-        (*out)->SetPlaceholder("HH:MM");
-        style_input(*out);
-        lv_obj_set_style_bg_color((*out)->obj(), Color(p.button), 0);
-        lv_obj_set_style_bg_opa((*out)->obj(), LV_OPA_COVER, 0);
-        lv_obj_set_style_radius((*out)->obj(), 9, 0);
+        lv_obj_set_width(date, 92);
+
+        auto *button = lv_button_create(row);
+        lv_obj_set_size(button, 78, 34);
+        lv_obj_set_style_bg_color(button, Color(p.button), 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(button, 0, 0);
+        lv_obj_set_style_radius(button, 9, 0);
+        lv_obj_set_style_shadow_width(button, 0, 0);
+        lv_obj_set_style_pad_all(button, 0, 0);
+        lv_obj_add_event_cb(button,
+                            for_end ? OnEndTimeClicked : OnStartTimeClicked,
+                            LV_EVENT_CLICKED, this);
+
+        auto *label = lv_label_create(button);
+        lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(p.text), 0);
+        lv_obj_center(label);
+        *button_out = button;
+        *label_out = label;
     };
-    make_time_row("Bắt đầu", &popup_time_);
+    make_time_row("Bắt đầu", false, &popup_start_time_, &popup_start_time_label_);
     make_divider(timing);
-    make_time_row("Kết thúc", &popup_end_time_);
+    make_time_row("Kết thúc", true, &popup_end_time_, &popup_end_time_label_);
     make_divider(timing);
     auto *timezone_row = make_info_row(timing, "Múi giờ", 46);
     make_text_label(timezone_row, "Theo hệ thống", p.sub_text);
+    RefreshTimeLabels();
 
     auto make_dropdown_row = [&](lv_obj_t *parent, const char *title,
                                  const char *options, lv_obj_t **out) {
@@ -631,6 +702,30 @@ void CalendarView::OpenDayModal(int day) {
         lv_obj_set_style_bg_opa(dropdown, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(dropdown, 0, 0);
         lv_obj_set_style_radius(dropdown, 9, 0);
+        lv_obj_set_style_shadow_width(dropdown, 0, 0);
+        lv_obj_set_style_pad_hor(dropdown, 10, 0);
+        lv_dropdown_set_dir(dropdown, LV_DIR_TOP);
+
+        // LVGL's popup list has its own styles. Leaving them at the default
+        // font/line spacing makes Vietnamese options overlap and produces the
+        // broken glyph layout visible in the old form.
+        auto *list = lv_dropdown_get_list(dropdown);
+        if (list) {
+            lv_obj_set_style_text_font(list, &BUILTIN_SMALL_TEXT_FONT, LV_PART_MAIN);
+            lv_obj_set_style_text_font(list, &BUILTIN_SMALL_TEXT_FONT, LV_PART_SELECTED);
+            lv_obj_set_style_text_color(list, Color(p.text), LV_PART_MAIN);
+            lv_obj_set_style_text_color(list, lv_color_white(), LV_PART_SELECTED);
+            lv_obj_set_style_text_line_space(list, 8, LV_PART_MAIN);
+            lv_obj_set_style_text_line_space(list, 8, LV_PART_SELECTED);
+            lv_obj_set_style_bg_color(list, Color(p.panel), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(list, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_bg_color(list, Color(p.accent), LV_PART_SELECTED);
+            lv_obj_set_style_bg_opa(list, LV_OPA_COVER, LV_PART_SELECTED);
+            lv_obj_set_style_border_width(list, 1, LV_PART_MAIN);
+            lv_obj_set_style_border_color(list, Color(p.border), LV_PART_MAIN);
+            lv_obj_set_style_radius(list, 10, LV_PART_MAIN);
+            lv_obj_set_style_pad_all(list, 10, LV_PART_MAIN);
+        }
         *out = dropdown;
     };
 
@@ -680,6 +775,7 @@ void CalendarView::OpenDayModal(int day) {
 }
 
 void CalendarView::CloseDayModal() {
+    CloseTimePicker();
     // TelexInput self-deletes on LV_EVENT_DELETE of its root; lv_obj_del(popup_)
     // cascades to children including both inputs' roots.
     for (auto *ctx : popup_rows_) delete ctx;
@@ -695,14 +791,233 @@ void CalendarView::CloseDayModal() {
     // our dangling pointers.
     popup_input_ = nullptr;
     popup_location_ = nullptr;
-    popup_time_ = nullptr;
+    popup_start_time_ = nullptr;
+    popup_start_time_label_ = nullptr;
     popup_end_time_ = nullptr;
+    popup_end_time_label_ = nullptr;
     popup_url_ = nullptr;
     popup_all_day_ = nullptr;
     popup_repeat_ = nullptr;
     popup_alert_ = nullptr;
+    popup_start_minutes_ = -1;
+    popup_end_minutes_ = -1;
     popup_date_.clear();
     UpdateGrid();
+}
+
+void CalendarView::RefreshTimeLabels() {
+    if (popup_start_time_label_) {
+        const std::string text = popup_start_minutes_ >= 0
+                                     ? FormatTime(popup_start_minutes_)
+                                     : "--:--";
+        lv_label_set_text(popup_start_time_label_, text.c_str());
+    }
+    if (popup_end_time_label_) {
+        const std::string text = popup_end_minutes_ >= 0
+                                     ? FormatTime(popup_end_minutes_)
+                                     : "--:--";
+        lv_label_set_text(popup_end_time_label_, text.c_str());
+    }
+}
+
+void CalendarView::RefreshMinuteRoller(int preferred_minute) {
+    if (!time_hour_roller_ || !time_minute_roller_) return;
+    const int hour = time_picker_hour_base_ +
+                     (int)lv_roller_get_selected(time_hour_roller_);
+    time_picker_minute_base_ = hour == time_picker_min_minutes_ / 60
+                                   ? time_picker_min_minutes_ % 60
+                                   : 0;
+    time_picker_minute_base_ = ((time_picker_minute_base_ + 4) / 5) * 5;
+
+    std::string options;
+    for (int minute = time_picker_minute_base_; minute < 60; minute += 5) {
+        char value[4];
+        std::snprintf(value, sizeof(value), "%02d", minute);
+        if (!options.empty()) options += '\n';
+        options += value;
+    }
+    lv_roller_set_options(time_minute_roller_, options.c_str(), LV_ROLLER_MODE_NORMAL);
+
+    const int option_count = (60 - time_picker_minute_base_ + 4) / 5;
+    int selected = preferred_minute >= time_picker_minute_base_
+                       ? (preferred_minute - time_picker_minute_base_) / 5
+                       : 0;
+    selected = std::max(0, std::min(selected, option_count - 1));
+    lv_roller_set_selected(time_minute_roller_, selected, LV_ANIM_OFF);
+}
+
+void CalendarView::OpenTimePicker(bool for_end) {
+    if (!popup_ || (popup_all_day_ &&
+                    lv_obj_has_state(popup_all_day_, LV_STATE_CHECKED))) return;
+    CloseTimePicker();
+
+    const int minimum = MinimumSelectableTime(for_end);
+    if (minimum >= 24 * 60) {
+        SetStatus(for_end ? "Không còn giờ kết thúc hợp lệ hôm nay"
+                          : "Hôm nay không còn khung giờ hợp lệ");
+        return;
+    }
+
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    time_picker_for_end_ = for_end;
+    time_picker_min_minutes_ = minimum;
+    int selected_time = for_end ? popup_end_minutes_ : popup_start_minutes_;
+    selected_time = std::max(selected_time, minimum);
+    selected_time = std::min(selected_time, 23 * 60 + 55);
+    time_picker_hour_base_ = minimum / 60;
+
+    time_picker_ = lv_obj_create(popup_);
+    lv_obj_remove_style_all(time_picker_);
+    lv_obj_set_size(time_picker_, lv_pct(100), lv_pct(100));
+    lv_obj_set_pos(time_picker_, 0, 0);
+    lv_obj_set_style_bg_color(time_picker_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(time_picker_, LV_OPA_50, 0);
+    lv_obj_add_flag(time_picker_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(time_picker_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(time_picker_, OnTimePickerDismiss, LV_EVENT_CLICKED, this);
+
+    auto *card = lv_obj_create(time_picker_);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, 350, 300);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(card, Color(p.panel), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, Color(p.border), 0);
+    lv_obj_set_style_radius(card, 20, 0);
+    lv_obj_set_style_shadow_color(card, lv_color_black(), 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_30, 0);
+    lv_obj_set_style_shadow_width(card, 24, 0);
+    lv_obj_set_style_pad_all(card, 14, 0);
+    lv_obj_set_style_pad_row(card, 10, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto *title = lv_label_create(card);
+    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title, Color(p.text), 0);
+    lv_label_set_text(title, for_end ? "Chọn giờ kết thúc" : "Chọn giờ bắt đầu");
+
+    auto *wheels = lv_obj_create(card);
+    lv_obj_remove_style_all(wheels);
+    lv_obj_set_size(wheels, lv_pct(100), 190);
+    lv_obj_set_flex_flow(wheels, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(wheels, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(wheels, 12, 0);
+    lv_obj_clear_flag(wheels, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto style_roller = [&](lv_obj_t *roller) {
+        lv_obj_set_width(roller, 105);
+        lv_obj_set_style_text_font(roller, &BUILTIN_TEXT_FONT, LV_PART_MAIN);
+        lv_obj_set_style_text_font(roller, &BUILTIN_TEXT_FONT, LV_PART_SELECTED);
+        lv_obj_set_style_text_color(roller, Color(p.sub_text), LV_PART_MAIN);
+        lv_obj_set_style_text_color(roller, Color(p.text), LV_PART_SELECTED);
+        lv_obj_set_style_text_align(roller, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(roller, Color(p.row), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(roller, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(roller, Color(p.button), LV_PART_SELECTED);
+        lv_obj_set_style_bg_opa(roller, LV_OPA_COVER, LV_PART_SELECTED);
+        lv_obj_set_style_border_width(roller, 0, LV_PART_MAIN);
+        lv_obj_set_style_radius(roller, 14, LV_PART_MAIN);
+        lv_obj_set_style_radius(roller, 10, LV_PART_SELECTED);
+        lv_obj_set_style_text_line_space(roller, 8, LV_PART_MAIN);
+        lv_obj_set_style_text_line_space(roller, 8, LV_PART_SELECTED);
+        lv_roller_set_visible_row_count(roller, 5);
+    };
+
+    time_hour_roller_ = lv_roller_create(wheels);
+    style_roller(time_hour_roller_);
+    std::string hour_options;
+    for (int hour = time_picker_hour_base_; hour < 24; ++hour) {
+        char value[4];
+        std::snprintf(value, sizeof(value), "%02d", hour);
+        if (!hour_options.empty()) hour_options += '\n';
+        hour_options += value;
+    }
+    lv_roller_set_options(time_hour_roller_, hour_options.c_str(), LV_ROLLER_MODE_NORMAL);
+    lv_roller_set_selected(time_hour_roller_,
+                           selected_time / 60 - time_picker_hour_base_,
+                           LV_ANIM_OFF);
+
+    auto *separator = lv_label_create(wheels);
+    lv_obj_set_style_text_font(separator, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(separator, Color(p.text), 0);
+    lv_label_set_text(separator, ":");
+
+    time_minute_roller_ = lv_roller_create(wheels);
+    style_roller(time_minute_roller_);
+    RefreshMinuteRoller(selected_time % 60);
+    lv_obj_add_event_cb(time_hour_roller_, OnTimeHourChanged,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    auto *actions = lv_obj_create(card);
+    lv_obj_remove_style_all(actions);
+    lv_obj_set_size(actions, lv_pct(100), 42);
+    lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(actions, 8, 0);
+    lv_obj_clear_flag(actions, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto make_action = [&](const char *text, lv_event_cb_t cb, uint32_t bg,
+                           uint32_t color) {
+        auto *button = lv_button_create(actions);
+        lv_obj_set_size(button, 92, 38);
+        lv_obj_set_style_bg_color(button, Color(bg), 0);
+        lv_obj_set_style_radius(button, 10, 0);
+        lv_obj_set_style_shadow_width(button, 0, 0);
+        lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, this);
+        auto *label = lv_label_create(button);
+        lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(color), 0);
+        lv_label_set_text(label, text);
+        lv_obj_center(label);
+    };
+    make_action("Hủy", OnTimePickerCancel, p.button, p.text);
+    make_action("Xong", OnTimePickerConfirm, p.accent, 0xffffff);
+}
+
+void CalendarView::CloseTimePicker() {
+    if (time_picker_) lv_obj_del(time_picker_);
+    time_picker_ = nullptr;
+    time_hour_roller_ = nullptr;
+    time_minute_roller_ = nullptr;
+    time_picker_for_end_ = false;
+    time_picker_min_minutes_ = 0;
+    time_picker_hour_base_ = 0;
+    time_picker_minute_base_ = 0;
+}
+
+void CalendarView::ApplyTimePicker() {
+    if (!time_hour_roller_ || !time_minute_roller_) return;
+    const int hour = time_picker_hour_base_ +
+                     (int)lv_roller_get_selected(time_hour_roller_);
+    const int minute = time_picker_minute_base_ +
+                       (int)lv_roller_get_selected(time_minute_roller_) * 5;
+    int selected = hour * 60 + minute;
+    selected = std::max(selected, MinimumSelectableTime(time_picker_for_end_));
+    selected = std::min(selected, 23 * 60 + 55);
+
+    if (time_picker_for_end_) {
+        popup_end_minutes_ = selected;
+        if (popup_end_time_) lv_obj_set_style_border_width(popup_end_time_, 0, 0);
+    } else {
+        popup_start_minutes_ = selected;
+        if (popup_start_time_) lv_obj_set_style_border_width(popup_start_time_, 0, 0);
+        if (popup_end_minutes_ <= popup_start_minutes_) {
+            popup_end_minutes_ = popup_start_minutes_ < 23 * 60 + 55
+                                     ? std::min(popup_start_minutes_ + 60,
+                                                23 * 60 + 55)
+                                     : -1;
+        }
+    }
+    RefreshTimeLabels();
+    CloseTimePicker();
+    SetStatus("");
 }
 
 void CalendarView::RenderTaskList() {
@@ -791,8 +1106,7 @@ bool CalendarView::AddTask() {
     std::string title = popup_input_->Text();
     const bool all_day = popup_all_day_ &&
                          lv_obj_has_state(popup_all_day_, LV_STATE_CHECKED);
-    std::string time = (!all_day && popup_time_) ? popup_time_->Text() : "";
-    std::string end_time = (!all_day && popup_end_time_) ? popup_end_time_->Text() : "";
+    const std::string time = !all_day ? FormatTime(popup_start_minutes_) : "";
     if (title.empty()) {
         SetStatus("Nhập tên việc trước");
         lv_obj_set_style_border_width(popup_input_->obj(), 2, 0);
@@ -800,21 +1114,30 @@ bool CalendarView::AddTask() {
         popup_input_->Focus();
         return false;
     }
-    if (!IsValidTime(time) || !IsValidTime(end_time)) {
-        SetStatus("Giờ không hợp lệ (HH:MM)");
-        TelexInput *bad = !IsValidTime(time) ? popup_time_ : popup_end_time_;
-        if (bad) {
-            lv_obj_set_style_border_width(bad->obj(), 2, 0);
-            lv_obj_set_style_border_color(bad->obj(), lv_palette_main(LV_PALETTE_RED), 0);
-            bad->Focus();
-        }
+    if (IsPastDate(popup_date_)) {
+        SetStatus("Không thể đặt lịch trong quá khứ");
         return false;
     }
-    if (!time.empty() && !end_time.empty() && end_time < time) {
+    if (!all_day &&
+        (popup_start_minutes_ < MinimumSelectableTime(false) || time.empty())) {
+        SetStatus("Giờ bắt đầu không được ở trong quá khứ");
+        if (popup_start_time_) {
+            lv_obj_set_style_border_width(popup_start_time_, 2, 0);
+            lv_obj_set_style_border_color(popup_start_time_,
+                                          lv_palette_main(LV_PALETTE_RED), 0);
+        }
+        OpenTimePicker(false);
+        return false;
+    }
+    if (!all_day && popup_end_minutes_ >= 0 &&
+        popup_end_minutes_ <= popup_start_minutes_) {
         SetStatus("Giờ kết thúc phải sau giờ bắt đầu");
-        lv_obj_set_style_border_width(popup_end_time_->obj(), 2, 0);
-        lv_obj_set_style_border_color(popup_end_time_->obj(), lv_palette_main(LV_PALETTE_RED), 0);
-        popup_end_time_->Focus();
+        if (popup_end_time_) {
+            lv_obj_set_style_border_width(popup_end_time_, 2, 0);
+            lv_obj_set_style_border_color(popup_end_time_,
+                                          lv_palette_main(LV_PALETTE_RED), 0);
+        }
+        OpenTimePicker(true);
         return false;
     }
     auto tasks = LoadTasks(popup_date_);
@@ -902,18 +1225,52 @@ void CalendarView::OnAllDayChanged(lv_event_t *e) {
     auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
     const bool all_day = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e),
                                           LV_STATE_CHECKED);
-    auto set_enabled = [&](TelexInput *input) {
-        if (!input || !input->obj()) return;
+    auto set_enabled = [&](lv_obj_t *input) {
+        if (!input) return;
         if (all_day) {
-            lv_obj_add_state(input->obj(), LV_STATE_DISABLED);
-            lv_obj_set_style_opa(input->obj(), LV_OPA_40, 0);
+            lv_obj_add_state(input, LV_STATE_DISABLED);
+            lv_obj_set_style_opa(input, LV_OPA_40, 0);
         } else {
-            lv_obj_remove_state(input->obj(), LV_STATE_DISABLED);
-            lv_obj_set_style_opa(input->obj(), LV_OPA_COVER, 0);
+            lv_obj_remove_state(input, LV_STATE_DISABLED);
+            lv_obj_set_style_opa(input, LV_OPA_COVER, 0);
         }
     };
-    set_enabled(self->popup_time_);
+    set_enabled(self->popup_start_time_);
     set_enabled(self->popup_end_time_);
+}
+void CalendarView::OnStartTimeClicked(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
+    self->OpenTimePicker(false);
+}
+void CalendarView::OnEndTimeClicked(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
+    self->OpenTimePicker(true);
+}
+void CalendarView::OnTimePickerDismiss(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
+    if (lv_event_get_target(e) == self->time_picker_) self->CloseTimePicker();
+}
+void CalendarView::OnTimePickerCancel(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
+    self->CloseTimePicker();
+}
+void CalendarView::OnTimePickerConfirm(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
+    self->ApplyTimePicker();
+}
+void CalendarView::OnTimeHourChanged(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
+    int preferred = self->time_picker_minute_base_;
+    if (self->time_minute_roller_) {
+        preferred += (int)lv_roller_get_selected(self->time_minute_roller_) * 5;
+    }
+    self->RefreshMinuteRoller(preferred);
 }
 void CalendarView::OnRowToggle(lv_event_t *e) {
     LvglLockGuard lock;

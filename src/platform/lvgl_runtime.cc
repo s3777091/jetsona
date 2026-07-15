@@ -37,8 +37,9 @@ struct KeyboardState {
 /* US-keyboard evdev keycode -> LVGL key. Returns 0 for unmapped / modifier-only
  * keys. Printable keys return their ASCII char; navigation/edit keys return the
  * matching LV_KEY_* constant. */
-static int linux_key_to_lv(uint16_t code, bool upper)
+static int linux_key_to_lv(uint16_t code, bool shift, bool caps)
 {
+    const bool upper = shift ^ caps;
     switch(code) {
         /* Letters */
         case 30: return upper ? 'A' : 'a';   /* KEY_A */
@@ -68,28 +69,28 @@ static int linux_key_to_lv(uint16_t code, bool upper)
         case 21: return upper ? 'Y' : 'y';
         case 44: return upper ? 'Z' : 'z';
         /* Top-row digits + shifted symbols */
-        case 2:  return upper ? '!' : '1';
-        case 3:  return upper ? '@' : '2';
-        case 4:  return upper ? '#' : '3';
-        case 5:  return upper ? '$' : '4';
-        case 6:  return upper ? '%' : '5';
-        case 7:  return upper ? '^' : '6';
-        case 8:  return upper ? '&' : '7';
-        case 9:  return upper ? '*' : '8';
-        case 10: return upper ? '(' : '9';
-        case 11: return upper ? ')' : '0';
-        case 12: return upper ? '_' : '-';   /* KEY_MINUS */
-        case 13: return upper ? '+' : '=';   /* KEY_EQUAL */
+        case 2:  return shift ? '!' : '1';
+        case 3:  return shift ? '@' : '2';
+        case 4:  return shift ? '#' : '3';
+        case 5:  return shift ? '$' : '4';
+        case 6:  return shift ? '%' : '5';
+        case 7:  return shift ? '^' : '6';
+        case 8:  return shift ? '&' : '7';
+        case 9:  return shift ? '*' : '8';
+        case 10: return shift ? '(' : '9';
+        case 11: return shift ? ')' : '0';
+        case 12: return shift ? '_' : '-';   /* KEY_MINUS */
+        case 13: return shift ? '+' : '=';   /* KEY_EQUAL */
         /* Punctuation */
-        case 26: return upper ? '{' : '[';    /* KEY_LEFTBRACE */
-        case 27: return upper ? '}' : ']';    /* KEY_RIGHTBRACE */
-        case 39: return upper ? ':' : ';';    /* KEY_SEMICOLON */
-        case 40: return upper ? '"' : '\'';   /* KEY_APOSTROPHE */
-        case 41: return upper ? '~' : '`';    /* KEY_GRAVE */
-        case 43: return upper ? '|' : '\\';   /* KEY_BACKSLASH */
-        case 51: return upper ? '<' : ',';    /* KEY_COMMA */
-        case 52: return upper ? '>' : '.';    /* KEY_DOT */
-        case 53: return upper ? '?' : '/';    /* KEY_SLASH */
+        case 26: return shift ? '{' : '[';    /* KEY_LEFTBRACE */
+        case 27: return shift ? '}' : ']';    /* KEY_RIGHTBRACE */
+        case 39: return shift ? ':' : ';';    /* KEY_SEMICOLON */
+        case 40: return shift ? '"' : '\'';   /* KEY_APOSTROPHE */
+        case 41: return shift ? '~' : '`';    /* KEY_GRAVE */
+        case 43: return shift ? '|' : '\\';   /* KEY_BACKSLASH */
+        case 51: return shift ? '<' : ',';    /* KEY_COMMA */
+        case 52: return shift ? '>' : '.';    /* KEY_DOT */
+        case 53: return shift ? '?' : '/';    /* KEY_SLASH */
         case 57: return ' ';                   /* KEY_SPACE */
         /* Editing / navigation */
         case 28: return LV_KEY_ENTER;          /* KEY_ENTER */
@@ -122,13 +123,18 @@ static void keyboard_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
             continue;
         }
         if (ev.code == KEY_CAPSLOCK) {
-            if (ev.value) st->caps = !st->caps;
+            if (ev.value == 1) st->caps = !st->caps;
             continue;
         }
-        int mapped = linux_key_to_lv((uint16_t)ev.code, st->shift ^ st->caps);
+        int mapped = linux_key_to_lv((uint16_t)ev.code, st->shift, st->caps);
         if (mapped == 0) continue;
         st->key = mapped;
         st->state = ev.value ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+        /* Deliver exactly one transition per LVGL read. Draining a quick
+         * press and release in the same call leaves only RELEASED visible to
+         * LVGL, so text fields never receive LV_EVENT_KEY. The unread event
+         * remains in the non-blocking fd for the next read callback. */
+        break;
     }
     data->key = st->key;
     data->state = st->state;
@@ -255,13 +261,17 @@ lv_display_t *LvglRuntime::createDisplayWayland(int width, int height) {
 #endif
 }
 
-/* Read the first space-separated word of a /sys file as hex (the low
- * 64-bit word of a capability/property bitmask, which holds bits 0-63). */
-static unsigned long readSysFirstHexWord(const char *path) {
+/* Linux prints input capability bitmaps most-significant word first, making
+ * the final space-separated word the low machine word (bits 0..63 on this
+ * target). Keyboard letters, REL_X/Y, ABS_X/Y and INPUT_PROP_DIRECT all live
+ * there. Reading the first word misclassifies normal USB input devices that
+ * also advertise high multimedia/touch capabilities. */
+static unsigned long readSysLowHexWord(const char *path) {
     std::ifstream f(path);
     std::string word;
-    if (!(f >> word)) return 0;
-    return std::strtoul(word.c_str(), nullptr, 16);
+    unsigned long low = 0;
+    while (f >> word) low = std::strtoul(word.c_str(), nullptr, 16);
+    return low;
 }
 
 void LvglRuntime::openTouch() {
@@ -293,13 +303,13 @@ void LvglRuntime::openTouch() {
         char sysp[96];
         std::snprintf(sysp, sizeof(sysp),
                       "/sys/class/input/event%d/device/capabilities/abs", i);
-        unsigned long abs = readSysFirstHexWord(sysp);
+        unsigned long abs = readSysLowHexWord(sysp);
         bool legacy = (abs & kAbsXY) == kAbsXY;
         bool mt = (abs & kAbsMtXY) == kAbsMtXY;
         if (!legacy && !mt) continue;
         std::snprintf(sysp, sizeof(sysp),
                       "/sys/class/input/event%d/device/properties", i);
-        unsigned long props = readSysFirstHexWord(sysp);
+        unsigned long props = readSysLowHexWord(sysp);
         bool direct = (props & 0x1UL) != 0; /* INPUT_PROP_DIRECT */
         ESP_LOGI(TAG, "touch candidate: event%d abs=0x%lx direct=%d %s",
                  i, abs, direct ? 1 : 0, legacy ? "(ABS_X/Y)" : "(ABS_MT)");
@@ -347,7 +357,7 @@ void LvglRuntime::openKeyboard() {
             char sysp[96];
             std::snprintf(sysp, sizeof(sysp),
                           "/sys/class/input/event%d/device/capabilities/key", i);
-            unsigned long key = readSysFirstHexWord(sysp);
+            unsigned long key = readSysLowHexWord(sysp);
             if (((key >> 16) & 0x1UL) == 0) continue; /* KEY_Q => real keyboard */
             char path[32];
             std::snprintf(path, sizeof(path), "/dev/input/event%d", i);
@@ -408,14 +418,14 @@ void LvglRuntime::openMouse() {
             char sysp[96];
             std::snprintf(sysp, sizeof(sysp),
                           "/sys/class/input/event%d/device/capabilities/rel", i);
-            unsigned long rel = readSysFirstHexWord(sysp);
+            unsigned long rel = readSysLowHexWord(sysp);
             if ((rel & 0x3UL) != 0x3UL) continue; /* need REL_X+REL_Y => real pointer */
             std::snprintf(sysp, sizeof(sysp),
                           "/sys/class/input/event%d/device/capabilities/key", i);
-            unsigned long key = readSysFirstHexWord(sysp);
+            unsigned long key = readSysLowHexWord(sysp);
             std::snprintf(sysp, sizeof(sysp),
                           "/sys/class/input/event%d/device/capabilities/abs", i);
-            unsigned long abs = readSysFirstHexWord(sysp);
+            unsigned long abs = readSysLowHexWord(sysp);
             /* Log every candidate that has REL_X+REL_Y so we can see why the
              * mouse is/isn't selected (combo devices, misclassified touch). */
             ESP_LOGI(TAG, "mouse scan: event%d rel=0x%lx key=0x%lx abs=0x%lx",

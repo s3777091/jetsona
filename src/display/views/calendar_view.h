@@ -64,14 +64,27 @@ private:
     lv_obj_t *popup_list_ = nullptr;    // scrollable column of task rows
     TelexInput *popup_input_ = nullptr;     // event title (Telex when vi)
     TelexInput *popup_location_ = nullptr;  // optional place / video call
-    TelexInput *popup_time_ = nullptr;      // optional start "HH:MM"
-    TelexInput *popup_end_time_ = nullptr;  // optional end "HH:MM"
     TelexInput *popup_url_ = nullptr;       // explicitly optional URL
     lv_obj_t *popup_all_day_ = nullptr;
+    lv_obj_t *popup_start_time_ = nullptr;
+    lv_obj_t *popup_start_time_label_ = nullptr;
+    lv_obj_t *popup_end_time_ = nullptr;
+    lv_obj_t *popup_end_time_label_ = nullptr;
     lv_obj_t *popup_repeat_ = nullptr;
     lv_obj_t *popup_alert_ = nullptr;
+    int popup_start_minutes_ = -1;          // local time, minutes since midnight
+    int popup_end_minutes_ = -1;
     std::string popup_date_;            // "YYYY-MM-DD"
     std::vector<RowCtx *> popup_rows_;  // RowCtx owned by the current modal
+
+    // Compact hour/minute wheel shown above the day-detail sheet.
+    lv_obj_t *time_picker_ = nullptr;
+    lv_obj_t *time_hour_roller_ = nullptr;
+    lv_obj_t *time_minute_roller_ = nullptr;
+    bool time_picker_for_end_ = false;
+    int time_picker_min_minutes_ = 0;
+    int time_picker_hour_base_ = 0;
+    int time_picker_minute_base_ = 0;
 
     void BuildBody();
     void LayoutCalendar(int body_width, int body_height);
@@ -88,10 +101,19 @@ private:
     static std::string SerializeTask(const Task &t);
     static Task ParseTask(const std::string &line);
     static bool IsValidTime(const std::string &t);
+    static std::string FormatTime(int minutes);
 
     // ---- day modal ----
     void OpenDayModal(int day);
     void CloseDayModal();
+    void OpenTimePicker(bool for_end);
+    void CloseTimePicker();
+    void RefreshTimeLabels();
+    void RefreshMinuteRoller(int preferred_minute);
+    void ApplyTimePicker();
+    int MinimumSelectableTime(bool for_end) const;
+    bool IsPopupDateToday() const;
+    static bool IsPastDate(const std::string &date);
     void RenderTaskList();
     bool AddTask();
     void ToggleTask(const std::string &date, int idx);
@@ -111,6 +133,12 @@ private:
     static void OnPopupClose(lv_event_t *e);
     static void OnAddTask(lv_event_t *e);
     static void OnAllDayChanged(lv_event_t *e);
+    static void OnStartTimeClicked(lv_event_t *e);
+    static void OnEndTimeClicked(lv_event_t *e);
+    static void OnTimePickerDismiss(lv_event_t *e);
+    static void OnTimePickerCancel(lv_event_t *e);
+    static void OnTimePickerConfirm(lv_event_t *e);
+    static void OnTimeHourChanged(lv_event_t *e);
     static void OnRowToggle(lv_event_t *e);
     static void OnRowDelete(lv_event_t *e);
 };

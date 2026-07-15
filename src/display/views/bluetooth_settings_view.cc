@@ -87,12 +87,6 @@ void BluetoothSettingsView::BuildUi() {
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
     lv_obj_center(back_lbl);
 
-    title_label_ = lv_label_create(header);
-    lv_obj_set_style_text_font(title_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(title_label_, lv_color_white(), 0);
-    lv_label_set_text(title_label_, "Bluetooth");
-    lv_obj_center(title_label_);
-
     rescan_btn_ = lv_button_create(header);
     lv_obj_set_size(rescan_btn_, 40, 40);
     // Sit next to the back button on the left so the top-right corner is free
@@ -106,6 +100,14 @@ void BluetoothSettingsView::BuildUi() {
     lv_obj_set_style_text_color(res_lbl, lv_color_white(), 0);
     lv_label_set_text(res_lbl, LV_SYMBOL_REFRESH);
     lv_obj_center(res_lbl);
+
+    title_label_ = lv_label_create(header);
+    lv_obj_set_style_text_font(title_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title_label_, lv_color_white(), 0);
+    lv_label_set_text(title_label_, "Bluetooth");
+    // Title sits on the left (after the back + rescan buttons) so it does not
+    // sit under the centered Dynamic-Island bar at the top.
+    lv_obj_align_to(title_label_, rescan_btn_, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
 
     // ---- Status (24px) ----
     status_label_ = lv_label_create(overlay_);
@@ -246,6 +248,9 @@ void BluetoothSettingsView::DoAction(const std::string &address, bool connected)
             if (ok) {
                 self->RenderList(devs);
                 self->SetStatus(connected ? "Đã ngắt kết nối" : "Đã kết nối");
+                if (self->notify_cb_)
+                    self->notify_cb_(connected ? "Đã ngắt Bluetooth"
+                                               : "Đã kết nối Bluetooth");
                 ESP_LOGI(TAG, "device action complete: %s", address.c_str());
             } else {
                 self->SetStatus(("Lỗi: " + error).c_str());

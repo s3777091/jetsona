@@ -27,6 +27,7 @@ namespace home {
 class BluetoothSettingsView : public std::enable_shared_from_this<BluetoothSettingsView> {
 public:
     using ClosedCb = std::function<void()>;
+    using NotifyCb = std::function<void(const char *)>;
 
     BluetoothSettingsView(lv_obj_t *parent, int width, int height,
                           jetson::IBluetoothManager &bluetooth, ClosedCb on_closed);
@@ -34,6 +35,10 @@ public:
 
     void Start();
     void RequestClose();
+
+    // Surface a short user-facing message (e.g. "Đã kết nối Bluetooth") on the
+    // home Dynamic-Island notification. Home wires this to ShowNotification.
+    void SetNotifyCb(NotifyCb cb) { notify_cb_ = std::move(cb); }
 
 private:
     jetson::IBluetoothManager &bluetooth_;
@@ -62,6 +67,7 @@ private:
     int width_ = 0;
     int height_ = 0;
     ClosedCb on_closed_;
+    NotifyCb notify_cb_;
 
     std::atomic<bool> scanning_{false};
     std::atomic<bool> closed_{false};

@@ -66,6 +66,7 @@ public:
     void OpenTerminal();
     void OpenLockScreen();
     void SetBrightness(int pct);
+    void ApplyDisplayPreferences();
     void ApplyBackgroundFromFile(const std::string &file);
     void SetSleepBackground(const std::string &file);
     void ReloadBackgrounds();
@@ -95,6 +96,7 @@ private:
     void RefreshClock();
     void CheckIdleDim();
     void ApplyStandbyState();
+    bool HasOpenOverlay() const;
     void RepaintForTheme();
     bool ApplyBackgroundFile(const std::string &file);
     void ApplyWallpaperForState();
@@ -104,6 +106,7 @@ private:
     static void OnDockButtonEvent(lv_event_t *e);
     static void OnAppButtonClicked(lv_event_t *e);
     static void OnAppDeleted(lv_event_t *e);
+    static void OnScreenOffClicked(lv_event_t *e);
     void ToggleVolume();
     static void OnSplashOpa(void *var, int32_t v);
     static void OnSplashBar(void *var, int32_t v);
@@ -115,9 +118,13 @@ private:
 
     lv_obj_t *root_ = nullptr;
     lv_obj_t *standby_layer_ = nullptr;
-    // Full-screen black scrim on LVGL's top layer used to dim the whole UI,
-    // including app overlays. Non-clickable and non-scrollable.
+    // Full-screen software display effects. The HDMI panel does not expose a
+    // controllable backlight, so brightness and color temperature are rendered
+    // as non-interactive scrims. screen_off_overlay_ is a root child above the
+    // home UI (but below app overlays) and receives tap-to-wake input.
     lv_obj_t *brightness_overlay_ = nullptr;
+    lv_obj_t *tone_overlay_ = nullptr;
+    lv_obj_t *screen_off_overlay_ = nullptr;
     lv_obj_t *wallpaper_ = nullptr;
     lv_obj_t *wallpaper_image_obj_ = nullptr;
     lv_obj_t *dim_overlay_ = nullptr;
