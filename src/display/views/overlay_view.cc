@@ -40,10 +40,12 @@ void OverlayView::BuildShell(const char *title) {
     lv_obj_clear_flag(overlay_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(overlay_, 0, 0);
 
-    // ---- Header (48px) ----
+    // ---- Header ----
+    // The first 42 px are visually owned by the global StatusBar. App/window
+    // controls sit in the remaining lower strip instead of competing with it.
     header_ = lv_obj_create(overlay_);
     lv_obj_remove_style_all(header_);
-    lv_obj_set_size(header_, width_, 48);
+    lv_obj_set_size(header_, width_, kHeaderHeight);
     lv_obj_set_pos(header_, 0, 0);
     lv_obj_set_style_bg_color(header_, Color(p.header), 0);
     lv_obj_set_style_bg_opa(header_, LV_OPA_COVER, 0);
@@ -74,14 +76,14 @@ void OverlayView::BuildShell(const char *title) {
         *out = b;
     };
     make_light(&close_btn_, 0xFF5F57, "x", OnCloseBtn);
-    lv_obj_align(close_btn_, LV_ALIGN_LEFT_MID, 12, 0);
+    lv_obj_align(close_btn_, LV_ALIGN_BOTTOM_LEFT, 12, -8);
     make_light(&min_btn_, 0xFEBC2E, "-", OnMinBtn);
     lv_obj_align_to(min_btn_, close_btn_, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     make_light(&zoom_btn_, 0x28C840, "+", OnZoomBtn);
     lv_obj_align_to(zoom_btn_, min_btn_, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
     title_label_ = lv_label_create(header_);
-    lv_obj_set_style_text_font(title_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_font(title_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(title_label_, Color(p.text), 0);
     lv_label_set_text(title_label_, title ? title : "");
     // Title sits on the left, just after the traffic-light controls, so it
@@ -97,8 +99,8 @@ void OverlayView::BuildShell(const char *title) {
     // messages now go only to the log (see SetStatus).
     body_ = lv_obj_create(overlay_);
     lv_obj_remove_style_all(body_);
-    lv_obj_set_pos(body_, 0, 48);
-    lv_obj_set_size(body_, width_, height_ - 48);
+    lv_obj_set_pos(body_, 0, kHeaderHeight);
+    lv_obj_set_size(body_, width_, height_ - kHeaderHeight);
     lv_obj_set_style_bg_opa(body_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(body_, 8, 0);
 }
@@ -219,8 +221,8 @@ void OverlayView::ToggleZoom() {
     }
     lv_obj_set_size(overlay_, w, h);
     lv_obj_set_width(header_, w);
-    lv_obj_set_size(body_, w, h - 48);
-    OnResize(w, h - 48);
+    lv_obj_set_size(body_, w, h - kHeaderHeight);
+    OnResize(w, h - kHeaderHeight);
 }
 
 void OverlayView::OnRight(lv_event_t *e) {

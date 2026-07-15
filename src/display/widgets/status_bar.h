@@ -2,8 +2,9 @@
 
 /* iPhone-like Dynamic Island, parented to `lv_layer_top()` so it renders above
  * every full-screen view. The ordinary system information is deliberately
- * outside the island: time at the left, connectivity/battery/actions at the
- * right, and an opaque black island pill in the center.
+ * outside the island: time/date/weather at the left, a compact
+ * connectivity/battery/action cluster at the right, and an opaque black island
+ * pill in the center.
  *
  * A notification "blooms" the *same* pill into a larger rounded surface,
  * reveals a compact title/message, then smoothly returns to the sensor size.
@@ -16,7 +17,10 @@
 
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <string>
+
+class LvglImage;
 
 namespace home {
 
@@ -48,6 +52,8 @@ private:
     lv_obj_t *island_icon_ = nullptr;
     lv_obj_t *island_title_ = nullptr;
     lv_obj_t *island_message_ = nullptr;
+    lv_obj_t *left_cluster_ = nullptr;
+    lv_obj_t *right_cluster_ = nullptr;
     lv_obj_t *wifi_label_ = nullptr;
     lv_obj_t *bt_label_ = nullptr;
     lv_obj_t *battery_icon_root_ = nullptr;
@@ -58,6 +64,8 @@ private:
     lv_obj_t *lang_label_ = nullptr;
     lv_obj_t *power_label_ = nullptr;
     lv_obj_t *datetime_label_ = nullptr;
+    lv_obj_t *weather_icon_ = nullptr;
+    std::unique_ptr<LvglImage> weather_icon_image_;
 
     lv_timer_t *notif_timer_ = nullptr;
 

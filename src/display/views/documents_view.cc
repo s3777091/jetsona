@@ -156,7 +156,7 @@ DocumentsView::DocumentsView(lv_obj_t *parent, int width, int height, ClosedCb o
     history_.push_back(current_path_);
     hist_idx_ = 0;
     body_w_ = width_ - 16;
-    body_h_ = (height_ - 48) - 16;
+    body_h_ = (height_ - kHeaderHeight) - 16;
     ESP_LOGI(TAG, "opening file browser at %s", root_path_.c_str());
     BuildBody();
     Rescan();

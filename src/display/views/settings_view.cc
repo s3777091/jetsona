@@ -1,6 +1,7 @@
 #include "display/views/settings_view.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/signal_bars.h"
+#include "display/core/lvgl_image.h"
 #include "fonts.h"
 #include "display/theme/ui_theme.h"
 #include "lvgl_runtime.h"
@@ -120,6 +121,10 @@ SettingsView::SettingsView(lv_obj_t *parent, int width, int height,
                            ClosedCb on_closed)
     : OverlayView(parent, width, height, u8"Cài đặt", std::move(on_closed)),
       wifi_(wifi), bluetooth_(bluetooth) {
+    // The settings cog already identifies this window. Keep the title string
+    // internally (logs/minimize label) but do not spend header space repeating
+    // "Cài đặt" on the device.
+    if (title_label_) lv_obj_add_flag(title_label_, LV_OBJ_FLAG_HIDDEN);
     BuildShell();
 }
 
@@ -134,7 +139,7 @@ void SettingsView::BuildShell() {
     lv_obj_set_style_pad_column(body_, 8, 0);
     lv_obj_clear_flag(body_, LV_OBJ_FLAG_SCROLLABLE);
 
-    int body_h = (height_ - 48) - 16;
+    int body_h = (height_ - kHeaderHeight) - 16;
 
     // ---- Sidebar ----
     sidebar_ = lv_obj_create(body_);
@@ -174,6 +179,7 @@ void SettingsView::BuildShell() {
     lv_obj_set_style_bg_opa(detail_, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(detail_, 12, 0);
     lv_obj_set_style_pad_all(detail_, 10, 0);
+    lv_obj_set_style_pad_bottom(detail_, 20, 0);
     lv_obj_set_style_pad_row(detail_, 10, 0);
     lv_obj_set_flex_flow(detail_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(detail_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
@@ -290,24 +296,30 @@ lv_obj_t *SettingsView::MakeRow(const char *title, const char *sub) {
     lv_obj_set_style_pad_right(row, 14, 0);
     lv_obj_set_style_pad_column(row, 12, 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
     auto *left = lv_obj_create(row);
     lv_obj_remove_style_all(left);
+    lv_obj_set_width(left, 1);
     lv_obj_set_flex_grow(left, 1);
+    lv_obj_set_height(left, LV_SIZE_CONTENT);
     lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(left, 2, 0);
     auto *t = lv_label_create(left);
     lv_obj_set_style_text_font(t, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(t, Color(p.text), 0);
+    lv_obj_set_width(t, lv_pct(100));
+    lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
     lv_label_set_text(t, title);
     if (sub) {
         auto *s = lv_label_create(left);
-        lv_obj_set_style_text_font(s, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_font(s, &BUILTIN_SMALL_TEXT_FONT, 0);
         lv_obj_set_style_text_color(s, Color(p.sub_text), 0);
+        lv_obj_set_width(s, lv_pct(100));
+        lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
         lv_label_set_text(s, sub);
     }
     return row;
@@ -342,6 +354,8 @@ lv_obj_t *SettingsView::MakeSlider(lv_obj_t *parent, int minv, int maxv, int val
     lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(sl, lv_color_white(), LV_PART_KNOB);
     lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_width(sl, 22, LV_PART_KNOB);
+    lv_obj_set_style_height(sl, 22, LV_PART_KNOB);
     lv_obj_set_style_shadow_color(sl, lv_color_black(), LV_PART_KNOB);
     lv_obj_set_style_shadow_width(sl, 8, LV_PART_KNOB);
     lv_obj_set_style_shadow_opa(sl, LV_OPA_30, LV_PART_KNOB);
@@ -392,14 +406,16 @@ lv_obj_t *SettingsView::DisplayRow(lv_obj_t *card, const char *title,
     lv_obj_set_height(row, height);
     lv_obj_set_style_pad_left(row, 14, 0);
     lv_obj_set_style_pad_right(row, 14, 0);
+    lv_obj_set_style_pad_column(row, 12, 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
     if (title && *title) {
         auto *left = lv_obj_create(row);
         lv_obj_remove_style_all(left);
+        lv_obj_set_width(left, 1);
         lv_obj_set_flex_grow(left, 1);
         lv_obj_set_height(left, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
@@ -409,11 +425,15 @@ lv_obj_t *SettingsView::DisplayRow(lv_obj_t *card, const char *title,
         auto *label = lv_label_create(left);
         lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
         lv_obj_set_style_text_color(label, Color(p.text), 0);
+        lv_obj_set_width(label, lv_pct(100));
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
         lv_label_set_text(label, title);
         if (sub) {
             auto *caption = lv_label_create(left);
             lv_obj_set_style_text_font(caption, &BUILTIN_SMALL_TEXT_FONT, 0);
             lv_obj_set_style_text_color(caption, Color(p.sub_text), 0);
+            lv_obj_set_width(caption, lv_pct(100));
+            lv_label_set_long_mode(caption, LV_LABEL_LONG_DOT);
             lv_label_set_text(caption, sub);
         }
     }
@@ -537,18 +557,30 @@ void SettingsView::BuildDisplayMain() {
     if (v > 100) v = 100;
     auto *brightness_card = DisplayCard();
     auto *slider_row = DisplayRow(brightness_card, "", nullptr, 58);
-    auto *sun_small = lv_label_create(slider_row);
-    lv_obj_set_style_text_font(sun_small, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(sun_small, Color(p.sub_text), 0);
-    lv_label_set_text(sun_small, "☀");
+    /* Brightness sun icon. Rendered from a PNG (assets/icons/app/sun.png)
+     * and recolored to the palette at runtime, NOT as a U+2600 text glyph --
+     * the bundled arial.ttf has no Misc-Symbols block, so a literal "☀"
+     * floods the log with `ttf_get_glyph_dsc_cb: cache not allocated` and
+     * `glyph dsc. not found for U+2600` every frame. */
+    static auto sun_img = ::LvglImageFromFile("assets/icons/app/sun.png");
+    auto *sun_small = lv_image_create(slider_row);
+    if (sun_img) {
+        lv_image_set_src(sun_small, sun_img->image_dsc());
+        lv_obj_set_style_image_recolor(sun_small, Color(p.sub_text), 0);
+        lv_obj_set_style_image_recolor_opa(sun_small, LV_OPA_COVER, 0);
+    }
+    lv_obj_set_size(sun_small, 20, 20);
+    lv_obj_set_style_margin_right(sun_small, 10, 0);
     bright_slider_ = MakeSlider(slider_row, 20, 100, v, OnBrightChanged);
     lv_obj_set_flex_grow(bright_slider_, 1);
     lv_obj_set_width(bright_slider_, 1);
     char value[16];
     std::snprintf(value, sizeof(value), "%d%%", v);
     bright_value_label_ = lv_label_create(slider_row);
+    lv_obj_set_width(bright_value_label_, 52);
     lv_obj_set_style_text_font(bright_value_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(bright_value_label_, Color(p.text), 0);
+    lv_obj_set_style_text_align(bright_value_label_, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(bright_value_label_, value);
     DisplayDivider(brightness_card);
     auto *tone_row = DisplayRow(brightness_card, "True Tone", nullptr);
@@ -649,7 +681,9 @@ void SettingsView::BuildAutoLockPage() {
     auto *card = DisplayCard();
     for (size_t i = 0; i < sizeof(kSleepOpts) / sizeof(kSleepOpts[0]); ++i) {
         const auto &option = kSleepOpts[i];
-        auto *row = DisplayRow(card, option.label, nullptr, 44);
+        // Seven choices fit inside the shorter content area below the system
+        // bar, including the final "Không" option, without clipping its text.
+        auto *row = DisplayRow(card, option.label, nullptr, 42);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         auto *ctx = new OptCtx{this, std::to_string(option.seconds)};
         lv_obj_add_event_cb(row, OnSleepSelected, LV_EVENT_CLICKED, ctx);
@@ -697,11 +731,8 @@ void SettingsView::BuildSound() {
     char sub[32];
     std::snprintf(sub, sizeof(sub), "%d%%%s", vol, muted ? " (tắt tiếng)" : "");
     auto *row = MakeRow("Âm lượng", sub);
-    auto *sl = lv_slider_create(row);
-    lv_obj_set_width(sl, 200);
-    lv_slider_set_range(sl, 0, 100);
-    lv_slider_set_value(sl, vol, LV_ANIM_OFF);
-    lv_obj_add_event_cb(sl, OnVolChanged, LV_EVENT_VALUE_CHANGED, this);
+    auto *sl = MakeSlider(row, 0, 100, vol, OnVolChanged);
+    lv_obj_set_width(sl, 180);
     vol_slider_ = sl;
     mute_switch_ = MakeSwitch(row, !muted, OnMuteToggle); // on = audible
 }

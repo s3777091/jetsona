@@ -297,7 +297,7 @@ void CalendarView::BuildBody() {
     lv_obj_clear_flag(grid_, LV_OBJ_FLAG_SCROLLABLE);
 
     const int calendar_w = width_ - 16;
-    const int grid_h = (height_ - 48 - 16) - 44 - 28 - 8;
+    const int grid_h = (height_ - kHeaderHeight - 16) - 44 - 28 - 8;
     const int cell_w = (calendar_w - 6 * 4) / 7;
     const int cell_h = (grid_h - 5 * 4) / 6;
     lv_obj_set_size(grid_, calendar_w, grid_h);

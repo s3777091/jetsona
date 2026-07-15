@@ -1,5 +1,6 @@
 #include "display/widgets/status_bar.h"
 #include "display/common/lvgl_utils.h"
+#include "display/core/lvgl_image.h"
 #include "fonts.h"
 #include "settings.h"
 #include "board.h"
@@ -43,8 +44,33 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_clear_flag(status_strip_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
+    left_cluster_ = lv_obj_create(status_strip_);
+    lv_obj_remove_style_all(left_cluster_);
+    lv_obj_set_size(left_cluster_, 278, lv_pct(100));
+    lv_obj_align(left_cluster_, LV_ALIGN_LEFT_MID, 14, 0);
+    lv_obj_set_flex_flow(left_cluster_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(left_cluster_, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(left_cluster_, 8, 0);
+    lv_obj_clear_flag(left_cluster_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    // Keep the five items on the right in one flex cluster. Fixed absolute
+    // offsets made Wi-Fi/Bluetooth look detached from the battery, especially
+    // after the user changed the global font size.
+    right_cluster_ = lv_obj_create(status_strip_);
+    lv_obj_remove_style_all(right_cluster_);
+    lv_obj_set_size(right_cluster_, 218, lv_pct(100));
+    lv_obj_align(right_cluster_, LV_ALIGN_RIGHT_MID, -10, 0);
+    lv_obj_set_flex_flow(right_cluster_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(right_cluster_, LV_FLEX_ALIGN_END,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(right_cluster_, 8, 0);
+    lv_obj_clear_flag(right_cluster_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
     auto add_icon = [&](lv_obj_t **out, const char *glyph, lv_event_cb_t cb) {
-        auto *l = lv_label_create(status_strip_);
+        auto *l = lv_label_create(right_cluster_);
         lv_obj_set_style_text_font(l, &BUILTIN_ICON_FONT, 0);
         lv_obj_set_style_text_color(l, lv_color_white(), 0);
         lv_label_set_text(l, glyph);
@@ -54,23 +80,27 @@ StatusBar::StatusBar(lv_obj_t *parent) {
         *out = l;
     };
 
-    // A real iPhone status row shows only the time here; the long date that
-    // previously made this look like a desktop menu bar is intentionally gone.
-    datetime_label_ = lv_label_create(status_strip_);
+    // One short line fits before the resting island: time, numeric day/month,
+    // and a small weather affordance. The full weekday/date stays out of the
+    // center of the wallpaper so it does not duplicate this status information.
+    datetime_label_ = lv_label_create(left_cluster_);
     lv_obj_set_style_text_font(datetime_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(datetime_label_, lv_color_white(), 0);
-    lv_label_set_text(datetime_label_, "--:--");
-    lv_obj_align(datetime_label_, LV_ALIGN_LEFT_MID, 14, 0);
+    lv_label_set_text(datetime_label_, "--:--  --/--");
+
+    weather_icon_image_ = LvglImageFromFile("assets/icons/app/sun.png");
+    weather_icon_ = lv_image_create(left_cluster_);
+    lv_obj_set_size(weather_icon_, 18, 18);
+    if (weather_icon_image_) lv_image_set_src(weather_icon_, weather_icon_image_->image_dsc());
+    lv_obj_clear_flag(weather_icon_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     add_icon(&wifi_label_, LV_SYMBOL_WIFI, OnWifiClick);
-    lv_obj_align(wifi_label_, LV_ALIGN_RIGHT_MID, -190, 0);
     add_icon(&bt_label_, LV_SYMBOL_BLUETOOTH, OnBtClick);
-    lv_obj_align(bt_label_, LV_ALIGN_RIGHT_MID, -154, 0);
 
-    battery_icon_root_ = lv_obj_create(status_strip_);
+    battery_icon_root_ = lv_obj_create(right_cluster_);
     lv_obj_remove_style_all(battery_icon_root_);
     lv_obj_set_size(battery_icon_root_, 52, 20);
-    lv_obj_align(battery_icon_root_, LV_ALIGN_RIGHT_MID, -73, 0);
     lv_obj_clear_flag(battery_icon_root_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
@@ -113,14 +143,12 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_clear_flag(battery_icon_nub_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    lang_label_ = lv_label_create(status_strip_);
+    lang_label_ = lv_label_create(right_cluster_);
     lv_obj_set_style_text_font(lang_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(lang_label_, lv_color_white(), 0);
     lv_label_set_text(lang_label_, "EN");
-    lv_obj_align(lang_label_, LV_ALIGN_RIGHT_MID, -43, 0);
 
     add_icon(&power_label_, LV_SYMBOL_POWER, OnPowerClick);
-    lv_obj_align(power_label_, LV_ALIGN_RIGHT_MID, -12, 0);
 
     // ---- Resting Dynamic Island (centered, solid black) ----
     pill_ = lv_obj_create(parent);
@@ -276,8 +304,8 @@ void StatusBar::RefreshClock() {
     struct tm t = *std::localtime(&now);
     if (t.tm_year < (2025 - 1900)) return; // time not set yet
     bool h24 = Settings("display").GetBool("clock_24h", true);
-    char ts[16];
-    std::strftime(ts, sizeof(ts), h24 ? "%H:%M" : "%I:%M", &t);
+    char ts[32];
+    std::strftime(ts, sizeof(ts), h24 ? "%H:%M  %d/%m" : "%I:%M  %d/%m", &t);
     std::string s(ts);
     if (s != cached_datetime_ && datetime_label_) {
         lv_label_set_text(datetime_label_, s.c_str());

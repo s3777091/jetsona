@@ -1,9 +1,9 @@
 #pragma once
 
 /* Base for full-screen overlay views (calendar / background gallery / settings)
- * sharing the same shell: an overlay covering the screen, a compact 48px header
- * with a macOS-style traffic-light cluster and centered title, and a body
- * container that fills the rest. SetStatus() exists for worker-thread progress
+ * sharing the same shell: an overlay covering the screen, a compact header with
+ * a macOS-style traffic-light cluster below the global system-status row, and a
+ * body container that fills the rest. SetStatus() exists for worker-thread progress
  * but no longer renders anything on screen -- it only logs.
  *
  * Threading + lifetime mirror WifiSettingsView: the subclass is shared_ptr-owned
@@ -38,6 +38,11 @@ public:
     void SetRightButton(const char *icon_symbol, RightCb cb);
 
 protected:
+    // The global StatusBar occupies y=0..41 on the top layer. Keeping the app
+    // controls in the lower part of this header prevents the traffic lights and
+    // title from being painted underneath the clock/date/status clusters.
+    static constexpr int kHeaderHeight = 72;
+
     int width_ = 0;
     int height_ = 0;
     lv_obj_t *parent_ = nullptr;
