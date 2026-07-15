@@ -1299,7 +1299,7 @@ void SettingsView::OnReboot(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     self->OpenConfirmModal("Khởi động lại?", "Thiết bị sẽ khởi động lại ngay.", []() {
-        std::thread([]() { sync(); (void)system("reboot"); }).detach();
+        std::thread([]() { sync(); int r = system("reboot"); (void)r; }).detach();
     });
 }
 
@@ -1307,7 +1307,7 @@ void SettingsView::OnShutdown(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     self->OpenConfirmModal("Tắt máy?", "Thiết bị sẽ tắt ngay.", []() {
-        std::thread([]() { sync(); (void)system("poweroff"); }).detach();
+        std::thread([]() { sync(); int r = system("poweroff"); (void)r; }).detach();
     });
 }
 

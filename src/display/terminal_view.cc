@@ -194,7 +194,8 @@ void TerminalView::StopShell() {
     if (master_fd_ >= 0) {
         if (child_pid_ > 0) {
             const char *exit_cmd = "exit\n";
-            write(master_fd_, exit_cmd, std::strlen(exit_cmd));
+            ssize_t wr = write(master_fd_, exit_cmd, std::strlen(exit_cmd));
+            (void)wr;
             for (int i = 0; i < 20 && child_pid_ > 0; ++i) {
                 int status = 0;
                 pid_t w = waitpid(child_pid_, &status, WNOHANG);

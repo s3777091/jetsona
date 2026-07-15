@@ -22,6 +22,17 @@ namespace {
 int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 lv_color_t Color(uint32_t rgb) { return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff); }
 
+// Brightness (15..100) -> black-scrim opacity for the full-screen brightness
+// overlay. The scrim is CAPPED at LV_OPA_70 (~70% black) so the lowest setting
+// never makes the home screen unreadable -- otherwise a persisted-low brightness
+// darkens the dock/menu bar so the user can't see to open Settings and raise it
+// back (the pointer still works, but there's nothing visible to click).
+lv_opa_t BrightnessToOpa(int pct) {
+    int o = (100 - pct) * 255 / 100;
+    if (o > LV_OPA_70) o = LV_OPA_70;
+    return (lv_opa_t)o;
+}
+
 // Read PNG pixel dimensions from the IHDR chunk (width@16, height@20, big-endian)
 // so we can compute an lv_image scale before LVGL lazily decodes the body
 // (LvglRawImage leaves image_dsc_.header.w/h at 0 until decode).
@@ -169,8 +180,7 @@ void Ds02HomeDisplay::SetupUI() {
         int b = Settings("display").GetInt("brightness", 100);
         if (b < 15) b = 15;
         if (b > 100) b = 100;
-        lv_obj_set_style_bg_opa(brightness_overlay_,
-                                (lv_opa_t)((100 - b) * 255 / 100), 0);
+        lv_obj_set_style_bg_opa(brightness_overlay_, BrightnessToOpa(b), 0);
     }
 
     Settings s("display", false);
@@ -741,12 +751,7 @@ void Ds02HomeDisplay::SetBrightness(int pct) {
     if (pct < 15) pct = 15;
     if (pct > 100) pct = 100;
     if (brightness_overlay_) {
-        lv_obj_set_style_bg_opa(brightness_overlay_,
-                                (lv_opa_t)((100 - pct) * 255 / 100), 0);
-        // Raise above any open app overlay so the dim is visible live while
-        // dragging the slider in Settings. The scrim is non-clickable, so
-        // pointer events still reach the UI beneath it.
-        lv_obj_move_foreground(brightness_overlay_);
+        lv_obj_set_style_bg_opa(brightness_overlay_, BrightnessToOpa(pct), 0);
     }
     Settings("display", true).SetInt("brightness", pct);
 }
