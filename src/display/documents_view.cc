@@ -1,0 +1,463 @@
+#include "documents_view.h"
+#include "fonts.h"
+#include "ui_theme.h"
+
+#include <lvgl.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+namespace home {
+
+namespace {
+lv_color_t Color(uint32_t rgb) {
+    return lv_color_make((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
+}
+struct LvLockGuard {
+    LvLockGuard() { lv_lock(); }
+    ~LvLockGuard() { lv_unlock(); }
+};
+
+bool CaseLess(const std::string &a, const std::string &b) {
+    auto cmp = [](char x, char y) {
+        return std::tolower(static_cast<unsigned char>(x)) <
+               std::tolower(static_cast<unsigned char>(y));
+    };
+    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), cmp);
+}
+} // namespace
+
+DocumentsView::DocumentsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
+    : OverlayView(parent, width, height, "Documents", std::move(on_closed)) {
+    const char *h = std::getenv("HOME");
+    root_path_ = (h && *h) ? (std::string(h) + "/Documents") : "Documents";
+    // Best-effort: create the folder so an empty-but-valid listing shows
+    // instead of an "unreadable" error on a fresh device.
+    ::mkdir(root_path_.c_str(), 0755);
+    current_path_ = root_path_;
+    history_.push_back(current_path_);
+    hist_idx_ = 0;
+    body_w_ = width_ - 16;
+    body_h_ = (height_ - 80) - 16;
+    BuildBody();
+    Rescan();
+    BuildGrid();
+}
+
+DocumentsView::~DocumentsView() {
+    lv_lock();
+    if (nav_timer_) { lv_timer_del(nav_timer_); nav_timer_ = nullptr; }
+    if (popup_) { lv_obj_del(popup_); popup_ = nullptr; popup_card_ = nullptr; }
+    lv_unlock();
+    // cells_ + CellCtx are freed when the base class deletes overlay_
+    // (OnEntryDeleted runs for each cell and deletes its ctx).
+}
+
+std::string DocumentsView::BaseName(const std::string &path) {
+    auto pos = path.find_last_of('/');
+    if (pos == std::string::npos) return path;
+    return path.substr(pos + 1);
+}
+
+std::string DocumentsView::FormatSize(long bytes) {
+    char buf[24];
+    if (bytes < 1024) {
+        std::snprintf(buf, sizeof(buf), "%ld B", bytes);
+    } else if (bytes < 1024L * 1024) {
+        std::snprintf(buf, sizeof(buf), "%.1f KB", bytes / 1024.0);
+    } else if (bytes < 1024L * 1024 * 1024) {
+        std::snprintf(buf, sizeof(buf), "%.1f MB", bytes / (1024.0 * 1024));
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.1f GB", bytes / (1024.0 * 1024 * 1024));
+    }
+    return buf;
+}
+
+std::string DocumentsView::ExtUpper(const std::string &name) {
+    auto dot = name.find_last_of('.');
+    if (dot == std::string::npos || dot == 0) return "FILE";
+    std::string ext = name.substr(dot + 1);
+    if (ext.size() > 4) ext = ext.substr(0, 4);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return std::toupper(c); });
+    return ext;
+}
+
+void DocumentsView::BuildBody() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+
+    // Stack the toolbar above the grid; be explicit so the layout does not
+    // depend on LVGL's default object arrangement.
+    lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(body_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(body_, 8, 0);
+
+    BuildToolbar();
+
+    grid_ = lv_obj_create(body_);
+    lv_obj_remove_style_all(grid_);
+    lv_obj_set_size(grid_, body_w_, body_h_ - 44 - 8);
+    lv_obj_set_flex_flow(grid_, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(grid_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(grid_, 10, 0);
+    lv_obj_set_style_pad_column(grid_, 10, 0);
+    lv_obj_add_flag(grid_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(grid_, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_scroll_dir(grid_, LV_DIR_VER);
+}
+
+void DocumentsView::BuildToolbar() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+
+    toolbar_ = lv_obj_create(body_);
+    lv_obj_remove_style_all(toolbar_);
+    lv_obj_set_size(toolbar_, body_w_, 44);
+    lv_obj_set_flex_flow(toolbar_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(toolbar_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(toolbar_, 8, 0);
+    lv_obj_clear_flag(toolbar_, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto mk_arrow = [&](lv_obj_t **out, const char *glyph, lv_event_cb_t cb) {
+        auto *b = lv_button_create(toolbar_);
+        lv_obj_set_size(b, 40, 36);
+        lv_obj_set_style_bg_color(b, Color(p.button), 0);
+        lv_obj_set_style_radius(b, 8, 0);
+        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, this);
+        auto *l = lv_label_create(b);
+        lv_obj_set_style_text_font(l, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(l, Color(p.text), 0);
+        lv_label_set_text(l, glyph);
+        lv_obj_center(l);
+        *out = b;
+    };
+    mk_arrow(&back_btn_, LV_SYMBOL_LEFT, OnBack);
+    mk_arrow(&fwd_btn_, LV_SYMBOL_RIGHT, OnForward);
+
+    path_label_ = lv_label_create(toolbar_);
+    lv_obj_set_style_text_font(path_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(path_label_, Color(p.text), 0);
+    lv_label_set_long_mode(path_label_, LV_LABEL_LONG_DOT);
+    lv_obj_set_flex_grow(path_label_, 1);
+    lv_obj_set_style_text_align(path_label_, LV_TEXT_ALIGN_LEFT, 0);
+    UpdatePathLabel();
+    UpdateNavButtons();
+}
+
+void DocumentsView::ClearGrid() {
+    for (auto *c : cells_) if (c) lv_obj_del(c);
+    cells_.clear();
+    ctxs_.clear();
+}
+
+void DocumentsView::BuildGrid() {
+    ClearGrid();
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    const int cellW = 76;
+    const int cellH = 84;
+
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        const auto &e = entries_[i];
+        auto *cell = lv_obj_create(grid_);
+        lv_obj_remove_style_all(cell);
+        lv_obj_set_size(cell, cellW, cellH);
+        lv_obj_set_style_radius(cell, 10, 0);
+        lv_obj_set_style_bg_color(cell, Color(p.row), 0);
+        lv_obj_set_style_bg_opa(cell, LV_OPA_COVER, 0);
+        lv_obj_set_style_clip_corner(cell, true, 0);
+        lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(cell, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(cell, 4, 0);
+        lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
+
+        // Glyph (folder shape vs. file tile with the extension).
+        auto *glyph = lv_obj_create(cell);
+        lv_obj_remove_style_all(glyph);
+        lv_obj_set_size(glyph, 48, 48);
+        lv_obj_clear_flag(glyph, LV_OBJ_FLAG_SCROLLABLE);
+        if (e.is_dir) {
+            // Folder: a blue body with a small tab on the top-left.
+            auto *body = lv_obj_create(glyph);
+            lv_obj_remove_style_all(body);
+            lv_obj_set_size(body, 46, 34);
+            lv_obj_set_style_radius(body, 6, 0);
+            lv_obj_set_style_bg_color(body, Color(0x3dabf5), 0);
+            lv_obj_set_style_bg_opa(body, LV_OPA_COVER, 0);
+            lv_obj_align(body, LV_ALIGN_BOTTOM_MID, 0, 0);
+            auto *tab = lv_obj_create(glyph);
+            lv_obj_remove_style_all(tab);
+            lv_obj_set_size(tab, 20, 9);
+            lv_obj_set_style_radius(tab, 4, 0);
+            lv_obj_set_style_bg_color(tab, Color(0x3dabf5), 0);
+            lv_obj_set_style_bg_opa(tab, LV_OPA_COVER, 0);
+            lv_obj_align(tab, LV_ALIGN_TOP_LEFT, 1, 4);
+        } else {
+            // File: a light tile with the uppercase extension centered.
+            auto *tile = lv_obj_create(glyph);
+            lv_obj_remove_style_all(tile);
+            lv_obj_set_size(tile, 40, 48);
+            lv_obj_set_style_radius(tile, 6, 0);
+            lv_obj_set_style_bg_color(tile, lv_color_white(), 0);
+            lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+            lv_obj_align(tile, LV_ALIGN_CENTER, 0, 0);
+            auto *ext = lv_label_create(tile);
+            lv_obj_set_style_text_font(ext, &BUILTIN_TEXT_FONT, 0);
+            lv_obj_set_style_text_color(ext, Color(0x84848a), 0);
+            lv_label_set_text(ext, ExtUpper(e.name).c_str());
+            lv_obj_center(ext);
+        }
+
+        // Filename (wrap to ~2 lines, clip to the cell width).
+        auto *name = lv_label_create(cell);
+        lv_obj_set_style_text_font(name, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(name, Color(p.sub_text), 0);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(name, cellW - 6);
+        lv_obj_set_height(name, 26);
+        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(name, e.name.c_str());
+
+        auto *ctx = new CellCtx{this, i};
+        lv_obj_add_event_cb(cell, OnEntryClicked, LV_EVENT_CLICKED, ctx);
+        lv_obj_add_event_cb(cell, OnEntryDeleted, LV_EVENT_DELETE, ctx);
+        cells_.push_back(cell);
+        ctxs_.push_back(ctx);
+    }
+
+    if (entries_.empty()) {
+        SetStatus("Thư mục trống");
+    } else {
+        SetStatus("");
+    }
+}
+
+void DocumentsView::Rescan() {
+    // Caller holds the LVGL lock (DisplayLockGuard during construction, or
+    // LvLockGuard from the click handlers), so it is not re-taken here -- lv_lock
+    // is not recursive (see ~OverlayView / ~BackgroundGalleryView).
+    entries_.clear();
+    DIR *d = opendir(current_path_.c_str());
+    if (!d) {
+        SetStatus("Không mở được thư mục");
+        return;
+    }
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        std::string name = de->d_name;
+        if (name == "." || name == "..") continue;
+        if (!name.empty() && name[0] == '.') continue; // skip hidden
+        std::string full = current_path_ + "/" + name;
+        struct stat st;
+        bool is_dir = false;
+        long sz = 0;
+        if (::stat(full.c_str(), &st) == 0) {
+            is_dir = S_ISDIR(st.st_mode);
+            sz = (long)st.st_size;
+        } else {
+#ifdef DT_DIR
+            is_dir = (de->d_type == DT_DIR);
+#endif
+        }
+        entries_.push_back({name, is_dir, sz});
+    }
+    closedir(d);
+    std::sort(entries_.begin(), entries_.end(), [](const Entry &a, const Entry &b) {
+        if (a.is_dir != b.is_dir) return a.is_dir; // folders first
+        return CaseLess(a.name, b.name);
+    });
+}
+
+void DocumentsView::NavigateTo(const std::string &path, bool push_history) {
+    if (push_history) {
+        history_.resize(hist_idx_ + 1);
+        history_.push_back(path);
+        hist_idx_ = history_.size() - 1;
+    }
+    current_path_ = path;
+    Rescan();
+    BuildGrid();
+    UpdatePathLabel();
+    UpdateNavButtons();
+}
+
+void DocumentsView::ScheduleNavigate(const std::string &path) {
+    // Defer so the clicked cell's event finishes before BuildGrid() frees it.
+    if (nav_timer_) { lv_timer_del(nav_timer_); nav_timer_ = nullptr; }
+    nav_pending_ = path;
+    nav_timer_ = lv_timer_create(OnNavTimer, 0, this);
+    lv_timer_set_repeat_count(nav_timer_, 1);
+}
+
+void DocumentsView::GoBack() {
+    if (hist_idx_ == 0) return;
+    hist_idx_--;
+    NavigateTo(history_[hist_idx_], false);
+}
+
+void DocumentsView::GoForward() {
+    if (hist_idx_ + 1 >= history_.size()) return;
+    hist_idx_++;
+    NavigateTo(history_[hist_idx_], false);
+}
+
+void DocumentsView::UpdateNavButtons() {
+    if (back_btn_) {
+        if (hist_idx_ > 0) lv_obj_clear_state(back_btn_, LV_STATE_DISABLED);
+        else lv_obj_add_state(back_btn_, LV_STATE_DISABLED);
+    }
+    if (fwd_btn_) {
+        if (hist_idx_ + 1 < history_.size()) lv_obj_clear_state(fwd_btn_, LV_STATE_DISABLED);
+        else lv_obj_add_state(fwd_btn_, LV_STATE_DISABLED);
+    }
+}
+
+void DocumentsView::UpdatePathLabel() {
+    if (!path_label_) return;
+    std::string label = (current_path_ == root_path_) ? "Documents" : BaseName(current_path_);
+    lv_label_set_text(path_label_, label.c_str());
+}
+
+void DocumentsView::OpenPopup(size_t index) {
+    if (popup_) ClosePopup();
+    if (index >= entries_.size()) return;
+    popup_index_ = index;
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    const Entry &e = entries_[index];
+
+    popup_ = lv_obj_create(overlay_);
+    lv_obj_remove_style_all(popup_);
+    lv_obj_set_size(popup_, width_, height_);
+    lv_obj_set_style_bg_color(popup_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(popup_, LV_OPA_50, 0);
+    lv_obj_add_flag(popup_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(popup_, OnPopupDismiss, LV_EVENT_CLICKED, this);
+
+    popup_card_ = lv_obj_create(popup_);
+    lv_obj_remove_style_all(popup_card_);
+    lv_obj_set_size(popup_card_, 260, 150);
+    lv_obj_set_style_bg_color(popup_card_, Color(p.row), 0);
+    lv_obj_set_style_bg_opa(popup_card_, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(popup_card_, 16, 0);
+    lv_obj_set_style_pad_all(popup_card_, 14, 0);
+    lv_obj_set_style_pad_row(popup_card_, 6, 0);
+    lv_obj_set_flex_flow(popup_card_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_align(popup_card_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(popup_card_, LV_OBJ_FLAG_CLICKABLE);
+
+    auto *name = lv_label_create(popup_card_);
+    lv_obj_set_style_text_font(name, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(name, Color(p.text), 0);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(name, 232);
+    lv_label_set_text(name, e.name.c_str());
+
+    char line[64];
+    std::snprintf(line, sizeof(line), "Loại: %s", e.is_dir ? "Thư mục" : ExtUpper(e.name).c_str());
+    auto *type = lv_label_create(popup_card_);
+    lv_obj_set_style_text_font(type, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(type, Color(p.sub_text), 0);
+    lv_label_set_text(type, line);
+
+    if (!e.is_dir) {
+        std::snprintf(line, sizeof(line), "Dung lượng: %s", FormatSize(e.size).c_str());
+    } else {
+        std::snprintf(line, sizeof(line), "Dung lượng: —");
+    }
+    auto *size = lv_label_create(popup_card_);
+    lv_obj_set_style_text_font(size, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(size, Color(p.sub_text), 0);
+    lv_label_set_text(size, line);
+
+    auto *close = lv_button_create(popup_card_);
+    lv_obj_set_width(close, 120);
+    lv_obj_set_style_bg_color(close, Color(p.accent), 0);
+    lv_obj_set_style_radius(close, 10, 0);
+    lv_obj_add_event_cb(close, OnPopupClose, LV_EVENT_CLICKED, this);
+    auto *cl = lv_label_create(close);
+    lv_obj_set_style_text_font(cl, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(cl, lv_color_white(), 0);
+    lv_label_set_text(cl, "Đóng");
+    lv_obj_center(cl);
+}
+
+void DocumentsView::ClosePopup() {
+    if (popup_) { lv_obj_del(popup_); popup_ = nullptr; popup_card_ = nullptr; }
+}
+
+void DocumentsView::OnStart() {
+    SetStatus("Chạm thư mục để mở, chạm file để xem thông tin");
+}
+
+void DocumentsView::OnResize(int w, int h) {
+    // Runs under the base class's lock (OnZoomBtn -> ToggleZoom -> OnResize),
+    // so the lock is not re-taken here -- lv_lock is not recursive.
+    body_w_ = w - 16;
+    body_h_ = h - 16;
+    if (toolbar_) lv_obj_set_width(toolbar_, body_w_);
+    if (grid_) lv_obj_set_size(grid_, body_w_, body_h_ - 44 - 8);
+    // path_label_ has flex_grow=1, so it reflows with the toolbar automatically.
+}
+
+void DocumentsView::OnBack(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<DocumentsView *>(lv_event_get_user_data(e));
+    self->GoBack();
+}
+void DocumentsView::OnForward(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<DocumentsView *>(lv_event_get_user_data(e));
+    self->GoForward();
+}
+
+void DocumentsView::OnEntryClicked(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *ctx = static_cast<CellCtx *>(lv_event_get_user_data(e));
+    auto *self = ctx->self;
+    if (ctx->index >= self->entries_.size()) return;
+    const Entry &en = self->entries_[ctx->index];
+    if (en.is_dir) {
+        // Defer: navigating rebuilds the grid and frees this cell, which must
+        // not happen while its CLICKED event is still being delivered.
+        self->ScheduleNavigate(self->current_path_ + "/" + en.name);
+    } else {
+        self->OpenPopup(ctx->index);
+    }
+}
+
+void DocumentsView::OnNavTimer(lv_timer_t *t) {
+    LvLockGuard lock;
+    auto *self = static_cast<DocumentsView *>(lv_timer_get_user_data(t));
+    lv_timer_del(t);
+    self->nav_timer_ = nullptr;
+    self->NavigateTo(self->nav_pending_, true);
+}
+
+void DocumentsView::OnEntryDeleted(lv_event_t *e) {
+    auto *ctx = static_cast<CellCtx *>(lv_event_get_user_data(e));
+    delete ctx;
+}
+
+void DocumentsView::OnPopupDismiss(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<DocumentsView *>(lv_event_get_user_data(e));
+    // Only dismiss when the click landed on the backdrop, not the card/button.
+    if (lv_event_get_target(e) == self->popup_) self->ClosePopup();
+}
+
+void DocumentsView::OnPopupClose(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<DocumentsView *>(lv_event_get_user_data(e));
+    self->ClosePopup();
+}
+
+} // namespace home

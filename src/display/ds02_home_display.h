@@ -7,9 +7,11 @@
 #include "bluetooth_settings_view.h"
 #include "calendar_view.h"
 #include "background_gallery_view.h"
+#include "documents_view.h"
 #include "settings_view.h"
 #include "chat_view.h"
 #include "terminal_view.h"
+#include "lock_screen_view.h"
 #include "conversation.h"
 
 #include <array>
@@ -50,10 +52,13 @@ public:
     void OpenWifiSettings();
     void OpenBluetoothSettings();
     void OpenCalendar();
+    void OpenDocuments();
     void OpenBackgroundGallery();
     void OpenSettings();
     void OpenChat();
     void OpenTerminal();
+    void OpenLockScreen();
+    void SetBrightness(int pct);
     void ApplyBackgroundFromFile(const std::string &file);
     void SetSleepBackground(const std::string &file);
     void ReloadBackgrounds();
@@ -64,7 +69,7 @@ public:
 private:
     enum class StandbyState { Dim, Awake, Launcher };
 
-    static constexpr size_t kDockItemCount = 7;
+    static constexpr size_t kDockItemCount = 8;
     static constexpr size_t kDrawerItemCount = 8;
 
     struct AppCtx {
@@ -79,6 +84,7 @@ private:
     void SetDockActive(int index);
     void RefreshClock();
     void RefreshBattery();
+    void CheckIdleDim();
     void ApplyStandbyState();
     void RepaintForTheme();
     bool ApplyBackgroundFile(const std::string &file);
@@ -105,6 +111,9 @@ private:
 
     lv_obj_t *root_ = nullptr;
     lv_obj_t *standby_layer_ = nullptr;
+    // Full-screen black scrim on root_ (above menu bar/dock) used to dim the
+    // whole panel for the brightness control. Non-clickable, non-scrollable.
+    lv_obj_t *brightness_overlay_ = nullptr;
     lv_obj_t *wallpaper_ = nullptr;
     lv_obj_t *wallpaper_image_obj_ = nullptr;
     lv_obj_t *dim_overlay_ = nullptr;
@@ -148,10 +157,12 @@ private:
     std::shared_ptr<WifiSettingsView> wifi_view_;
     std::shared_ptr<BluetoothSettingsView> bt_view_;
     std::shared_ptr<CalendarView> calendar_view_;
+    std::shared_ptr<DocumentsView> documents_view_;
     std::shared_ptr<BackgroundGalleryView> gallery_view_;
     std::shared_ptr<SettingsView> settings_view_;
     std::shared_ptr<ChatView> chat_view_;
     std::shared_ptr<TerminalView> terminal_view_;
+    std::shared_ptr<LockScreenView> lock_screen_view_;
     std::shared_ptr<jetson::Conversation> chat_conv_;
 
     lv_obj_t *app_grid_ = nullptr;

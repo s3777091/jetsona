@@ -29,6 +29,11 @@ public:
     // True if nmcli is installed and NetworkManager is active.
     bool Available() const;
 
+    // True if the WiFi radio is powered on (`nmcli radio wifi`).
+    bool IsEnabled() const;
+    // Power the WiFi radio on/off (`nmcli radio wifi on|off`).
+    bool Enable(bool on);
+
     // SSID of the currently connected WiFi, or "" if none.
     std::string ActiveSsid() const;
 

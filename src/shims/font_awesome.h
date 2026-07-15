@@ -48,5 +48,6 @@
 #define FONT_AWESOME_CHALKBOARD_USER        LV_SYMBOL_FILE
 #define FONT_AWESOME_MICROCHIP_AI           LV_SYMBOL_EYE_OPEN
 #define FONT_AWESOME_NEUTRAL                "  "
+#define FONT_AWESOME_FINDER                 LV_SYMBOL_EYE_OPEN
 
 #endif

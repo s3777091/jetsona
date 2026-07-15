@@ -77,6 +77,26 @@ bool WifiManager::Available() const {
     return true;
 }
 
+bool WifiManager::IsEnabled() const {
+    // `nmcli -t -f WIFI radio wifi` prints "enabled" / "disabled".
+    std::string out;
+    int rc = runCmd("nmcli -t -f WIFI radio wifi", out);
+    if (rc != 0) { last_error_ = out; return false; }
+    // Trim whitespace/newlines.
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r' ||
+                            out.back() == ' ' || out.back() == '\t')) {
+        out.pop_back();
+    }
+    return out == "enabled";
+}
+
+bool WifiManager::Enable(bool on) {
+    std::string out;
+    int rc = runCmd(on ? "nmcli radio wifi on" : "nmcli radio wifi off", out);
+    if (rc != 0) { last_error_ = out; return false; }
+    return true;
+}
+
 std::string WifiManager::ActiveSsid() const {
     std::string out;
     int rc = runCmd("nmcli -t -f ACTIVE,SSID dev wifi", out);

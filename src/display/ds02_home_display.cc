@@ -154,6 +154,25 @@ void Ds02HomeDisplay::SetupUI() {
     CreateSystemBarObjects();
     CreateDockObjects();
 
+    // Brightness scrim: created LAST on root_ so it sits above the menu bar
+    // and dock (but below any app overlay opened afterwards). Non-clickable so
+    // it never eats pointer events.
+    brightness_overlay_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(brightness_overlay_);
+    lv_obj_set_size(brightness_overlay_, lv_pct(100), lv_pct(100));
+    lv_obj_set_pos(brightness_overlay_, 0, 0);
+    lv_obj_set_style_bg_color(brightness_overlay_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(brightness_overlay_, 0, 0);
+    lv_obj_clear_flag(brightness_overlay_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    {
+        int b = Settings("display").GetInt("brightness", 100);
+        if (b < 15) b = 15;
+        if (b > 100) b = 100;
+        lv_obj_set_style_bg_opa(brightness_overlay_,
+                                (lv_opa_t)((100 - b) * 255 / 100), 0);
+    }
+
     Settings s("display", false);
     background_files_ = home::ListBackgroundFiles();
     background_file_ = s.GetString("ds02_background_file", "");
@@ -237,7 +256,7 @@ void Ds02HomeDisplay::CreateStandbyObjects() {
     lv_label_set_text(chat_label_, "");
     lv_obj_align(chat_label_, LV_ALIGN_BOTTOM_MID, 0, -(kDockHeight + kDockBottomMargin + 80));
     // No swipe gestures: the panel has no working touch, so standby state
-    // changes only via the dock (folder icon toggles the app drawer).
+    // changes only via the dock (finder icon toggles the app drawer).
 }
 
 void Ds02HomeDisplay::CreateDrawerObjects() {
@@ -452,21 +471,21 @@ void Ds02HomeDisplay::CreateDockObjects() {
     lv_obj_align(dock_, LV_ALIGN_BOTTOM_MID, 0, -kDockBottomMargin);
 
     static const char *kIconFiles[kDockItemCount] = {
-        "assets/icons/dock/calendar.png", "assets/icons/dock/folder.png",
-        "assets/icons/dock/music.png", "assets/icons/dock/reminders.png",
-        "assets/icons/dock/settings.png", "assets/icons/dock/siri.png",
-        "assets/icons/dock/terminal.png",
+        "assets/icons/dock/finder.png", "assets/icons/dock/calendar.png",
+        "assets/icons/dock/folder.png", "assets/icons/dock/music.png",
+        "assets/icons/dock/reminders.png", "assets/icons/dock/settings.png",
+        "assets/icons/dock/siri.png", "assets/icons/dock/terminal.png",
     };
     static const char *kFallbackIcons[kDockItemCount] = {
-        FONT_AWESOME_BOOK_OPEN, FONT_AWESOME_BOOK, FONT_AWESOME_MUSIC,
-        FONT_AWESOME_MICROPHONE_LINES, FONT_AWESOME_GEAR,
+        FONT_AWESOME_FINDER, FONT_AWESOME_BOOK_OPEN, FONT_AWESOME_BOOK,
+        FONT_AWESOME_MUSIC, FONT_AWESOME_MICROPHONE_LINES, FONT_AWESOME_GEAR,
         FONT_AWESOME_MICROPHONE, FONT_AWESOME_TERMINAL,
     };
     static constexpr uint32_t kTileColors[kDockItemCount] = {
-        0x7357d9, 0xe04f5f, 0xe2aa36, 0x66707d, 0x29a58d, 0x3282d8, 0x3a3a3a,
+        0x2b8cff, 0x7357d9, 0xe04f5f, 0xe2aa36, 0x66707d, 0x29a58d, 0x3282d8, 0x3a3a3a,
     };
     static constexpr uint32_t kTileGradients[kDockItemCount] = {
-        0x3e2c91, 0x8f2535, 0x8a5c14, 0x343a43, 0x126354, 0x184c91, 0x181818,
+        0x125a9c, 0x3e2c91, 0x8f2535, 0x8a5c14, 0x343a43, 0x126354, 0x184c91, 0x181818,
     };
 
     for (size_t i = 0; i < kDockItemCount; ++i) {
@@ -611,23 +630,25 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     self->SetDockActive(focused);
     BounceDockButton(target);
 
-    // Dock icons (in file order): calendar, folder, music, reminders, settings,
-    // siri, terminal. The folder icon toggles the app drawer open/closed (no
-    // touch swipe on this panel). music/reminders carry WiFi/BT; the wallpaper
-    // gallery moved into the drawer's "Ảnh" tile.
+    // Dock icons (in file order): finder, calendar, folder, music, reminders,
+    // settings, siri, terminal. The finder icon toggles the app drawer
+    // open/closed (no touch swipe on this panel); the folder icon opens the
+    // Documents file browser. music/reminders carry WiFi/BT; the wallpaper
+    // gallery lives in the drawer's "Ảnh" tile.
     switch (focused) {
-    case 0: self->OpenCalendar(); break;
-    case 1: // folder -> toggle app drawer
+    case 0: // finder -> toggle app drawer
         self->standby_state_ = (self->standby_state_ == StandbyState::Launcher)
                                    ? StandbyState::Awake
                                    : StandbyState::Launcher;
         self->ApplyStandbyState();
         break;
-    case 2: self->OpenWifiSettings(); break;
-    case 3: self->OpenBluetoothSettings(); break;
-    case 4: self->OpenSettings(); break;
-    case 5: self->OpenChat(); break;
-    case 6: self->OpenTerminal(); break;
+    case 1: self->OpenCalendar(); break;
+    case 2: self->OpenDocuments(); break;
+    case 3: self->OpenWifiSettings(); break;
+    case 4: self->OpenBluetoothSettings(); break;
+    case 5: self->OpenSettings(); break;
+    case 6: self->OpenChat(); break;
+    case 7: self->OpenTerminal(); break;
     default: self->AdvanceStandbyButtonState(); break;
     }
 }
@@ -662,6 +683,16 @@ void Ds02HomeDisplay::OpenCalendar() {
     calendar_view_->Start();
 }
 
+void Ds02HomeDisplay::OpenDocuments() {
+    DisplayLockGuard lock(this);
+    if (documents_view_) return;
+    if (!root_) root_ = lv_screen_active();
+    documents_view_ = std::make_shared<DocumentsView>(
+        root_, width_, height_,
+        [this]() { documents_view_.reset(); });
+    documents_view_->Start();
+}
+
 void Ds02HomeDisplay::OpenBackgroundGallery() {
     DisplayLockGuard lock(this);
     if (gallery_view_) return;
@@ -687,7 +718,51 @@ void Ds02HomeDisplay::OpenSettings() {
     settings_view_ = std::make_shared<SettingsView>(
         root_, width_, height_,
         [this]() { settings_view_.reset(); });
+    // Wire the hub's controls back into the home UI: brightness dims the
+    // whole panel via the scrim, volume toggles the menu-bar icon, and the
+    // lock request raises the full-screen PIN lock.
+    settings_view_->SetBrightnessApplier([this](int b) { SetBrightness(b); });
+    settings_view_->SetVolumeApplier(
+        [this](int v, bool muted) {
+            volume_muted_ = muted;
+            (void)v;
+            if (volume_label_) {
+                lv_label_set_text(volume_label_,
+                                  muted ? FONT_AWESOME_VOLUME_XMARK
+                                        : FONT_AWESOME_VOLUME_HIGH);
+            }
+        });
+    settings_view_->SetLockRequest([this]() { OpenLockScreen(); });
     settings_view_->Start();
+}
+
+void Ds02HomeDisplay::SetBrightness(int pct) {
+    DisplayLockGuard lock(this);
+    if (pct < 15) pct = 15;
+    if (pct > 100) pct = 100;
+    if (brightness_overlay_) {
+        lv_obj_set_style_bg_opa(brightness_overlay_,
+                                (lv_opa_t)((100 - pct) * 255 / 100), 0);
+        // Raise above any open app overlay so the dim is visible live while
+        // dragging the slider in Settings. The scrim is non-clickable, so
+        // pointer events still reach the UI beneath it.
+        lv_obj_move_foreground(brightness_overlay_);
+    }
+    Settings("display", true).SetInt("brightness", pct);
+}
+
+void Ds02HomeDisplay::OpenLockScreen() {
+    DisplayLockGuard lock(this);
+    if (lock_screen_view_) return;
+    // No PIN set -> nothing to unlock against; nudge the user instead.
+    if (Settings("system").GetString("pin", "").empty()) {
+        ShowNotification("Chưa đặt PIN — mở Cài đặt > Nguồn & Bảo mật", 2500);
+        return;
+    }
+    if (!root_) root_ = lv_screen_active();
+    lock_screen_view_ = std::make_shared<LockScreenView>(
+        root_, width_, height_, [this]() { lock_screen_view_.reset(); });
+    lock_screen_view_->Start();
 }
 
 void Ds02HomeDisplay::OpenChat() {
@@ -773,7 +848,7 @@ void Ds02HomeDisplay::OnMenuVolume(lv_event_t *e) {
 void Ds02HomeDisplay::OnMenuPower(lv_event_t *e) {
     auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
     DisplayLockGuard lock(self);
-    self->ShowNotification("Sắp ra mắt", 1500);
+    self->OpenSettings();
 }
 
 void Ds02HomeDisplay::ToggleVolume() {
@@ -865,7 +940,8 @@ void Ds02HomeDisplay::SetTextColor(uint32_t color) {
 
 std::string Ds02HomeDisplay::FormatTime(const struct tm &t) {
     char buf[16];
-    std::strftime(buf, sizeof(buf), "%H:%M", &t);
+    bool h24 = Settings("display").GetBool("clock_24h", true);
+    std::strftime(buf, sizeof(buf), h24 ? "%H:%M" : "%I:%M", &t);
     return buf;
 }
 std::string Ds02HomeDisplay::FormatDate(const struct tm &t) {
@@ -924,6 +1000,23 @@ void Ds02HomeDisplay::UpdateStatusBar(bool /*update_all*/) {
 void Ds02HomeDisplay::OnRefreshTimer(void *arg) {
     auto *self = static_cast<Ds02HomeDisplay *>(arg);
     self->UpdateStatusBar(false);
+    self->CheckIdleDim();
+}
+
+void Ds02HomeDisplay::CheckIdleDim() {
+    // Auto-dim the standby screen after the configured idle timeout. 0 = never.
+    // Only fires from Awake; once dimmed, input activity wakes it back up via
+    // the existing standby-button handling. App overlays are ignored (their own
+    // UI keeps the screen alive and they sit above the dim scrim anyway).
+    int timeout = Settings("display").GetInt("sleep_timeout", 0);
+    if (timeout <= 0) return;
+    DisplayLockGuard lock(this);
+    if (standby_state_ != StandbyState::Awake) return;
+    uint32_t idle_ms = lv_disp_get_inactive_time(nullptr);
+    if (idle_ms >= (uint32_t)timeout * 1000u) {
+        standby_state_ = StandbyState::Dim;
+        ApplyStandbyState();
+    }
 }
 
 void Ds02HomeDisplay::SetStatus(const char *status) {

@@ -33,6 +33,10 @@ public:
 
     // Power on the adapter (no-op if already on).
     bool PowerOn();
+    // Power off the adapter.
+    bool PowerOff();
+    // True if the adapter is powered on (`bluetoothctl show` -> Powered: yes).
+    bool IsPowered() const;
 
     // Scan for `duration_s` seconds, then return all known devices. Blocking.
     std::vector<BtDevice> Scan(int duration_s = 8);

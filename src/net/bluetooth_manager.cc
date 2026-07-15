@@ -84,6 +84,20 @@ bool BluetoothManager::PowerOn() {
     return true;
 }
 
+bool BluetoothManager::PowerOff() {
+    std::string out;
+    int rc = runBt("power off\n", out);
+    if (rc != 0) { last_error_ = out; return false; }
+    return true;
+}
+
+bool BluetoothManager::IsPowered() const {
+    if (!Available()) return false;
+    std::string out;
+    runCmd("bluetoothctl show", out);
+    return fieldBool(out, "Powered");
+}
+
 std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
     std::vector<BtDevice> devs;
     if (!Available()) return devs;
