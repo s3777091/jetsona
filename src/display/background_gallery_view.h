@@ -40,6 +40,11 @@ protected:
 private:
     struct CellCtx { BackgroundGalleryView *self; size_t index; };
 
+    // Home-wired callbacks (set before Start()).
+    OnSelectBg on_select_;
+    OnSelectBg on_sleep_;
+    OnChanged on_changed_;
+
     std::vector<std::string> files_;
     std::string current_file_;   // selected desktop wallpaper
     std::string sleep_file_;     // selected sleep-screen wallpaper
