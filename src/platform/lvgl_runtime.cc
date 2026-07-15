@@ -409,15 +409,29 @@ void LvglRuntime::openMouse() {
             std::snprintf(sysp, sizeof(sysp),
                           "/sys/class/input/event%d/device/capabilities/key", i);
             unsigned long key = readSysFirstHexWord(sysp);
-            if ((key >> 16) & 0x1UL) continue; /* KEY_Q => keyboard, not a mouse */
             std::snprintf(sysp, sizeof(sysp),
                           "/sys/class/input/event%d/device/capabilities/abs", i);
             unsigned long abs = readSysFirstHexWord(sysp);
-            if ((abs & 0x3UL) == 0x3UL) continue; /* ABS_X+ABS_Y => touch, not mouse */
-            if ((abs & kAbsMtXY) == kAbsMtXY) continue; /* multitouch panel => touch */
+            /* Log every candidate that has REL_X so we can see why the mouse
+             * is/isn't selected (combo devices, misclassified touch, etc.). */
+            ESP_LOGI(TAG, "mouse scan: event%d rel=0x%lx key=0x%lx abs=0x%lx",
+                     i, rel, key, abs);
+            if ((key >> 16) & 0x1UL) {
+                ESP_LOGI(TAG, "mouse scan: event%d skipped (KEY_Q -> keyboard/combo)", i);
+                continue; /* KEY_Q => keyboard, not a mouse */
+            }
+            if ((abs & 0x3UL) == 0x3UL) {
+                ESP_LOGI(TAG, "mouse scan: event%d skipped (ABS_X+ABS_Y -> touch)", i);
+                continue; /* ABS_X+ABS_Y => touch, not mouse */
+            }
+            if ((abs & kAbsMtXY) == kAbsMtXY) {
+                ESP_LOGI(TAG, "mouse scan: event%d skipped (multitouch panel)", i);
+                continue; /* multitouch panel => touch */
+            }
             char path[32];
             std::snprintf(path, sizeof(path), "/dev/input/event%d", i);
             devpath = path;
+            ESP_LOGI(TAG, "mouse scan: event%d selected as mouse", i);
             break; /* one mouse is enough -> a single cursor */
         }
     }
