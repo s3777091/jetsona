@@ -1,9 +1,13 @@
 #include "fonts.h"
 #include "esp_log.h"
+#include "settings.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
+#include <utility>
 
 // tiny_ttf is pulled in via <lvgl.h> (already included by fonts.h).
 
@@ -14,6 +18,55 @@ namespace jetson {
 lv_font_t *g_builtin_text_font = nullptr;
 lv_font_t *g_builtin_small_text_font = nullptr;
 lv_font_t *g_builtin_icon_font = nullptr;
+
+namespace {
+
+std::string g_regular_path;
+std::string g_bold_path;
+int g_text_size = 28;
+bool g_text_bold = false;
+std::map<std::pair<int, bool>, lv_font_t *> g_font_cache;
+
+bool FileExists(const std::string &path) {
+    FILE *f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fclose(f);
+    return true;
+}
+
+lv_font_t *LoadTextFace(int size, bool bold) {
+    size = std::clamp(size, 16, 34);
+    const auto key = std::make_pair(size, bold);
+    auto found = g_font_cache.find(key);
+    if (found != g_font_cache.end()) return found->second;
+
+    const std::string &path = (bold && !g_bold_path.empty()) ? g_bold_path : g_regular_path;
+    lv_font_t *font = path.empty() ? nullptr : lv_tiny_ttf_create_file(path.c_str(), size);
+    if (!font) {
+        ESP_LOGW(TAG, "tiny_ttf failed for %s at %d px", path.c_str(), size);
+        font = size <= 24 ? (lv_font_t *)&lv_font_montserrat_24
+                          : (lv_font_t *)&lv_font_montserrat_28;
+    }
+    g_font_cache[key] = font;
+    return font;
+}
+
+void ReplaceTextFaces(lv_obj_t *obj, const lv_font_t *old_main,
+                      const lv_font_t *old_small, const lv_font_t *new_main,
+                      const lv_font_t *new_small) {
+    if (!obj) return;
+    const lv_font_t *current = lv_obj_get_style_text_font(obj, LV_PART_MAIN);
+    if (current == old_main) lv_obj_set_style_text_font(obj, new_main, LV_PART_MAIN);
+    else if (current == old_small) lv_obj_set_style_text_font(obj, new_small, LV_PART_MAIN);
+
+    const uint32_t count = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < count; ++i) {
+        ReplaceTextFaces(lv_obj_get_child(obj, (int32_t)i), old_main, old_small,
+                         new_main, new_small);
+    }
+}
+
+} // namespace
 
 static std::string joinPath(const char *dir, const char *file) {
     std::string p = dir;
@@ -28,33 +81,32 @@ void InitBuiltinFonts(const char *assets_dir) {
     const char *text_file = "fonts/NotoSans-Regular.ttf";
     const char *icon_file = "fonts/NotoSans-Regular.ttf";
     std::string text_path = joinPath(assets_dir, text_file);
-    FILE *f = std::fopen(text_path.c_str(), "rb");
-    if (!f) {
-        text_path = joinPath(assets_dir, "fonts/arial.ttf");
-    } else {
-        std::fclose(f);
-    }
+    if (!FileExists(text_path)) text_path = joinPath(assets_dir, "fonts/arial.ttf");
     std::string icon_path = joinPath(assets_dir, icon_file);
-    f = std::fopen(icon_path.c_str(), "rb");
+    FILE *f = std::fopen(icon_path.c_str(), "rb");
     if (!f) {
         icon_path = joinPath(assets_dir, "fonts/arial.ttf");
     } else {
         std::fclose(f);
     }
 
-    g_builtin_text_font = lv_tiny_ttf_create_file(text_path.c_str(), 28);
-    if (!g_builtin_text_font) {
-        ESP_LOGW(TAG, "tiny_ttf failed for %s, falling back to montserrat_28", text_path.c_str());
-        g_builtin_text_font = (lv_font_t *)&lv_font_montserrat_28;
+    g_regular_path = text_path;
+    const std::string bold_candidates[] = {
+        joinPath(assets_dir, "fonts/NotoSans-Bold.ttf"),
+        joinPath(assets_dir, "fonts/arialbd.ttf"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    };
+    for (const auto &candidate : bold_candidates) {
+        if (FileExists(candidate)) { g_bold_path = candidate; break; }
     }
-    // Compact dialogs use a separate face instance: tiny_ttf stores the size
-    // on the lv_font_t, so resizing the main font would shrink the whole UI.
-    g_builtin_small_text_font = lv_tiny_ttf_create_file(text_path.c_str(), 18);
-    if (!g_builtin_small_text_font) {
-        ESP_LOGW(TAG, "tiny_ttf small font failed for %s, falling back to montserrat_18",
-                 text_path.c_str());
-        g_builtin_small_text_font = (lv_font_t *)&lv_font_montserrat_18;
-    }
+
+    Settings display("display", false);
+    g_text_size = std::clamp(display.GetInt("font_size", 28), 22, 34);
+    g_text_bold = display.GetBool("bold_text", false);
+    g_builtin_text_font = LoadTextFace(g_text_size, g_text_bold);
+    const int small_size = std::clamp(g_text_size * 18 / 28, 16, 22);
+    g_builtin_small_text_font = LoadTextFace(small_size, g_text_bold);
     /* The icon font MUST contain the LVGL symbol glyphs (LV_SYMBOL_WIFI /
      * SETTINGS / BLUETOOTH / IMAGE / LEFT / REFRESH ...). The bundled arial.ttf
      * and NotoSans do NOT carry that Font Awesome symbol block, so loading the
@@ -62,8 +114,36 @@ void InitBuiltinFonts(const char *assets_dir) {
      * Use LVGL's built-in montserrat, which ships with the symbol range baked in.
      * (Vietnamese diacritics in labels use the text font above, not this one.) */
     g_builtin_icon_font = (lv_font_t *)&lv_font_montserrat_24;
-    ESP_LOGI(TAG, "fonts ready (text=%s, compact=18, icon=montserrat_24)",
-             text_path.c_str());
+    ESP_LOGI(TAG, "fonts ready (text=%s, size=%d, bold=%s, icon=montserrat_24)",
+             text_path.c_str(), g_text_size, g_text_bold ? "yes" : "no");
 }
+
+void ApplyBuiltinTypography(int size_px, bool bold) {
+    size_px = std::clamp(size_px, 22, 34);
+    lv_font_t *old_main = g_builtin_text_font;
+    lv_font_t *old_small = g_builtin_small_text_font;
+    lv_font_t *new_main = LoadTextFace(size_px, bold);
+    const int small_size = std::clamp(size_px * 18 / 28, 16, 22);
+    lv_font_t *new_small = LoadTextFace(small_size, bold);
+    if (!new_main || !new_small) return;
+
+    g_builtin_text_font = new_main;
+    g_builtin_small_text_font = new_small;
+    g_text_size = size_px;
+    g_text_bold = bold;
+
+    Settings s("display", true);
+    s.SetInt("font_size", size_px);
+    s.SetBool("bold_text", bold);
+
+    ReplaceTextFaces(lv_screen_active(), old_main, old_small, new_main, new_small);
+    ReplaceTextFaces(lv_layer_top(), old_main, old_small, new_main, new_small);
+    ReplaceTextFaces(lv_layer_sys(), old_main, old_small, new_main, new_small);
+    lv_obj_report_style_change(nullptr);
+    ESP_LOGI(TAG, "typography -> %d px, bold=%s", size_px, bold ? "yes" : "no");
+}
+
+int BuiltinTextSize() { return g_text_size; }
+bool BuiltinTextBold() { return g_text_bold; }
 
 } // namespace jetson

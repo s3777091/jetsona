@@ -15,7 +15,7 @@ namespace home {
 
 /* macOS System Settings-style hub: a sidebar of categories + a detail pane
  * that rebuilds on selection. Categories: Display
- * (brightness 15..100 via a software scrim), Sound (volume, UI-only), WiFi
+ * (brightness 20..100 via a software scrim), Sound (volume, UI-only), WiFi
  * (radio toggle + scan + per-network info/login/forget modal), Bluetooth
  * (power toggle + scan + per-device connect/disconnect/forget modal), Keyboard
  * (vi/en with a live Telex IME demo field), Date & Time (timezone via
@@ -33,6 +33,9 @@ public:
                  ClosedCb on_closed);
 
     void SetBrightnessApplier(std::function<void(int)> cb) { brightness_cb_ = std::move(cb); }
+    void SetDisplayPreferencesApplier(std::function<void()> cb) {
+        display_preferences_cb_ = std::move(cb);
+    }
     void SetVolumeApplier(std::function<void(int, bool)> cb) { volume_cb_ = std::move(cb); }
     void SetLockRequest(std::function<void()> cb) { lock_cb_ = std::move(cb); }
 
@@ -50,6 +53,8 @@ private:
         Display, Sound, Wifi, Bluetooth, Keyboard, DateTime, Power, About
     };
 
+    enum class DisplayPage { Main, TextSize, NightShift, AutoLock, AlwaysOn };
+
     struct SideCtx { SettingsView *self; Cat cat; };
     struct WifiRowCtx { SettingsView *self; jetson::WifiNetwork network; };
     struct BtRowCtx { SettingsView *self; std::string addr; };
@@ -59,6 +64,7 @@ private:
     lv_obj_t *sidebar_ = nullptr;
     lv_obj_t *detail_ = nullptr;
     Cat current_ = Cat::Display;
+    DisplayPage display_page_ = DisplayPage::Main;
     std::vector<lv_obj_t *> side_rows_;
 
     // WiFi pane.
@@ -84,6 +90,10 @@ private:
 
     // Display / Sound pane widgets.
     lv_obj_t *bright_slider_ = nullptr;
+    lv_obj_t *bright_value_label_ = nullptr;
+    lv_obj_t *text_size_slider_ = nullptr;
+    lv_obj_t *text_size_value_label_ = nullptr;
+    lv_obj_t *night_warmth_slider_ = nullptr;
     lv_obj_t *vol_slider_ = nullptr;
     lv_obj_t *mute_switch_ = nullptr;
 
@@ -102,6 +112,7 @@ private:
 
     // Home hooks.
     std::function<void(int)> brightness_cb_;
+    std::function<void()> display_preferences_cb_;
     std::function<void(int, bool)> volume_cb_;  // (volume, muted)
     std::function<void()> lock_cb_;
 
@@ -116,8 +127,21 @@ private:
     lv_obj_t *MakeSwitch(lv_obj_t *parent, bool on, lv_event_cb_t cb);
     lv_obj_t *MakeSlider(lv_obj_t *parent, int minv, int maxv, int val, lv_event_cb_t cb);
     lv_obj_t *MakeButton(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb);
+    lv_obj_t *DisplayCard();
+    lv_obj_t *DisplayRow(lv_obj_t *card, const char *title, const char *sub = nullptr,
+                         int height = 48);
+    void DisplayDivider(lv_obj_t *card);
+    void DisplayPageHeader(const char *title, bool show_back);
+    void DisplayCaption(const char *text);
+    void MakeDisplayNavigationRow(lv_obj_t *card, const char *title, const char *value,
+                                  lv_event_cb_t cb);
 
     void BuildDisplay();
+    void BuildDisplayMain();
+    void BuildTextSizePage();
+    void BuildNightShiftPage();
+    void BuildAutoLockPage();
+    void BuildAlwaysOnPage();
     void BuildSound();
     void BuildWifi();
     void BuildBluetooth();
@@ -160,6 +184,21 @@ private:
     static void OnOptDeleted(lv_event_t *e);
 
     static void OnBrightChanged(lv_event_t *e);
+    static void OnDisplayBack(lv_event_t *e);
+    static void OnOpenTextSize(lv_event_t *e);
+    static void OnOpenNightShift(lv_event_t *e);
+    static void OnOpenAutoLock(lv_event_t *e);
+    static void OnOpenAlwaysOn(lv_event_t *e);
+    static void OnTextSizeChanged(lv_event_t *e);
+    static void OnBoldToggle(lv_event_t *e);
+    static void OnTrueToneToggle(lv_event_t *e);
+    static void OnNightShiftToggle(lv_event_t *e);
+    static void OnNightWarmthChanged(lv_event_t *e);
+    static void OnTouchWakeToggle(lv_event_t *e);
+    static void OnAlwaysOnToggle(lv_event_t *e);
+    static void OnAlwaysOnWallpaperToggle(lv_event_t *e);
+    static void OnAlwaysOnBlurToggle(lv_event_t *e);
+    static void OnAlwaysOnNotificationsToggle(lv_event_t *e);
     static void OnVolChanged(lv_event_t *e);
     static void OnMuteToggle(lv_event_t *e);
 
