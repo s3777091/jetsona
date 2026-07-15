@@ -85,6 +85,11 @@ private:
     static void OnDockButtonEvent(lv_event_t *e);
     static void OnAppButtonClicked(lv_event_t *e);
     static void OnAppDeleted(lv_event_t *e);
+    static void OnMenuWifi(lv_event_t *e);
+    static void OnMenuBluetooth(lv_event_t *e);
+    static void OnMenuVolume(lv_event_t *e);
+    static void OnMenuPower(lv_event_t *e);
+    void ToggleVolume();
     static void OnSplashOpa(void *var, int32_t v);
     static void OnSplashBar(void *var, int32_t v);
     static void OnSplashGone(lv_anim_t *a);
@@ -99,8 +104,12 @@ private:
     lv_obj_t *wallpaper_ = nullptr;
     lv_obj_t *wallpaper_image_obj_ = nullptr;
     lv_obj_t *dim_overlay_ = nullptr;
-    lv_obj_t *system_bar_ = nullptr;
+    lv_obj_t *system_bar_ = nullptr;       // macOS-style menu bar (top-right cluster)
     lv_obj_t *wifi_label_ = nullptr;
+    lv_obj_t *bluetooth_label_ = nullptr;
+    lv_obj_t *volume_label_ = nullptr;
+    lv_obj_t *power_label_ = nullptr;
+    bool volume_muted_ = false;
     lv_obj_t *battery_icon_root_ = nullptr;
     lv_obj_t *battery_icon_body_ = nullptr;
     lv_obj_t *battery_icon_fill_ = nullptr;

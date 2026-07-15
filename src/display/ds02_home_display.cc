@@ -204,11 +204,8 @@ void Ds02HomeDisplay::CreateStandbyObjects() {
     lv_obj_set_style_bg_opa(dim_overlay_, 0, 0); // awake by default
     lv_obj_clear_flag(dim_overlay_, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // Big clock, top-right corner.
-    time_label_ = lv_label_create(standby_layer_);
-    lv_obj_set_style_text_font(time_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(time_label_, lv_color_white(), 0);
-    lv_obj_align(time_label_, LV_ALIGN_TOP_RIGHT, -16, kSystemBarHeight + 12);
+    // The clock lives in the macOS-style menu bar (top-right cluster) built by
+    // CreateSystemBarObjects; weather + date stay bottom-center.
 
     // Weather + date, bottom-center.
     weather_label_ = lv_label_create(standby_layer_);
@@ -328,28 +325,52 @@ void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
 }
 
 void Ds02HomeDisplay::CreateSystemBarObjects() {
+    /* macOS-style menu bar: a compact pill pinned to the top-right corner
+     * holding the status icons (wifi, bluetooth, battery, volume, power) and
+     * the clock -- all in one corner, like the right side of the macOS menu
+     * bar. Icons are clickable (wifi/bt open their settings, volume toggles
+     * mute, power is a placeholder). Notifications/status show as a transient
+     * toast centered just below the pill. */
+    const int bar_h = 28;
     system_bar_ = lv_obj_create(root_);
     lv_obj_remove_style_all(system_bar_);
-    lv_obj_set_size(system_bar_, lv_pct(100), kSystemBarHeight);
-    lv_obj_align(system_bar_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_size(system_bar_, LV_SIZE_CONTENT, bar_h);
+    lv_obj_align(system_bar_, LV_ALIGN_TOP_RIGHT, -8, 6);
     lv_obj_set_style_bg_color(system_bar_, Color(0x000000), 0);
     lv_obj_set_style_bg_opa(system_bar_, LV_OPA_50, 0);
-    lv_obj_set_style_pad_left(system_bar_, 12, 0);
-    lv_obj_set_style_pad_right(system_bar_, 12, 0);
+    lv_obj_set_style_radius(system_bar_, 14, 0);
+    lv_obj_set_style_pad_left(system_bar_, 10, 0);
+    lv_obj_set_style_pad_right(system_bar_, 10, 0);
+    lv_obj_set_style_pad_top(system_bar_, 2, 0);
+    lv_obj_set_style_pad_bottom(system_bar_, 2, 0);
+    lv_obj_set_style_pad_column(system_bar_, 12, 0);
+    lv_obj_set_flex_flow(system_bar_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(system_bar_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(system_bar_, LV_OBJ_FLAG_SCROLLABLE);
 
-    wifi_label_ = lv_label_create(system_bar_);
-    lv_obj_set_style_text_font(wifi_label_, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(wifi_label_, lv_color_white(), 0);
-    lv_label_set_text(wifi_label_, FONT_AWESOME_WIFI);
-    lv_obj_align(wifi_label_, LV_ALIGN_LEFT_MID, 0, 0);
+    auto add_icon = [&](lv_obj_t **out, const char *glyph, lv_event_cb_t cb) {
+        auto *l = lv_label_create(system_bar_);
+        lv_obj_set_style_text_font(l, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(l, lv_color_white(), 0);
+        lv_label_set_text(l, glyph);
+        lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
+        if (cb) lv_obj_add_event_cb(l, cb, LV_EVENT_CLICKED, this);
+        *out = l;
+    };
+    add_icon(&wifi_label_, FONT_AWESOME_WIFI, OnMenuWifi);
+    add_icon(&bluetooth_label_, FONT_AWESOME_BLUETOOTH, OnMenuBluetooth);
 
-    // Battery icon drawn from rectangles (DS-02 style).
+    // Battery percent + drawn icon (DS-02 style, rectangles).
+    battery_percent_label_ = lv_label_create(system_bar_);
+    lv_obj_set_style_text_font(battery_percent_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
+    lv_label_set_text(battery_percent_label_, "100%");
+
     battery_icon_root_ = lv_obj_create(system_bar_);
     lv_obj_remove_style_all(battery_icon_root_);
     lv_obj_set_size(battery_icon_root_, 28, 16);
     lv_obj_clear_flag(battery_icon_root_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(battery_icon_root_, LV_ALIGN_RIGHT_MID, 0, 0);
 
     battery_icon_body_ = lv_obj_create(battery_icon_root_);
     lv_obj_remove_style_all(battery_icon_body_);
@@ -378,24 +399,22 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
     lv_obj_set_style_bg_opa(nub, LV_OPA_COVER, 0);
     lv_obj_clear_flag(nub, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Percentage label just to the left of the battery icon (e.g. "87%").
-    battery_percent_label_ = lv_label_create(system_bar_);
-    lv_obj_set_style_text_font(battery_percent_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
-    lv_label_set_text(battery_percent_label_, "100%");
-    lv_obj_align(battery_percent_label_, LV_ALIGN_RIGHT_MID, -32, 0);
-    lv_obj_clear_flag(battery_percent_label_, LV_OBJ_FLAG_SCROLLABLE);
+    add_icon(&volume_label_, FONT_AWESOME_VOLUME_HIGH, OnMenuVolume);
+    add_icon(&power_label_, FONT_AWESOME_POWER, OnMenuPower);
 
-    // Reuse base status/notification labels in the system bar (left area).
-    status_label_ = lv_label_create(system_bar_);
-    lv_obj_set_style_text_font(status_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(status_label_, lv_color_white(), 0);
-    lv_obj_align(status_label_, LV_ALIGN_LEFT_MID, 28, 0);
-    notification_label_ = lv_label_create(system_bar_);
-    lv_obj_set_style_text_font(notification_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(notification_label_, lv_color_white(), 0);
-    lv_obj_align(notification_label_, LV_ALIGN_LEFT_MID, 28, 0);
-    lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
+    // Clock (rightmost item in the pill).
+    time_label_ = lv_label_create(system_bar_);
+    lv_obj_set_style_text_font(time_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(time_label_, lv_color_white(), 0);
+    lv_label_set_text(time_label_, "--:--");
+
+    // Reuse the base class status/notification labels (created on the screen by
+    // LvglDisplay) as a centered toast just below the menu bar.
+    if (status_label_) lv_obj_align(status_label_, LV_ALIGN_TOP_MID, 0, bar_h + 8);
+    if (notification_label_) {
+        lv_obj_align(notification_label_, LV_ALIGN_TOP_MID, 0, bar_h + 8);
+        lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void Ds02HomeDisplay::CreateDockObjects() {
@@ -686,6 +705,40 @@ void Ds02HomeDisplay::ApplyBackgroundIndexFromGallery(size_t index) {
 void Ds02HomeDisplay::OnAppDeleted(lv_event_t *e) {
     auto *ctx = static_cast<AppCtx *>(lv_event_get_user_data(e));
     delete ctx;
+}
+
+void Ds02HomeDisplay::OnMenuWifi(lv_event_t *e) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
+    DisplayLockGuard lock(self);
+    self->OpenWifiSettings();
+}
+
+void Ds02HomeDisplay::OnMenuBluetooth(lv_event_t *e) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
+    DisplayLockGuard lock(self);
+    self->OpenBluetoothSettings();
+}
+
+void Ds02HomeDisplay::OnMenuVolume(lv_event_t *e) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
+    DisplayLockGuard lock(self);
+    self->ToggleVolume();
+}
+
+void Ds02HomeDisplay::OnMenuPower(lv_event_t *e) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
+    DisplayLockGuard lock(self);
+    self->ShowNotification("Sắp ra mắt", 1500);
+}
+
+void Ds02HomeDisplay::ToggleVolume() {
+    volume_muted_ = !volume_muted_;
+    if (volume_label_) {
+        lv_label_set_text(volume_label_,
+                          volume_muted_ ? FONT_AWESOME_VOLUME_XMARK
+                                        : FONT_AWESOME_VOLUME_HIGH);
+    }
+    ShowNotification(volume_muted_ ? "Tắt tiếng" : "Bật tiếng", 1200);
 }
 
 void Ds02HomeDisplay::RepaintForTheme() {
