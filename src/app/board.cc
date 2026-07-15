@@ -1,5 +1,7 @@
 #include "board.h"
 #include "display/home/ds02_home_display.h"
+#include "net/bluetooth_manager.h"
+#include "net/wifi_manager.h"
 #include "lvgl_runtime.h"
 #include "fonts.h"
 #include "settings.h"
@@ -27,7 +29,9 @@ Board::Board()
     jetson::InitBuiltinFonts(JETSON_ASSETS_DIR);
     jetson::LvglRuntime::Instance().StartHandler();
 
-    display_ = new home::Ds02HomeDisplay(nullptr, nullptr, w, h, 0, 0, false, false, false);
+    display_ = new home::Ds02HomeDisplay(
+        nullptr, nullptr, w, h, 0, 0, false, false, false,
+        jetson::WifiManager::Instance(), jetson::BluetoothManager::Instance());
     ESP_LOGI(TAG, "DS-02 home display created %dx%d", w, h);
 }
 

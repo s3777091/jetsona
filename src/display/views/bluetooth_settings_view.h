@@ -28,7 +28,6 @@ class BluetoothSettingsView : public std::enable_shared_from_this<BluetoothSetti
 public:
     using ClosedCb = std::function<void()>;
 
-    BluetoothSettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
     BluetoothSettingsView(lv_obj_t *parent, int width, int height,
                           jetson::IBluetoothManager &bluetooth, ClosedCb on_closed);
     ~BluetoothSettingsView();

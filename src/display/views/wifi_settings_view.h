@@ -29,7 +29,6 @@ class WifiSettingsView : public std::enable_shared_from_this<WifiSettingsView> {
 public:
     using ClosedCb = std::function<void()>;
 
-    WifiSettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
     WifiSettingsView(lv_obj_t *parent, int width, int height,
                      jetson::IWifiManager &wifi, ClosedCb on_closed);
     ~WifiSettingsView();

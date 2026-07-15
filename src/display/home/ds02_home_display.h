@@ -1,18 +1,6 @@
 #pragma once
 
 #include "display/core/lcd_display.h"
-#include "display/core/lvgl_image.h"
-#include "display/common/backgrounds.h"
-#include "display/views/background_gallery_view.h"
-#include "display/views/bluetooth_settings_view.h"
-#include "display/views/calendar_view.h"
-#include "display/views/chat_view.h"
-#include "display/views/documents_view.h"
-#include "display/views/lock_screen_view.h"
-#include "display/views/settings_view.h"
-#include "display/views/terminal_view.h"
-#include "display/views/wifi_settings_view.h"
-#include "conversation.h"
 
 #include <array>
 #include <chrono>
@@ -24,7 +12,23 @@
 #include <string>
 #include <vector>
 
+namespace jetson {
+class Conversation;
+class IWifiManager;
+class IBluetoothManager;
+} // namespace jetson
+
 namespace home {
+
+class BackgroundGalleryView;
+class BluetoothSettingsView;
+class CalendarView;
+class ChatView;
+class DocumentsView;
+class LockScreenView;
+class SettingsView;
+class TerminalView;
+class WifiSettingsView;
 
 /* Compact DS-02 home display for the Jetson 800x480 HDMI panel.
  * Reproduces the DS-02 standby (wallpaper + clock + system bar + dock) and
@@ -35,7 +39,9 @@ class Ds02HomeDisplay : public SpiLcdDisplay {
 public:
     Ds02HomeDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
                     int width, int height, int offset_x, int offset_y,
-                    bool mirror_x, bool mirror_y, bool swap_xy);
+                    bool mirror_x, bool mirror_y, bool swap_xy,
+                    jetson::IWifiManager &wifi,
+                    jetson::IBluetoothManager &bluetooth);
     ~Ds02HomeDisplay() override;
 
     void SetupUI() override;
@@ -67,6 +73,9 @@ public:
      * and cached by filename; the gallery can delete files and the list updates. */
 
 private:
+    jetson::IWifiManager &wifi_;
+    jetson::IBluetoothManager &bluetooth_;
+
     enum class StandbyState { Dim, Awake, Launcher };
 
     static constexpr size_t kDockItemCount = 8;

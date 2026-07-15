@@ -31,10 +31,6 @@ void OnRowDeleted(lv_event_t *e) {
 
 } // namespace
 
-BluetoothSettingsView::BluetoothSettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
-    : BluetoothSettingsView(parent, width, height, jetson::BluetoothManager::Instance(),
-                            std::move(on_closed)) {}
-
 BluetoothSettingsView::BluetoothSettingsView(lv_obj_t *parent, int width, int height,
                                              jetson::IBluetoothManager &bluetooth,
                                              ClosedCb on_closed)

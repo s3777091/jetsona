@@ -31,10 +31,6 @@ void OnRowDeleted(lv_event_t *e) {
 
 } // namespace
 
-WifiSettingsView::WifiSettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
-    : WifiSettingsView(parent, width, height, jetson::WifiManager::Instance(),
-                       std::move(on_closed)) {}
-
 WifiSettingsView::WifiSettingsView(lv_obj_t *parent, int width, int height,
                                    jetson::IWifiManager &wifi, ClosedCb on_closed)
     : wifi_(wifi), parent_(parent), width_(width), height_(height),

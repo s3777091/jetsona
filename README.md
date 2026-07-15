@@ -61,7 +61,8 @@ jetson/
 - `display/views` composes shared widgets/components and talks to WiFi/Bluetooth
   through interfaces, so alternate implementations and test doubles can be
   injected without changing UI code.
-- `display/home` is the composition root for the screen and owns feature-view
+- `app/board` is the process composition root: it selects concrete Linux
+  services and injects them into `display/home`, which owns feature-view
   lifetimes.
 - Cross-module includes use source-root-qualified paths; reusable platform and
   display helpers live outside individual features.

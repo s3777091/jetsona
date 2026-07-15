@@ -1,6 +1,18 @@
 #include "display/home/ds02_home_display.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/backgrounds.h"
+#include "display/views/background_gallery_view.h"
+#include "display/views/bluetooth_settings_view.h"
+#include "display/views/calendar_view.h"
+#include "display/views/chat_view.h"
+#include "display/views/documents_view.h"
+#include "display/views/lock_screen_view.h"
+#include "display/views/settings_view.h"
+#include "display/views/terminal_view.h"
+#include "display/views/wifi_settings_view.h"
+#include "agent/conversation.h"
+#include "net/bluetooth_manager.h"
+#include "net/wifi_manager.h"
 #include "board.h"
 #include "fonts.h"
 #include "settings.h"
@@ -139,8 +151,11 @@ namespace home {
 
 Ds02HomeDisplay::Ds02HomeDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
                                  int width, int height, int /*ox*/, int /*oy*/,
-                                 bool /*mx*/, bool /*my*/, bool /*swap*/)
-    : SpiLcdDisplay(panel_io, panel, width, height, 0, 0, false, false, false) {}
+                                 bool /*mx*/, bool /*my*/, bool /*swap*/,
+                                 jetson::IWifiManager &wifi,
+                                 jetson::IBluetoothManager &bluetooth)
+    : SpiLcdDisplay(panel_io, panel, width, height, 0, 0, false, false, false),
+      wifi_(wifi), bluetooth_(bluetooth) {}
 
 Ds02HomeDisplay::~Ds02HomeDisplay() {
     if (refresh_timer_) { esp_timer_stop(refresh_timer_); esp_timer_delete(refresh_timer_); }
@@ -669,7 +684,7 @@ void Ds02HomeDisplay::OpenWifiSettings() {
     if (wifi_view_) return;
     if (!root_) root_ = lv_screen_active();
     wifi_view_ = std::make_shared<WifiSettingsView>(
-        root_, width_, height_,
+        root_, width_, height_, wifi_,
         [this]() { wifi_view_.reset(); });
     wifi_view_->Start();
 }
@@ -679,7 +694,7 @@ void Ds02HomeDisplay::OpenBluetoothSettings() {
     if (bt_view_) return;
     if (!root_) root_ = lv_screen_active();
     bt_view_ = std::make_shared<BluetoothSettingsView>(
-        root_, width_, height_,
+        root_, width_, height_, bluetooth_,
         [this]() { bt_view_.reset(); });
     bt_view_->Start();
 }
@@ -727,7 +742,7 @@ void Ds02HomeDisplay::OpenSettings() {
     if (settings_view_) return;
     if (!root_) root_ = lv_screen_active();
     settings_view_ = std::make_shared<SettingsView>(
-        root_, width_, height_,
+        root_, width_, height_, wifi_, bluetooth_,
         [this]() { settings_view_.reset(); });
     // Wire the hub's controls back into the home UI: brightness dims the
     // whole panel via the scrim, volume toggles the menu-bar icon, and the

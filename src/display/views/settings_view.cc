@@ -84,17 +84,12 @@ std::shared_ptr<SettingsView> SettingsView::Self() {
     return std::static_pointer_cast<SettingsView>(shared_from_this());
 }
 
-SettingsView::SettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
-    : OverlayView(parent, width, height, "Cài đặt", std::move(on_closed)) {
-    BuildShell();
-}
-
 SettingsView::SettingsView(lv_obj_t *parent, int width, int height,
                            jetson::IWifiManager &wifi,
                            jetson::IBluetoothManager &bluetooth,
                            ClosedCb on_closed)
     : OverlayView(parent, width, height, u8"Cài đặt", std::move(on_closed)),
-      wifi_(&wifi), bluetooth_(&bluetooth) {
+      wifi_(wifi), bluetooth_(bluetooth) {
     BuildShell();
 }
 
@@ -577,14 +572,14 @@ void SettingsView::BuildAbout() {
 
 void SettingsView::WifiRefreshSwitch() {
     if (!wifi_switch_) return;
-    bool on = wifi_->IsEnabled();
+    bool on = wifi_.IsEnabled();
     if (on) lv_obj_add_state(wifi_switch_, LV_STATE_CHECKED);
     else lv_obj_clear_state(wifi_switch_, LV_STATE_CHECKED);
 }
 
 void SettingsView::WifiRescan() {
     if (!wifi_list_) return;
-    if (!wifi_->IsEnabled()) {
+    if (!wifi_.IsEnabled()) {
         SetStatus("WiFi đang tắt");
         wifi_nets_.clear();
         WifiRenderList();
@@ -592,13 +587,13 @@ void SettingsView::WifiRescan() {
     }
     SetStatus("Đang quét WiFi...");
     std::thread([self = Self()]() {
-        auto nets = self->wifi_->Scan();
+        auto nets = self->wifi_.Scan();
         LvLockGuard lock;
         if (self) {
             self->wifi_nets_ = std::move(nets);
             self->wifi_scanned_ = true;
             self->WifiRenderList();
-            auto active = self->wifi_->ActiveSsid();
+            auto active = self->wifi_.ActiveSsid();
             self->SetStatus(active.empty() ? "Chạm mạng để xem/kết nối"
                                            : ("Đã kết nối: " + active).c_str());
         }
@@ -743,22 +738,22 @@ void SettingsView::WifiOpenModal(const WifiRowCtx &info) {
 void SettingsView::WifiDoConnect(const std::string &ssid, const std::string &pw) {
     SetStatus(("Đang kết nối " + ssid + "...").c_str());
     std::thread([self = Self(), ssid, pw]() {
-        bool ok = self->wifi_->Connect(ssid, pw);
+        bool ok = self->wifi_.Connect(ssid, pw);
         LvLockGuard lock;
         if (self) {
             if (ok) { self->SetStatus(("Đã kết nối: " + ssid).c_str()); self->WifiRescan(); }
-            else self->SetStatus(("Lỗi: " + self->wifi_->LastError()).c_str());
+            else self->SetStatus(("Lỗi: " + self->wifi_.LastError()).c_str());
         }
     }).detach();
 }
 
 void SettingsView::WifiDoForget(const std::string &ssid) {
     std::thread([self = Self(), ssid]() {
-        bool ok = self->wifi_->Forget(ssid);
+        bool ok = self->wifi_.Forget(ssid);
         LvLockGuard lock;
         if (self) {
             self->SetStatus(ok ? ("Đã quên: " + ssid).c_str()
-                               : ("Lỗi: " + self->wifi_->LastError()).c_str());
+                               : ("Lỗi: " + self->wifi_.LastError()).c_str());
             self->WifiRescan();
         }
     }).detach();
@@ -770,14 +765,14 @@ void SettingsView::WifiDoForget(const std::string &ssid) {
 
 void SettingsView::BtRefreshSwitch() {
     if (!bt_switch_) return;
-    bool on = bluetooth_->IsPowered();
+    bool on = bluetooth_.IsPowered();
     if (on) lv_obj_add_state(bt_switch_, LV_STATE_CHECKED);
     else lv_obj_clear_state(bt_switch_, LV_STATE_CHECKED);
 }
 
 void SettingsView::BtRescan() {
     if (!bt_list_) return;
-    if (!bluetooth_->IsPowered()) {
+    if (!bluetooth_.IsPowered()) {
         SetStatus("Bluetooth đang tắt");
         bt_devs_.clear();
         BtRenderList();
@@ -785,7 +780,7 @@ void SettingsView::BtRescan() {
     }
     SetStatus("Đang quét Bluetooth...");
     std::thread([self = Self()]() {
-        auto devs = self->bluetooth_->Scan(8);
+        auto devs = self->bluetooth_.Scan(8);
         LvLockGuard lock;
         if (self) {
             self->bt_devs_ = std::move(devs);
@@ -924,11 +919,11 @@ void SettingsView::BtOpenModal(const std::string &addr) {
 void SettingsView::BtDoAction(const std::string &addr, bool connected) {
     SetStatus(connected ? "Đang ngắt..." : "Đang kết nối...");
     std::thread([self = Self(), addr, connected]() {
-        bool ok = connected ? self->bluetooth_->Disconnect(addr)
-                            : self->bluetooth_->PairAndConnect(addr);
+        bool ok = connected ? self->bluetooth_.Disconnect(addr)
+                            : self->bluetooth_.PairAndConnect(addr);
         LvLockGuard lock;
         if (self) {
-            self->SetStatus(ok ? "Xong" : ("Lỗi: " + self->bluetooth_->LastError()).c_str());
+            self->SetStatus(ok ? "Xong" : ("Lỗi: " + self->bluetooth_.LastError()).c_str());
             self->BtRescan();
         }
     }).detach();
@@ -936,10 +931,10 @@ void SettingsView::BtDoAction(const std::string &addr, bool connected) {
 
 void SettingsView::BtDoRemove(const std::string &addr) {
     std::thread([self = Self(), addr]() {
-        bool ok = self->bluetooth_->Remove(addr);
+        bool ok = self->bluetooth_.Remove(addr);
         LvLockGuard lock;
         if (self) {
-            self->SetStatus(ok ? "Đã quên thiết bị" : ("Lỗi: " + self->bluetooth_->LastError()).c_str());
+            self->SetStatus(ok ? "Đã quên thiết bị" : ("Lỗi: " + self->bluetooth_.LastError()).c_str());
             self->BtRescan();
         }
     }).detach();
@@ -1139,7 +1134,7 @@ void SettingsView::OnWifiSwitch(lv_event_t *e) {
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     bool on = lv_obj_has_state(self->wifi_switch_, LV_STATE_CHECKED);
     std::thread([self = self->Self(), on]() {
-        self->wifi_->Enable(on);
+        self->wifi_.Enable(on);
         LvLockGuard lock;
         if (self) {
             self->wifi_scanned_ = false;
@@ -1169,8 +1164,8 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     bool on = lv_obj_has_state(self->bt_switch_, LV_STATE_CHECKED);
     std::thread([self = self->Self(), on]() {
-        if (on) self->bluetooth_->PowerOn();
-        else self->bluetooth_->PowerOff();
+        if (on) self->bluetooth_.PowerOn();
+        else self->bluetooth_.PowerOff();
         LvLockGuard lock;
         if (self) {
             self->bt_scanned_ = false;

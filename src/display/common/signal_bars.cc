@@ -9,6 +9,18 @@ namespace jetson::ui {
 namespace {
 constexpr int kBarCount = 4;
 constexpr int kBarHeights[kBarCount] = {8, 12, 16, 20};
+
+constexpr int SignalBarCount(int signal_percent) {
+    const int strength = signal_percent < 0 ? 0 : (signal_percent > 100 ? 100 : signal_percent);
+    return strength == 0 ? 0 : (strength >= 75 ? 4 : strength / 25 + 1);
+}
+
+static_assert(SignalBarCount(0) == 0);
+static_assert(SignalBarCount(1) == 1);
+static_assert(SignalBarCount(25) == 2);
+static_assert(SignalBarCount(50) == 3);
+static_assert(SignalBarCount(75) == 4);
+static_assert(SignalBarCount(100) == 4);
 } // namespace
 
 int RssiToSignalPercent(int rssi_dbm) {
@@ -17,7 +29,7 @@ int RssiToSignalPercent(int rssi_dbm) {
 
 lv_obj_t *CreateSignalBars(lv_obj_t *parent, int signal_percent) {
     const int strength = std::clamp(signal_percent, 0, 100);
-    const int filled = strength == 0 ? 0 : std::min(kBarCount, strength / 25 + 1);
+    const int filled = SignalBarCount(strength);
 
     auto *container = lv_obj_create(parent);
     lv_obj_remove_style_all(container);

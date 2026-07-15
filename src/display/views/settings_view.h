@@ -27,7 +27,6 @@ namespace home {
  * pattern. Home wires brightness/volume/lock through the setter hooks below. */
 class SettingsView : public OverlayView {
 public:
-    SettingsView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
     SettingsView(lv_obj_t *parent, int width, int height,
                  jetson::IWifiManager &wifi, jetson::IBluetoothManager &bluetooth,
                  ClosedCb on_closed);
@@ -43,8 +42,8 @@ protected:
 private:
     // Dependencies are non-owning and must outlive the view. Production uses
     // the process-wide managers; tests can provide deterministic fakes.
-    jetson::IWifiManager *wifi_ = &jetson::WifiManager::Instance();
-    jetson::IBluetoothManager *bluetooth_ = &jetson::BluetoothManager::Instance();
+    jetson::IWifiManager &wifi_;
+    jetson::IBluetoothManager &bluetooth_;
 
     enum class Cat {
         Appearance, Display, Sound, Wifi, Bluetooth, Keyboard, DateTime, Power, About
