@@ -15,6 +15,7 @@
 #include "esp_log.h"
 
 #include "lvgl.h"
+#include "lvgl_image.h"
 
 #define TAG "lvgl"
 
@@ -133,21 +134,33 @@ static void keyboard_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     data->state = st->state;
 }
 
-/* LVGL pointer indevs have no visible cursor by default; the relative mouse
- * moves the focus point but the user can't see where it is. Attach a small
- * high-contrast circle (drawn on the display's sys layer by set_cursor) so the
- * mouse position is visible. */
+/* LVGL pointer indevs have no visible cursor by default; a relative mouse
+ * moves the focus point but the user can't see where it is. Attach an
+ * arrow-shaped cursor (macOS/Windows style) loaded from a small PNG.
+ *
+ * The cursor is parented to lv_layer_top() (not the active screen) so it stays
+ * above every overlay/app view -- otherwise opening a full-screen app covers
+ * the cursor and the pointer "disappears". lv_indev_set_cursor positions the
+ * object's top-left at the pointer, and the arrow's tip sits at that corner, so
+ * the hot-spot is the visible tip. The LvglImage is held in a function-local
+ * static so its buffer outlives every cursor that references its dsc. */
 static void attach_pointer_cursor(lv_indev_t *indev)
 {
     if (!indev) return;
-    lv_obj_t *cur = lv_obj_create(lv_screen_active());
+    lv_obj_t *cur = lv_image_create(lv_layer_top());
     lv_obj_remove_style_all(cur);
-    lv_obj_set_size(cur, 16, 16);
-    lv_obj_set_style_radius(cur, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(cur, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(cur, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(cur, 2, 0);
-    lv_obj_set_style_border_color(cur, lv_color_black(), 0);
+    static auto cursor_img = LvglImageFromFile("assets/icons/app/cursor.png");
+    if (cursor_img) {
+        lv_image_set_src(cur, cursor_img->image_dsc());
+    } else {
+        /* Fallback: a small high-contrast circle if the PNG is missing. */
+        lv_obj_set_size(cur, 12, 12);
+        lv_obj_set_style_radius(cur, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(cur, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(cur, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(cur, 2, 0);
+        lv_obj_set_style_border_color(cur, lv_color_black(), 0);
+    }
     lv_indev_set_cursor(indev, cur);
 }
 } // namespace
@@ -370,21 +383,23 @@ void LvglRuntime::openKeyboard() {
 }
 
 void LvglRuntime::openMouse() {
-    /* Register EVERY USB (relative) mouse as a LVGL pointer indev. A machine
-     * often exposes several mice -- here a Genius keyboard/mouse combo
-     * (event3) plus a standalone mouse (event4) -- and registering only the
-     * first means moving the other does nothing (the cursor stays parked).
-     * Each mouse gets its own cursor, so whichever one you move is visible.
-     * LVGL's evdev driver accumulates REL_X/REL_Y for pointer devices
-     * (lv_evdev.c), so a relative mouse works without ABS axes -- it just logs
-     * a harmless EVIOCGABS(ABS_X) error at create time. Skip devices that are
-     * really touch screens (ABS_X+ABS_Y), which the touch scan owns. */
-    std::vector<std::string> paths;
+    /* Register a single USB (relative) mouse as the LVGL pointer indev -- one
+     * mouse, one cursor. A relative mouse has REL_X (rel bit 0); a touch panel
+     * has ABS_X+ABS_Y or ABS_MT (owned by openTouch), and a keyboard (e.g. a
+     * "Hyperwork" USB keyboard) may also report REL_X yet is not a mouse, so
+     * skip anything with KEY_Q (key bit 16) -- that's how openKeyboard detects
+     * a real keyboard. Taking only the first qualifying device avoids the
+     * "two cursors" symptom when a keyboard/combo node also exposes REL_X.
+     * LVGL's evdev driver accumulates REL_X/REL_Y for pointer devices, so a
+     * relative mouse works without ABS axes (it logs a harmless EVIOCGABS
+     * error at create time). Override with JETSON_MOUSE_DEVICE if needed. */
+    std::string devpath;
     const char *forced = std::getenv("JETSON_MOUSE_DEVICE");
     if (forced && forced[0]) {
         std::string f(forced);
-        paths.push_back((f.find('/') == std::string::npos) ? std::string("/dev/input/") + f : f);
+        devpath = (f.find('/') == std::string::npos) ? std::string("/dev/input/") + f : f;
     } else {
+        constexpr unsigned long kAbsMtXY = (1UL << 0x35) | (1UL << 0x36);
         for (int i = 0; i < 16; ++i) {
             char sysp[96];
             std::snprintf(sysp, sizeof(sysp),
@@ -392,30 +407,32 @@ void LvglRuntime::openMouse() {
             unsigned long rel = readSysFirstHexWord(sysp);
             if ((rel & 0x1UL) == 0) continue; /* REL_X => relative pointer */
             std::snprintf(sysp, sizeof(sysp),
+                          "/sys/class/input/event%d/device/capabilities/key", i);
+            unsigned long key = readSysFirstHexWord(sysp);
+            if ((key >> 16) & 0x1UL) continue; /* KEY_Q => keyboard, not a mouse */
+            std::snprintf(sysp, sizeof(sysp),
                           "/sys/class/input/event%d/device/capabilities/abs", i);
             unsigned long abs = readSysFirstHexWord(sysp);
             if ((abs & 0x3UL) == 0x3UL) continue; /* ABS_X+ABS_Y => touch, not mouse */
-            constexpr unsigned long kAbsMtXY = (1UL << 0x35) | (1UL << 0x36);
             if ((abs & kAbsMtXY) == kAbsMtXY) continue; /* multitouch panel => touch */
             char path[32];
             std::snprintf(path, sizeof(path), "/dev/input/event%d", i);
-            paths.emplace_back(path);
+            devpath = path;
+            break; /* one mouse is enough -> a single cursor */
         }
     }
-    if (paths.empty()) {
+    if (devpath.empty()) {
         ESP_LOGW(TAG, "no evdev mouse found");
         return;
     }
-    for (const auto &path : paths) {
-        lv_indev_t *m = lv_evdev_create(LV_INDEV_TYPE_POINTER, path.c_str());
-        if (!m) {
-            ESP_LOGW(TAG, "mouse: open %s failed", path.c_str());
-            continue;
-        }
-        attach_pointer_cursor(m);
-        if (!mouse_) mouse_ = m; /* keep the first for the accessor */
-        ESP_LOGI(TAG, "mouse: %s", path.c_str());
+    lv_indev_t *m = lv_evdev_create(LV_INDEV_TYPE_POINTER, devpath.c_str());
+    if (!m) {
+        ESP_LOGW(TAG, "mouse: open %s failed", devpath.c_str());
+        return;
     }
+    attach_pointer_cursor(m);
+    mouse_ = m;
+    ESP_LOGI(TAG, "mouse: %s", devpath.c_str());
 }
 
 bool LvglRuntime::Init(int width, int height) {

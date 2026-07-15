@@ -2,8 +2,9 @@
 
 /* Base for full-screen overlay views (calendar / background gallery / settings)
  * sharing the same shell: an overlay covering the screen, a 48px header with a
- * back button + centered title (+ optional right button), a status line, and a
- * body container the subclass fills.
+ * macOS-style traffic-light cluster (close / minimize / zoom) on the left and a
+ * centered title (+ optional right button), a status line, and a body container
+ * the subclass fills.
  *
  * Threading + lifetime mirror WifiSettingsView: the subclass is shared_ptr-owned
  * so worker threads (scans, etc.) can outlive the on-screen overlay; the back
@@ -42,18 +43,32 @@ protected:
     lv_obj_t *parent_ = nullptr;
     lv_obj_t *overlay_ = nullptr;
     lv_obj_t *header_ = nullptr;
-    lv_obj_t *back_btn_ = nullptr;
+    lv_obj_t *close_btn_ = nullptr;   // macOS traffic-light: red (close)
+    lv_obj_t *min_btn_ = nullptr;     // yellow (minimize)
+    lv_obj_t *zoom_btn_ = nullptr;    // green (zoom / windowed)
     lv_obj_t *title_label_ = nullptr;
     lv_obj_t *status_label_ = nullptr;
     lv_obj_t *body_ = nullptr;        // subclass fills this (below header+status)
     lv_obj_t *right_btn_ = nullptr;
+    lv_obj_t *restore_btn_ = nullptr; // floating pill shown while minimized
+    std::string title_;
+    bool zoomed_ = false;
 
     virtual void OnStart() {}
+    // Called after the overlay is resized by the green zoom button so subclasses
+    // can reflow their content into the new body width/height (default: no-op).
+    virtual void OnResize(int /*w*/, int /*h*/) {}
 
 private:
     void BuildShell(const char *title);
+    void Minimize();
+    void Restore();
+    void ToggleZoom();
 
-    static void OnBack(lv_event_t *e);
+    static void OnCloseBtn(lv_event_t *e);
+    static void OnMinBtn(lv_event_t *e);
+    static void OnZoomBtn(lv_event_t *e);
+    static void OnRestore(lv_event_t *e);
     static void OnRight(lv_event_t *e);
     static void OnCloseTimer(lv_timer_t *t);
 

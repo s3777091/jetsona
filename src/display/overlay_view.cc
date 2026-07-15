@@ -18,19 +18,18 @@ struct LvLockGuard {
 } // namespace
 
 OverlayView::OverlayView(lv_obj_t *parent, int width, int height, const char *title, ClosedCb on_closed)
-    : width_(width), height_(height), parent_(parent), on_closed_(std::move(on_closed)) {
+    : width_(width), height_(height), parent_(parent), title_(title ? title : ""),
+      on_closed_(std::move(on_closed)) {
     if (!parent_) parent_ = lv_screen_active();
     BuildShell(title);
 }
 
 OverlayView::~OverlayView() {
     closed_ = true;
-    if (overlay_) {
-        lv_lock();
-        lv_obj_del(overlay_);
-        lv_unlock();
-        overlay_ = nullptr;
-    }
+    lv_lock();
+    if (restore_btn_) { lv_obj_del(restore_btn_); restore_btn_ = nullptr; }
+    if (overlay_) { lv_obj_del(overlay_); overlay_ = nullptr; }
+    lv_unlock();
 }
 
 void OverlayView::BuildShell(const char *title) {
@@ -56,16 +55,31 @@ void OverlayView::BuildShell(const char *title) {
     lv_obj_set_style_pad_right(header_, 8, 0);
     lv_obj_clear_flag(header_, LV_OBJ_FLAG_SCROLLABLE);
 
-    back_btn_ = lv_button_create(header_);
-    lv_obj_set_size(back_btn_, 40, 40);
-    lv_obj_align(back_btn_, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_style_bg_color(back_btn_, Color(p.button), 0);
-    lv_obj_add_event_cb(back_btn_, OnBack, LV_EVENT_CLICKED, this);
-    auto *back_lbl = lv_label_create(back_btn_);
-    lv_obj_set_style_text_font(back_lbl, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(back_lbl, Color(p.text), 0);
-    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
-    lv_obj_center(back_lbl);
+    // macOS-style traffic lights: red close, yellow minimize, green zoom.
+    auto make_light = [&](lv_obj_t **out, uint32_t rgb, const char *glyph,
+                          lv_event_cb_t cb) {
+        auto *b = lv_obj_create(header_);
+        lv_obj_remove_style_all(b);
+        lv_obj_set_size(b, 14, 14);
+        lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(b, Color(rgb), 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+        auto *g = lv_label_create(b);
+        lv_obj_set_style_text_font(g, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(g, Color(0x000000), 0);
+        lv_obj_set_style_text_opa(g, (lv_opa_t)0xA0, 0);
+        lv_label_set_text(g, glyph);
+        lv_obj_center(g);
+        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, this);
+        *out = b;
+    };
+    make_light(&close_btn_, 0xFF5F57, "x", OnCloseBtn);
+    lv_obj_align(close_btn_, LV_ALIGN_LEFT_MID, 12, 0);
+    make_light(&min_btn_, 0xFEBC2E, "-", OnMinBtn);
+    lv_obj_align_to(min_btn_, close_btn_, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    make_light(&zoom_btn_, 0x28C840, "+", OnZoomBtn);
+    lv_obj_align_to(zoom_btn_, min_btn_, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
     title_label_ = lv_label_create(header_);
     lv_obj_set_style_text_font(title_label_, &BUILTIN_TEXT_FONT, 0);
@@ -127,10 +141,85 @@ void OverlayView::OnCloseTimer(lv_timer_t *t) {
     if (self && self->on_closed_) self->on_closed_();
 }
 
-void OverlayView::OnBack(lv_event_t *e) {
+void OverlayView::OnCloseBtn(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
     self->RequestClose();
+}
+
+void OverlayView::OnMinBtn(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
+    self->Minimize();
+}
+
+void OverlayView::OnZoomBtn(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
+    self->ToggleZoom();
+}
+
+void OverlayView::OnRestore(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
+    self->Restore();
+}
+
+void OverlayView::Minimize() {
+    if (!overlay_ || restore_btn_) return; // already minimized / no overlay
+    lv_obj_add_flag(overlay_, LV_OBJ_FLAG_HIDDEN);
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    restore_btn_ = lv_obj_create(parent_);
+    lv_obj_remove_style_all(restore_btn_);
+    lv_obj_set_size(restore_btn_, 140, 36);
+    lv_obj_set_style_radius(restore_btn_, 18, 0);
+    lv_obj_set_style_bg_color(restore_btn_, Color(p.accent), 0);
+    lv_obj_set_style_bg_opa(restore_btn_, LV_OPA_COVER, 0);
+    lv_obj_add_flag(restore_btn_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(restore_btn_, LV_ALIGN_BOTTOM_MID, 0, -8);
+    auto *lbl = lv_label_create(restore_btn_);
+    lv_obj_set_style_text_font(lbl, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+    lv_label_set_text(lbl, title_.c_str());
+    lv_obj_center(lbl);
+    lv_obj_add_event_cb(restore_btn_, OnRestore, LV_EVENT_CLICKED, this);
+}
+
+void OverlayView::Restore() {
+    if (!restore_btn_) return;
+    lv_obj_del(restore_btn_);
+    restore_btn_ = nullptr;
+    if (overlay_) lv_obj_clear_flag(overlay_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void OverlayView::ToggleZoom() {
+    if (!overlay_) return;
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    zoomed_ = !zoomed_;
+    int w, h;
+    if (zoomed_) {
+        w = width_ * 96 / 100;   // 768
+        h = height_ * 90 / 100;  // 432
+        lv_obj_set_pos(overlay_, (width_ - w) / 2, (height_ - h) / 2);
+        lv_obj_set_style_radius(overlay_, 16, 0);
+        lv_obj_set_style_border_width(overlay_, 1, 0);
+        lv_obj_set_style_border_color(overlay_, Color(p.row), 0);
+        lv_obj_set_style_shadow_width(overlay_, 24, 0);
+        lv_obj_set_style_clip_corner(overlay_, true, 0);
+    } else {
+        w = width_;
+        h = height_;
+        lv_obj_set_pos(overlay_, 0, 0);
+        lv_obj_set_style_radius(overlay_, 0, 0);
+        lv_obj_set_style_border_width(overlay_, 0, 0);
+        lv_obj_set_style_shadow_width(overlay_, 0, 0);
+        lv_obj_set_style_clip_corner(overlay_, false, 0);
+    }
+    lv_obj_set_size(overlay_, w, h);
+    lv_obj_set_width(header_, w);
+    lv_obj_set_width(status_label_, w - 24);
+    lv_obj_set_size(body_, w, h - 80);
+    OnResize(w, h - 80);
 }
 
 void OverlayView::OnRight(lv_event_t *e) {
