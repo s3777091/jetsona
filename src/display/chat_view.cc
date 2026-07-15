@@ -2,6 +2,7 @@
 #include "fonts.h"
 #include "ui_theme.h"
 #include "application.h"
+#include "lvgl_runtime.h"
 #include "esp_log.h"
 
 #include <lvgl.h>
@@ -76,6 +77,8 @@ ChatView::ChatView(lv_obj_t *parent, int width, int height,
     lv_textarea_set_max_length(input_, 500);
     lv_obj_add_event_cb(input_, OnInputReady, LV_EVENT_READY, this);
     lv_obj_add_event_cb(input_, OnInputFocused, LV_EVENT_FOCUSED, this);
+    /* Let the USB keyboard type into this textarea via the keypad group. */
+    if (auto *g = jetson::LvglRuntime::Instance().keypad_group()) lv_group_add_obj(g, input_);
 
     send_btn_ = lv_button_create(input_row);
     lv_obj_set_size(send_btn_, 80, 48);

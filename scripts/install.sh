@@ -28,4 +28,14 @@ sudo systemctl daemon-reload
 sudo systemctl enable jetson-fw
 sudo systemctl restart jetson-fw
 
+# Optional: branded login banner on the HDMI console (replaces the bare
+# "jetson login:" prompt shown during boot / service restart). Backs up
+# /etc/issue to /etc/issue.orig first. Off by default — set to install:
+#   INSTALL_LOGIN_BANNER=1 sudo ./scripts/install.sh
+if [ "${INSTALL_LOGIN_BANNER:-0}" = "1" ]; then
+    bash "$SCRIPT_DIR/install-login-banner.sh"
+else
+    echo "==> Skipped login banner (set INSTALL_LOGIN_BANNER=1 to install it)"
+fi
+
 echo "==> Installed. Check:  sudo systemctl status jetson-fw ; tail -f /var/log/jetson-fw.log"

@@ -2,6 +2,7 @@
 
 #include "lcd_display.h"
 #include "lvgl_image.h"
+#include "backgrounds.h"
 #include "wifi_settings_view.h"
 #include "bluetooth_settings_view.h"
 #include "calendar_view.h"
@@ -53,7 +54,8 @@ public:
     void OpenTerminal();
     void ApplyBackgroundIndexFromGallery(size_t index);
 
-    static constexpr size_t kBackgroundCount = 10;
+    /* Wallpaper count comes from backgrounds.h (home::kBackgroundCount) so the
+     * cache array tracks the shared wallpaper list. */
 
 private:
     enum class StandbyState { Dim, Awake, Launcher };
@@ -85,6 +87,9 @@ private:
     static void OnAppDeleted(lv_event_t *e);
     static void OnStandbyGesture(lv_event_t *e);
     static void OnSphereRotate(lv_timer_t *t);
+    static void OnSplashOpa(void *var, int32_t v);
+    static void OnSplashBar(void *var, int32_t v);
+    static void OnSplashGone(lv_anim_t *a);
     static std::string FormatTime(const struct tm &t);
     static std::string FormatDate(const struct tm &t);
 
@@ -139,6 +144,10 @@ private:
     lv_timer_t *sphere_timer_ = nullptr;
     int sphere_angle_ = 0;
     lv_obj_t *app_grid_ = nullptr;
+
+    /* Full-screen boot splash shown on top of the home UI for ~duration_ms.
+     * Fades out then self-destructs (see ShowOnboardSplash). */
+    lv_obj_t *splash_ = nullptr;
 };
 
 } // namespace home

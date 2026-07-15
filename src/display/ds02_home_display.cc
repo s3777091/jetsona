@@ -105,6 +105,11 @@ Ds02HomeDisplay::Ds02HomeDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_pan
 
 Ds02HomeDisplay::~Ds02HomeDisplay() {
     if (refresh_timer_) { esp_timer_stop(refresh_timer_); esp_timer_delete(refresh_timer_); }
+    if (splash_) {
+        lv_anim_delete(splash_, OnSplashOpa);
+        lv_obj_del_async(splash_);
+        splash_ = nullptr;
+    }
 }
 
 void Ds02HomeDisplay::SetupUI() {
@@ -146,6 +151,9 @@ void Ds02HomeDisplay::SetupUI() {
     // Repaint the whole home screen when the light/dark theme flips.
     // Ds02HomeDisplay lives for the whole app lifetime, so capturing `this` is safe.
     jetson::UiTheme::Instance().Subscribe([this]() { RepaintForTheme(); });
+
+    // Boot splash on top of the freshly-built home UI; fades out on its own.
+    ShowOnboardSplash(2500);
 }
 
 void Ds02HomeDisplay::CreateStandbyObjects() {
@@ -848,8 +856,117 @@ void Ds02HomeDisplay::SetPowerSaveMode(bool on) {
     ApplyStandbyState();
 }
 
-void Ds02HomeDisplay::ShowOnboardSplash(int /*duration_ms*/) {
-    // Phase 1: skip the onboard splash (logo asset not bundled).
+void Ds02HomeDisplay::ShowOnboardSplash(int duration_ms) {
+    // Full-screen boot splash drawn on top of the (already-built) home UI.
+    // A progress bar fills over `duration_ms`, then the whole splash fades out
+    // and self-destructs, revealing the standby/home screen beneath.
+    // Must be called with the display lock held (as from SetupUI).
+    if (duration_ms <= 0) return;
+    if (splash_) lv_obj_del(splash_); // replace any prior splash
+
+    splash_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(splash_);
+    lv_obj_set_size(splash_, lv_pct(100), lv_pct(100));
+    lv_obj_set_pos(splash_, 0, 0);
+    lv_obj_set_style_bg_color(splash_, Color(0x0b1a2f), 0);
+    lv_obj_set_style_bg_opa(splash_, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_grad_color(splash_, Color(0x000000), 0);
+    lv_obj_set_style_bg_grad_dir(splash_, LV_GRAD_DIR_VER, 0);
+    lv_obj_clear_flag(splash_, LV_OBJ_FLAG_SCROLLABLE);
+    // Swallow taps while the splash is up so the dock isn't poked mid-boot.
+    lv_obj_add_flag(splash_, LV_OBJ_FLAG_CLICKABLE);
+
+    // Planet avatar (same mark as the home screen) as the logo.
+    const int kSphere = 130;
+    auto *sphere_host = lv_obj_create(splash_);
+    lv_obj_remove_style_all(sphere_host);
+    lv_obj_set_size(sphere_host, kSphere, kSphere);
+    lv_obj_align(sphere_host, LV_ALIGN_CENTER, 0, -54);
+    lv_obj_set_style_bg_color(sphere_host, Color(0x2a6fb0), 0);
+    lv_obj_set_style_bg_opa(sphere_host, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(sphere_host, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(sphere_host, 2, 0);
+    lv_obj_set_style_border_color(sphere_host, Color(0x6fb3e0), 0);
+    lv_obj_clear_flag(sphere_host, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    CreateSphere(sphere_host, kSphere);
+
+    // Wordmark + accent underline.
+    auto *title = lv_label_create(splash_);
+    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_letter_space(title, 4, 0);
+    lv_label_set_text(title, "DS-02");
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 38);
+
+    auto *underline = lv_obj_create(splash_);
+    lv_obj_remove_style_all(underline);
+    lv_obj_set_size(underline, 96, 3);
+    lv_obj_set_style_bg_color(underline, Color(0x4aa3df), 0);
+    lv_obj_set_style_bg_opa(underline, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(underline, 2, 0);
+    lv_obj_align(underline, LV_ALIGN_CENTER, 0, 56);
+    lv_obj_clear_flag(underline, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    auto *sub = lv_label_create(splash_);
+    lv_obj_set_style_text_font(sub, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(sub, Color(0x9fb4c8), 0);
+    lv_label_set_text(sub, "Jetson Nano  \xC2\xB7  AI Firmware");
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 72);
+
+    // Progress bar near the bottom.
+    auto *bar = lv_bar_create(splash_);
+    lv_obj_set_size(bar, 320, 6);
+    lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, -42);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_start_value(bar, 0, LV_ANIM_OFF);
+    lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(bar, Color(0x1b3a5b), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(bar, 3, 0);
+    lv_obj_set_style_bg_color(bar, Color(0x4aa3df), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
+
+    // Progress fill 0 -> 100 over the splash duration.
+    lv_anim_t b;
+    lv_anim_init(&b);
+    lv_anim_set_var(&b, bar);
+    lv_anim_set_values(&b, 0, 100);
+    lv_anim_set_time(&b, duration_ms);
+    lv_anim_set_exec_cb(&b, OnSplashBar);
+    lv_anim_set_path_cb(&b, lv_anim_path_ease_in_out);
+    lv_anim_set_early_apply(&b, true);
+    lv_anim_start(&b);
+
+    // Fade out after the bar finishes, then delete the splash subtree.
+    lv_anim_t c;
+    lv_anim_init(&c);
+    lv_anim_set_var(&c, splash_);
+    lv_anim_set_values(&c, 255, 0);
+    lv_anim_set_delay(&c, duration_ms);
+    lv_anim_set_time(&c, 500);
+    lv_anim_set_exec_cb(&c, OnSplashOpa);
+    lv_anim_set_path_cb(&c, lv_anim_path_ease_in);
+    lv_anim_set_completed_cb(&c, OnSplashGone);
+    lv_anim_set_user_data(&c, this);
+    lv_anim_set_early_apply(&c, false);
+    lv_anim_start(&c);
+}
+
+void Ds02HomeDisplay::OnSplashBar(void *var, int32_t v) {
+    lv_bar_set_value((lv_obj_t *)var, v, LV_ANIM_OFF);
+}
+
+void Ds02HomeDisplay::OnSplashOpa(void *var, int32_t v) {
+    lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
+}
+
+void Ds02HomeDisplay::OnSplashGone(lv_anim_t *a) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_anim_get_user_data(a));
+    if (!self || !self->splash_) return;
+    // Deferred delete: safe from within an anim completed callback.
+    lv_obj_del_async(self->splash_);
+    self->splash_ = nullptr;
 }
 
 } // namespace home

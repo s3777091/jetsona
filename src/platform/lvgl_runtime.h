@@ -9,6 +9,7 @@ extern "C" {
 #endif
 typedef struct lv_display_t lv_display_t;
 typedef struct lv_indev_t lv_indev_t;
+typedef struct lv_group_t lv_group_t;
 #ifdef __cplusplus
 }
 #endif
@@ -31,6 +32,12 @@ public:
 
     lv_display_t *display() const { return display_; }
     lv_indev_t *pointer() const { return pointer_; }
+    lv_indev_t *keyboard() const { return keyboard_; }
+    lv_indev_t *mouse() const { return mouse_; }
+
+    /* Group the USB keyboard delivers key events to. The chat/terminal/wifi
+     * views add their textareas here so a physical keyboard can type into them. */
+    lv_group_t *keypad_group() const { return keypad_group_; }
 
 private:
     LvglRuntime() = default;
@@ -43,9 +50,14 @@ private:
     lv_display_t *createDisplaySdl(int width, int height);
     lv_display_t *createDisplayWayland(int width, int height);
     void openTouch();
+    void openKeyboard();
+    void openMouse();
 
     lv_display_t *display_ = nullptr;
     lv_indev_t *pointer_ = nullptr;
+    lv_indev_t *keyboard_ = nullptr;
+    lv_indev_t *mouse_ = nullptr;
+    lv_group_t *keypad_group_ = nullptr;
     std::thread tick_thread_;
     std::thread handler_thread_;
     std::atomic<bool> running_{false};

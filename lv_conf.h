@@ -77,7 +77,13 @@
 
 /* 1: Enable buffer depth/size test on draw buf. */
 #define LV_DRAW_BUF_STRIDE_ALIGN 64
-#define LV_DRAW_BUF_ALIGN 64
+/* LVGL requires draw buffers passed to lv_display_set_buffers to already be
+ * aligned to LV_DRAW_BUF_ALIGN (asserted in lv_display.c). The fbdev driver
+ * (lv_linux_fbdev.c) allocates its draw buffer with plain malloc(), which glibc
+ * only guarantees to be 16-byte aligned on aarch64. 16 is also the natural
+ * NEON alignment for the SW draw path, so use 16 here to satisfy the assertion
+ * without patching the vendored driver. Row stride stays 64-byte aligned above. */
+#define LV_DRAW_BUF_ALIGN 16
 
 /* 1: Use NXP's PMU/PSA crypto for OTA. (not used) */
 #define LV_USE_SYSMON 0
@@ -157,6 +163,12 @@
 #if LV_USE_FS_STDIO
     #define LV_FS_STDIO_LETTER 'A'
     #define LV_FS_STDIO_BUFFER_SIZE 4096
+    /* Bare relative paths with no "X:" drive prefix resolve to this letter.
+     * Lets lv_tiny_ttf_create_file open "assets/fonts/arial.ttf" through the
+     * stdio ('A') driver without per-callsite "A:" prefixing. LV_FS_STDIO_PATH
+     * is empty, so the stdio driver fopen()s the path as-is (relative to CWD,
+     * which is the build dir with assets/ copied next to the binary). */
+    #define LV_FS_DEFAULT_DRIVE_LETTER 'A'
 #endif
 #define LV_USE_FS_POSIX 1
 #if LV_USE_FS_POSIX
@@ -183,6 +195,12 @@
 ====================*/
 #define LV_USE_LINUX_DRM        1
 #define LV_USE_LINUX_FBDEV      1
+/* Repaint the whole framebuffer every frame. In the default PARTIAL mode the
+ * sys-layer mouse cursor leaves a smeared trail: its previous position isn't
+ * reliably repainted on the tegra framebuffer. FULL mode redraws everything
+ * each frame so the old cursor pixels are always overwritten. force_refresh
+ * (set in createDisplayFbdev) is documented as intended for FULL/DIRECT. */
+#define LV_LINUX_FBDEV_RENDER_MODE   LV_DISPLAY_RENDER_MODE_FULL
 #define LV_USE_TFT_ESPI         0
 #define LV_USE_EVDEV            1
 #define LV_USE_LIBINPUT         0

@@ -1,6 +1,7 @@
 #include "wifi_settings_view.h"
 #include "fonts.h"
 #include "esp_log.h"
+#include "lvgl_runtime.h"
 
 #include <lvgl.h>
 #include <algorithm>
@@ -162,6 +163,8 @@ void WifiSettingsView::BuildUi() {
     lv_textarea_set_password_mode(kb_textarea_, true);
     lv_textarea_set_one_line(kb_textarea_, true);
     lv_textarea_set_max_length(kb_textarea_, 63);
+    /* Let the USB keyboard type the WiFi password via the keypad group. */
+    if (auto *g = jetson::LvglRuntime::Instance().keypad_group()) lv_group_add_obj(g, kb_textarea_);
 
     kb_connect_btn_ = lv_button_create(kb_panel_);
     lv_obj_set_size(kb_connect_btn_, 80, 40);
