@@ -88,7 +88,7 @@ SavedProfiles loadSavedWifiProfiles() {
         const std::string &profile = fields[0];
         std::string ssid;
         std::string ssidOut;
-        if (RunShellCommand("nmcli -w 5 -g 802-11-wireless.ssid connection show " +
+        if (RunShellCommand("nmcli -w 5 --escape no -g 802-11-wireless.ssid connection show " +
                             QuoteShellArgument(profile), ssidOut) == 0) {
             trimTrailingWhitespace(ssidOut);
             ssid = std::move(ssidOut);
@@ -317,6 +317,7 @@ WifiDetails WifiManager::Details(const std::string &ssid) {
             bestSignal = signal;
         }
     }
+    if (!details.connected) details.connected = ActiveSsid() == ssid;
 
     if (details.known) {
         std::string secret;
@@ -327,37 +328,40 @@ WifiDetails WifiManager::Details(const std::string &ssid) {
         }
     }
 
-    if (details.connected) {
-        std::string devices;
-        if (RunShellCommand("nmcli -w 5 -t --escape yes -f DEVICE,TYPE,STATE,CONNECTION "
-                            "device status", devices) == 0) {
-            std::istringstream iss(devices);
+    // The adapter address is useful even for an AP that is not connected, so
+    // resolve the Wi-Fi interface unconditionally. IPv4 fields will naturally
+    // stay empty while the interface has no active lease.
+    std::string devices;
+    if (RunShellCommand("nmcli -w 5 -t --escape yes -f DEVICE,TYPE,STATE,CONNECTION "
+                        "device status", devices) == 0) {
+        std::istringstream iss(devices);
+        std::string line;
+        while (std::getline(iss, line)) {
+            auto f = splitNmcliFields(line);
+            if (f.size() < 4 || f[1] != "wifi") continue;
+            if (details.interface_name.empty() || f[2] == "connected")
+                details.interface_name = f[0];
+            if (f[2] == "connected") break;
+        }
+    }
+
+    if (!details.interface_name.empty()) {
+        std::string deviceInfo;
+        if (RunShellCommand(
+                "nmcli -w 5 -t --escape no -f GENERAL.HWADDR,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS "
+                "device show " + QuoteShellArgument(details.interface_name), deviceInfo) == 0) {
+            std::istringstream iss(deviceInfo);
             std::string line;
             while (std::getline(iss, line)) {
-                auto f = splitNmcliFields(line);
-                if (f.size() >= 4 && f[1] == "wifi" && f[2] == "connected") {
-                    details.interface_name = f[0];
-                    break;
-                }
-            }
-        }
-
-        if (!details.interface_name.empty()) {
-            std::string deviceInfo;
-            if (RunShellCommand(
-                    "nmcli -w 5 -t --escape no -f GENERAL.HWADDR,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS "
-                    "device show " + QuoteShellArgument(details.interface_name), deviceInfo) == 0) {
-                std::istringstream iss(deviceInfo);
-                std::string line;
-                while (std::getline(iss, line)) {
-                    std::string key, value;
-                    splitFirst(line, ':', key, value);
-                    if (key == "GENERAL.HWADDR") details.adapter_address = value;
-                    else if (key.rfind("IP4.ADDRESS", 0) == 0 && details.ip_address.empty())
-                        details.ip_address = value;
-                    else if (key == "IP4.GATEWAY") details.gateway = value;
-                    else if (key.rfind("IP4.DNS", 0) == 0) appendCsv(details.dns, value);
-                }
+                std::string key, value;
+                splitFirst(line, ':', key, value);
+                if (key == "GENERAL.HWADDR") details.adapter_address = value;
+                else if (details.connected && key.rfind("IP4.ADDRESS", 0) == 0 &&
+                         details.ip_address.empty())
+                    details.ip_address = value;
+                else if (details.connected && key == "IP4.GATEWAY") details.gateway = value;
+                else if (details.connected && key.rfind("IP4.DNS", 0) == 0)
+                    appendCsv(details.dns, value);
             }
         }
     }

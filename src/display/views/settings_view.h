@@ -90,6 +90,7 @@ private:
     // Modal (built on overlay_).
     lv_obj_t *popup_ = nullptr;
     lv_obj_t *popup_card_ = nullptr;
+    lv_obj_t *popup_confirm_btn_ = nullptr;
     TelexInput *popup_input_ = nullptr;     // WiFi password / PIN entry
     TelexInput *pin_a_ = nullptr;           // PIN set: first field
     TelexInput *pin_b_ = nullptr;           // PIN set: confirm field
@@ -130,8 +131,8 @@ private:
     void WifiRescan();
     void WifiRenderList();
     void WifiCreateRow(const jetson::WifiNetwork &n);
-    void WifiOpenModal(const WifiRowCtx &info);
-    void WifiLoadDetails();
+    void WifiOpenConnectSheet(const jetson::WifiNetwork &network);
+    void WifiLoadDetails(const jetson::WifiNetwork &network);
     void WifiOpenDetails(const jetson::WifiDetails &details);
     void WifiDoConnect(const std::string &ssid, const std::string &pw);
     void WifiDoForget(const std::string &ssid);
@@ -165,6 +166,7 @@ private:
     static void OnWifiSwitch(lv_event_t *e);
     static void OnWifiRescan(lv_event_t *e);
     static void OnWifiRowClicked(lv_event_t *e);
+    static void OnWifiInfoClicked(lv_event_t *e);
     static void OnBtSwitch(lv_event_t *e);
     static void OnBtRescan(lv_event_t *e);
     static void OnBtRowClicked(lv_event_t *e);
@@ -184,8 +186,8 @@ private:
     static void OnPopupDismiss(lv_event_t *e);
     static void OnModalClose(lv_event_t *e);
     static void OnModalConnect(lv_event_t *e);
+    static void OnModalPasswordChanged(lv_event_t *e);
     static void OnModalForget(lv_event_t *e);
-    static void OnModalInfo(lv_event_t *e);
     static void OnModalBtAction(lv_event_t *e);
     static void OnModalBtRemove(lv_event_t *e);
     static void OnModalConfirmYes(lv_event_t *e);

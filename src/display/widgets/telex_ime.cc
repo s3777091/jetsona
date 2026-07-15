@@ -253,12 +253,14 @@ void TelexInput::OnKey(lv_event_t *e) {
         self->ime_.Backspace();
         self->cursor_visible_ = true;
         self->Refresh();
+        lv_obj_send_event(self->root_, LV_EVENT_VALUE_CHANGED, nullptr);
     } else if (key == LV_KEY_ENTER) {
         lv_obj_send_event(self->root_, LV_EVENT_READY, nullptr);
     } else if (key >= 0x20 && key < 0x7F) {
         self->ime_.Feed((char)key);
         self->cursor_visible_ = true;
         self->Refresh();
+        lv_obj_send_event(self->root_, LV_EVENT_VALUE_CHANGED, nullptr);
     }
 }
 

@@ -35,6 +35,10 @@ bool IsKbdVi() {
     Settings s("input", false);
     return s.GetString("kbd_lang", "en") == "vi";
 }
+
+void SetSheetTranslateY(void *obj, int32_t value) {
+    lv_obj_set_style_translate_y(static_cast<lv_obj_t *>(obj), value, 0);
+}
 } // namespace
 
 CalendarView::CalendarView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
@@ -395,9 +399,17 @@ void CalendarView::OpenDayModal(int day) {
     const auto &p = jetson::UiTheme::Instance().Palette();
     popup_date_ = Key(year_, month_, day);
 
+    const int overlay_w = lv_obj_get_width(overlay_);
+    const int overlay_h = lv_obj_get_height(overlay_);
+    const int sheet_w = std::min(744, overlay_w - 24);
+    const int sheet_h = std::min(430, overlay_h - 16);
+    char date_text[24];
+    std::snprintf(date_text, sizeof(date_text), "%02d/%02d/%04d", day, month_ + 1, year_);
+
     popup_ = lv_obj_create(overlay_);
     lv_obj_remove_style_all(popup_);
-    lv_obj_set_size(popup_, width_, height_);
+    lv_obj_set_size(popup_, overlay_w, overlay_h);
+    lv_obj_set_pos(popup_, 0, 0);
     lv_obj_set_style_bg_color(popup_, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(popup_, LV_OPA_50, 0);
     lv_obj_add_flag(popup_, LV_OBJ_FLAG_CLICKABLE);
@@ -405,76 +417,266 @@ void CalendarView::OpenDayModal(int day) {
 
     popup_card_ = lv_obj_create(popup_);
     lv_obj_remove_style_all(popup_card_);
-    lv_obj_set_size(popup_card_, 340, 380);
-    lv_obj_set_style_bg_color(popup_card_, Color(p.row), 0);
+    lv_obj_set_size(popup_card_, sheet_w, sheet_h);
+    lv_obj_set_style_bg_color(popup_card_, Color(p.panel), 0);
     lv_obj_set_style_bg_opa(popup_card_, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(popup_card_, 16, 0);
-    lv_obj_set_style_pad_all(popup_card_, 16, 0);
-    lv_obj_set_style_pad_row(popup_card_, 10, 0);
+    lv_obj_set_style_radius(popup_card_, 24, 0);
+    lv_obj_set_style_shadow_color(popup_card_, lv_color_black(), 0);
+    lv_obj_set_style_shadow_opa(popup_card_, LV_OPA_30, 0);
+    lv_obj_set_style_shadow_width(popup_card_, 24, 0);
+    lv_obj_set_style_pad_all(popup_card_, 14, 0);
+    lv_obj_set_style_pad_row(popup_card_, 8, 0);
     lv_obj_set_flex_flow(popup_card_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_align(popup_card_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_flex_align(popup_card_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_align(popup_card_, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_add_flag(popup_card_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(popup_card_, LV_OBJ_FLAG_SCROLLABLE);
 
-    popup_title_ = lv_label_create(popup_card_);
+    // Small grabber makes the bottom-sheet motion and affordance obvious.
+    auto *grabber = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(grabber);
+    lv_obj_set_size(grabber, 48, 5);
+    lv_obj_set_style_radius(grabber, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(grabber, Color(p.sub_text), 0);
+    lv_obj_set_style_bg_opa(grabber, LV_OPA_60, 0);
+    lv_obj_clear_flag(grabber, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    // Header: cancel | "Mới" | save.
+    auto *sheet_header = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(sheet_header);
+    lv_obj_set_size(sheet_header, lv_pct(100), 40);
+    lv_obj_set_flex_flow(sheet_header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(sheet_header, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(sheet_header, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto make_header_button = [&](const char *symbol, lv_event_cb_t cb, uint32_t bg) {
+        auto *button = lv_button_create(sheet_header);
+        lv_obj_set_size(button, 40, 40);
+        lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(button, Color(bg), 0);
+        lv_obj_set_style_shadow_width(button, 0, 0);
+        lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, this);
+        auto *label = lv_label_create(button);
+        lv_obj_set_style_text_font(label, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(label, cb == OnAddTask ? lv_color_white() : Color(p.text), 0);
+        lv_label_set_text(label, symbol);
+        lv_obj_center(label);
+        return button;
+    };
+    make_header_button(LV_SYMBOL_CLOSE, OnPopupClose, p.button);
+
+    popup_title_ = lv_label_create(sheet_header);
     lv_obj_set_style_text_font(popup_title_, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(popup_title_, Color(p.text), 0);
-    lv_label_set_text(popup_title_, FormatDateTitle(year_, month_, day).c_str());
+    lv_label_set_text(popup_title_, "Mới");
+    make_header_button(LV_SYMBOL_OK, OnAddTask, p.accent);
 
-    // Scrollable task list.
-    popup_list_ = lv_obj_create(popup_card_);
+    // Segmented control from the reference. The calendar stores both choices
+    // as reminders; the labels communicate the familiar event-creation flow.
+    auto *segments = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(segments);
+    lv_obj_set_size(segments, 300, 34);
+    lv_obj_set_style_bg_color(segments, Color(p.button), 0);
+    lv_obj_set_style_bg_opa(segments, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(segments, 10, 0);
+    lv_obj_set_style_pad_all(segments, 3, 0);
+    lv_obj_set_style_pad_column(segments, 3, 0);
+    lv_obj_set_flex_flow(segments, LV_FLEX_FLOW_ROW);
+    lv_obj_clear_flag(segments, LV_OBJ_FLAG_SCROLLABLE);
+    auto make_segment = [&](const char *text, bool selected) {
+        auto *seg = lv_obj_create(segments);
+        lv_obj_remove_style_all(seg);
+        lv_obj_set_height(seg, lv_pct(100));
+        lv_obj_set_flex_grow(seg, 1);
+        lv_obj_set_style_radius(seg, 8, 0);
+        lv_obj_set_style_bg_color(seg, Color(selected ? p.row : p.button), 0);
+        lv_obj_set_style_bg_opa(seg, selected ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        auto *label = lv_label_create(seg);
+        lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(p.text), 0);
+        lv_label_set_text(label, text);
+        lv_obj_center(label);
+    };
+    make_segment("Sự kiện", true);
+    make_segment("Lời nhắc", false);
+
+    // The phone reference is vertical. On this landscape panel the same fields
+    // are arranged in two compact columns so no important control is clipped.
+    auto *content = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(content);
+    lv_obj_set_width(content, lv_pct(100));
+    lv_obj_set_flex_grow(content, 1);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(content, 12, 0);
+    lv_obj_clear_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto make_column = [&]() {
+        auto *column = lv_obj_create(content);
+        lv_obj_remove_style_all(column);
+        lv_obj_set_width(column, 1);
+        lv_obj_set_height(column, lv_pct(100));
+        lv_obj_set_flex_grow(column, 1);
+        lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(column, 8, 0);
+        lv_obj_clear_flag(column, LV_OBJ_FLAG_SCROLLABLE);
+        return column;
+    };
+    auto *left = make_column();
+    auto *right = make_column();
+
+    auto make_group = [&](lv_obj_t *parent, int h) {
+        auto *group = lv_obj_create(parent);
+        lv_obj_remove_style_all(group);
+        lv_obj_set_size(group, lv_pct(100), h);
+        lv_obj_set_style_bg_color(group, Color(p.row), 0);
+        lv_obj_set_style_bg_opa(group, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(group, 14, 0);
+        lv_obj_set_style_pad_all(group, 0, 0);
+        lv_obj_set_flex_flow(group, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(group, LV_OBJ_FLAG_SCROLLABLE);
+        return group;
+    };
+    auto make_divider = [&](lv_obj_t *parent) {
+        auto *line = lv_obj_create(parent);
+        lv_obj_remove_style_all(line);
+        lv_obj_set_size(line, lv_pct(100), 1);
+        lv_obj_set_style_bg_color(line, Color(p.border), 0);
+        lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+        return line;
+    };
+    auto style_input = [&](TelexInput *input) {
+        input->SetFont(&BUILTIN_SMALL_TEXT_FONT);
+        lv_obj_set_style_bg_opa(input->obj(), LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(input->obj(), 0, 0);
+        lv_obj_set_style_radius(input->obj(), 0, 0);
+    };
+    auto make_text_label = [&](lv_obj_t *parent, const char *text, uint32_t color) {
+        auto *label = lv_label_create(parent);
+        lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(color), 0);
+        lv_label_set_text(label, text);
+        return label;
+    };
+
+    // Title and optional place/video call.
+    auto *identity = make_group(left, 86);
+    popup_input_ = new TelexInput(identity, lv_pct(100), 42);
+    popup_input_->SetTelex(IsKbdVi());
+    popup_input_->SetMaxLen(64);
+    popup_input_->SetPlaceholder("Tiêu đề");
+    style_input(popup_input_);
+    make_divider(identity);
+    popup_location_ = new TelexInput(identity, lv_pct(100), 42);
+    popup_location_->SetTelex(IsKbdVi());
+    popup_location_->SetMaxLen(96);
+    popup_location_->SetPlaceholder("Vị trí hoặc cuộc gọi video");
+    style_input(popup_location_);
+
+    auto make_info_row = [&](lv_obj_t *parent, const char *title, int h) {
+        auto *row = lv_obj_create(parent);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), h);
+        lv_obj_set_style_pad_hor(row, 10, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        auto *label = make_text_label(row, title, p.text);
+        lv_obj_set_flex_grow(label, 1);
+        return row;
+    };
+
+    // All day, start, end and time zone. Calendar selection supplies the date.
+    auto *timing = make_group(left, 188);
+    auto *all_day_row = make_info_row(timing, "Cả ngày", 42);
+    popup_all_day_ = lv_switch_create(all_day_row);
+    lv_obj_set_size(popup_all_day_, 48, 26);
+    lv_obj_set_style_bg_color(popup_all_day_, Color(p.button), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(popup_all_day_, Color(p.accent),
+                              (lv_style_selector_t)(LV_PART_MAIN | LV_STATE_CHECKED));
+    lv_obj_add_event_cb(popup_all_day_, OnAllDayChanged, LV_EVENT_VALUE_CHANGED, this);
+    make_divider(timing);
+
+    auto make_time_row = [&](const char *title, TelexInput **out) {
+        auto *row = make_info_row(timing, title, 48);
+        auto *date = make_text_label(row, date_text, p.sub_text);
+        lv_obj_set_width(date, 98);
+        *out = new TelexInput(row, 74, 34);
+        (*out)->SetTelex(false);
+        (*out)->SetMaxLen(5);
+        (*out)->SetPlaceholder("HH:MM");
+        style_input(*out);
+        lv_obj_set_style_bg_color((*out)->obj(), Color(p.button), 0);
+        lv_obj_set_style_bg_opa((*out)->obj(), LV_OPA_COVER, 0);
+        lv_obj_set_style_radius((*out)->obj(), 9, 0);
+    };
+    make_time_row("Bắt đầu", &popup_time_);
+    make_divider(timing);
+    make_time_row("Kết thúc", &popup_end_time_);
+    make_divider(timing);
+    auto *timezone_row = make_info_row(timing, "Múi giờ", 46);
+    make_text_label(timezone_row, "Theo hệ thống", p.sub_text);
+
+    auto make_dropdown_row = [&](lv_obj_t *parent, const char *title,
+                                 const char *options, lv_obj_t **out) {
+        auto *row = make_info_row(parent, title, 44);
+        auto *dropdown = lv_dropdown_create(row);
+        lv_obj_set_size(dropdown, 150, 34);
+        lv_dropdown_set_options(dropdown, options);
+        lv_obj_set_style_text_font(dropdown, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(dropdown, Color(p.sub_text), 0);
+        lv_obj_set_style_bg_color(dropdown, Color(p.button), 0);
+        lv_obj_set_style_bg_opa(dropdown, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(dropdown, 0, 0);
+        lv_obj_set_style_radius(dropdown, 9, 0);
+        *out = dropdown;
+    };
+
+    auto *options_group = make_group(right, 89);
+    make_dropdown_row(options_group, "Lặp lại",
+                      "Không\nMỗi ngày\nMỗi tuần\nMỗi 2 tuần\nMỗi tháng\nMỗi năm\nTùy chỉnh",
+                      &popup_repeat_);
+    make_divider(options_group);
+    make_dropdown_row(options_group, "Cảnh báo",
+                      "Không\nKhi bắt đầu\nTrước 5 phút\nTrước 15 phút\nTrước 1 giờ",
+                      &popup_alert_);
+
+    // URL remains available, but unlike the removed "Hiển thị dưới dạng" row
+    // its optional nature is explicit in the field itself.
+    auto *url_group = make_group(right, 42);
+    popup_url_ = new TelexInput(url_group, lv_pct(100), 42);
+    popup_url_->SetTelex(false);
+    popup_url_->SetMaxLen(256);
+    popup_url_->SetPlaceholder("URL (không bắt buộc)");
+    style_input(popup_url_);
+
+    auto *tasks_group = make_group(right, 1);
+    lv_obj_set_flex_grow(tasks_group, 1);
+    lv_obj_set_style_pad_all(tasks_group, 8, 0);
+    auto *tasks_title = make_text_label(tasks_group, "Nhắc việc ngày này", p.sub_text);
+    lv_obj_set_height(tasks_title, 22);
+    popup_list_ = lv_obj_create(tasks_group);
     lv_obj_remove_style_all(popup_list_);
-    lv_obj_set_width(popup_list_, 308);
+    lv_obj_set_width(popup_list_, lv_pct(100));
     lv_obj_set_flex_grow(popup_list_, 1);
     lv_obj_set_flex_flow(popup_list_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(popup_list_, 6, 0);
+    lv_obj_set_style_pad_row(popup_list_, 4, 0);
     lv_obj_set_style_pad_all(popup_list_, 0, 0);
     lv_obj_set_style_bg_opa(popup_list_, LV_OPA_TRANSP, 0);
 
-    // Add-task row: [time][title][+]
-    auto *addrow = lv_obj_create(popup_card_);
-    lv_obj_remove_style_all(addrow);
-    lv_obj_set_width(addrow, 308);
-    lv_obj_set_height(addrow, 44);
-    lv_obj_set_flex_flow(addrow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(addrow, 6, 0);
-    lv_obj_clear_flag(addrow, LV_OBJ_FLAG_SCROLLABLE);
-
-    popup_time_ = new TelexInput(addrow, 70, 40);
-    popup_time_->SetTelex(false);
-    popup_time_->SetMaxLen(5);
-    popup_time_->SetPlaceholder("HH:MM");
-
-    popup_input_ = new TelexInput(addrow, 190, 40);
-    popup_input_->SetTelex(IsKbdVi());
-    popup_input_->SetMaxLen(64);
-    popup_input_->SetPlaceholder("Nhắc việc...");
-
-    auto *addbtn = lv_button_create(addrow);
-    lv_obj_set_size(addbtn, 44, 40);
-    lv_obj_set_style_bg_color(addbtn, Color(p.accent), 0);
-    lv_obj_set_style_radius(addbtn, 8, 0);
-    lv_obj_add_event_cb(addbtn, OnAddTask, LV_EVENT_CLICKED, this);
-    auto *al = lv_label_create(addbtn);
-    lv_obj_set_style_text_font(al, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(al, lv_color_white(), 0);
-    lv_label_set_text(al, LV_SYMBOL_PLUS);
-    lv_obj_center(al);
-
-    // Close button.
-    auto *close = lv_button_create(popup_card_);
-    lv_obj_set_width(close, 120);
-    lv_obj_set_height(close, 40);
-    lv_obj_set_style_bg_color(close, Color(p.button), 0);
-    lv_obj_set_style_radius(close, 10, 0);
-    lv_obj_add_event_cb(close, OnPopupClose, LV_EVENT_CLICKED, this);
-    auto *cl = lv_label_create(close);
-    lv_obj_set_style_text_font(cl, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(cl, Color(p.text), 0);
-    lv_label_set_text(cl, "Đóng");
-    lv_obj_center(cl);
-
     RenderTaskList();
-    if (popup_input_) popup_input_->Focus();
+
+    // Enter from below with a short ease-out animation.
+    lv_anim_t slide;
+    lv_anim_init(&slide);
+    lv_anim_set_var(&slide, popup_card_);
+    lv_anim_set_values(&slide, sheet_h + 16, 0);
+    lv_anim_set_time(&slide, 280);
+    lv_anim_set_exec_cb(&slide, SetSheetTranslateY);
+    lv_anim_set_path_cb(&slide, lv_anim_path_ease_out);
+    lv_anim_start(&slide);
 }
 
 void CalendarView::CloseDayModal() {
@@ -492,7 +694,13 @@ void CalendarView::CloseDayModal() {
     // The TelexInput C++ objects were deleted via their OnDeleted handler; drop
     // our dangling pointers.
     popup_input_ = nullptr;
+    popup_location_ = nullptr;
     popup_time_ = nullptr;
+    popup_end_time_ = nullptr;
+    popup_url_ = nullptr;
+    popup_all_day_ = nullptr;
+    popup_repeat_ = nullptr;
+    popup_alert_ = nullptr;
     popup_date_.clear();
     UpdateGrid();
 }
@@ -508,7 +716,7 @@ void CalendarView::RenderTaskList() {
     auto tasks = LoadTasks(popup_date_);
     if (tasks.empty()) {
         auto *empty = lv_label_create(popup_list_);
-        lv_obj_set_style_text_font(empty, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_font(empty, &BUILTIN_SMALL_TEXT_FONT, 0);
         lv_obj_set_style_text_color(empty, Color(p.sub_text), 0);
         lv_label_set_text(empty, "Chưa có nhắc việc nào");
         return;
@@ -518,19 +726,19 @@ void CalendarView::RenderTaskList() {
         const auto &t = tasks[i];
         auto *row = lv_obj_create(popup_list_);
         lv_obj_remove_style_all(row);
-        lv_obj_set_width(row, 308);
-        lv_obj_set_height(row, 44);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, 36);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(row, 8, 0);
+        lv_obj_set_style_pad_column(row, 6, 0);
         lv_obj_set_style_pad_all(row, 0, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
         // Checkbox (toggle done).
         auto *chk = lv_obj_create(row);
         lv_obj_remove_style_all(chk);
-        lv_obj_set_size(chk, 24, 24);
-        lv_obj_set_style_radius(chk, 6, 0);
+        lv_obj_set_size(chk, 22, 22);
+        lv_obj_set_style_radius(chk, 5, 0);
         lv_obj_set_style_border_width(chk, 2, 0);
         lv_obj_set_style_border_color(chk, Color(p.accent), 0);
         lv_obj_set_style_bg_color(chk, t.done ? Color(p.accent) : lv_color_black(), 0);
@@ -550,23 +758,23 @@ void CalendarView::RenderTaskList() {
         // Time label (if set).
         if (!t.time.empty()) {
             auto *tl = lv_label_create(row);
-            lv_obj_set_style_text_font(tl, &BUILTIN_TEXT_FONT, 0);
+            lv_obj_set_style_text_font(tl, &BUILTIN_SMALL_TEXT_FONT, 0);
             lv_obj_set_style_text_color(tl, Color(p.accent), 0);
-            lv_obj_set_width(tl, 70);
+            lv_obj_set_width(tl, 54);
             lv_label_set_text(tl, t.time.c_str());
         }
 
         // Title (dim if done).
         auto *ttl = lv_label_create(row);
         lv_obj_set_flex_grow(ttl, 1);
-        lv_obj_set_style_text_font(ttl, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_font(ttl, &BUILTIN_SMALL_TEXT_FONT, 0);
         lv_obj_set_style_text_color(ttl, t.done ? Color(p.sub_text) : Color(p.text), 0);
         lv_label_set_long_mode(ttl, LV_LABEL_LONG_DOT);
         lv_label_set_text(ttl, t.title.c_str());
 
         // Delete button.
         auto *del = lv_button_create(row);
-        lv_obj_set_size(del, 36, 32);
+        lv_obj_set_size(del, 32, 30);
         lv_obj_set_style_bg_color(del, Color(p.row_active), 0);
         lv_obj_set_style_radius(del, 8, 0);
         lv_obj_add_event_cb(del, OnRowDelete, LV_EVENT_CLICKED, rc);
@@ -578,29 +786,45 @@ void CalendarView::RenderTaskList() {
     }
 }
 
-void CalendarView::AddTask() {
-    if (!popup_input_ || popup_date_.empty()) return;
+bool CalendarView::AddTask() {
+    if (!popup_input_ || popup_date_.empty()) return false;
     std::string title = popup_input_->Text();
-    std::string time = popup_time_ ? popup_time_->Text() : "";
+    const bool all_day = popup_all_day_ &&
+                         lv_obj_has_state(popup_all_day_, LV_STATE_CHECKED);
+    std::string time = (!all_day && popup_time_) ? popup_time_->Text() : "";
+    std::string end_time = (!all_day && popup_end_time_) ? popup_end_time_->Text() : "";
     if (title.empty()) {
         SetStatus("Nhập tên việc trước");
-        return;
+        lv_obj_set_style_border_width(popup_input_->obj(), 2, 0);
+        lv_obj_set_style_border_color(popup_input_->obj(), lv_palette_main(LV_PALETTE_RED), 0);
+        popup_input_->Focus();
+        return false;
     }
-    if (!IsValidTime(time)) {
+    if (!IsValidTime(time) || !IsValidTime(end_time)) {
         SetStatus("Giờ không hợp lệ (HH:MM)");
-        return;
+        TelexInput *bad = !IsValidTime(time) ? popup_time_ : popup_end_time_;
+        if (bad) {
+            lv_obj_set_style_border_width(bad->obj(), 2, 0);
+            lv_obj_set_style_border_color(bad->obj(), lv_palette_main(LV_PALETTE_RED), 0);
+            bad->Focus();
+        }
+        return false;
+    }
+    if (!time.empty() && !end_time.empty() && end_time < time) {
+        SetStatus("Giờ kết thúc phải sau giờ bắt đầu");
+        lv_obj_set_style_border_width(popup_end_time_->obj(), 2, 0);
+        lv_obj_set_style_border_color(popup_end_time_->obj(), lv_palette_main(LV_PALETTE_RED), 0);
+        popup_end_time_->Focus();
+        return false;
     }
     auto tasks = LoadTasks(popup_date_);
     tasks.push_back(Task{time, false, title});
     SaveTasks(popup_date_, tasks);
     task_dates_.insert(popup_date_);
     SaveTaskDates();
-    popup_input_->Clear();
-    if (popup_time_) popup_time_->Clear();
-    RenderTaskList();
     UpdateGrid();
-    if (popup_input_) popup_input_->Focus();
     SetStatus("Đã thêm nhắc việc");
+    return true;
 }
 
 void CalendarView::ToggleTask(const std::string &date, int idx) {
@@ -671,7 +895,25 @@ void CalendarView::OnPopupClose(lv_event_t *e) {
 void CalendarView::OnAddTask(lv_event_t *e) {
     LvglLockGuard lock;
     auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
-    self->AddTask();
+    if (self->AddTask()) self->CloseDayModal();
+}
+void CalendarView::OnAllDayChanged(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
+    const bool all_day = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e),
+                                          LV_STATE_CHECKED);
+    auto set_enabled = [&](TelexInput *input) {
+        if (!input || !input->obj()) return;
+        if (all_day) {
+            lv_obj_add_state(input->obj(), LV_STATE_DISABLED);
+            lv_obj_set_style_opa(input->obj(), LV_OPA_40, 0);
+        } else {
+            lv_obj_remove_state(input->obj(), LV_STATE_DISABLED);
+            lv_obj_set_style_opa(input->obj(), LV_OPA_COVER, 0);
+        }
+    };
+    set_enabled(self->popup_time_);
+    set_enabled(self->popup_end_time_);
 }
 void CalendarView::OnRowToggle(lv_event_t *e) {
     LvglLockGuard lock;

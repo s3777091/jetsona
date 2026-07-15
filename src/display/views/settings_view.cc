@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <unistd.h>
 #include <vector>
 
@@ -79,6 +80,10 @@ std::string FormatBytes(unsigned long long bytes) {
     else if (bytes < 1024ULL * 1024 * 1024) std::snprintf(buf, sizeof(buf), "%.1f MB", b / (1024 * 1024));
     else std::snprintf(buf, sizeof(buf), "%.1f GB", b / (1024.0 * 1024 * 1024));
     return buf;
+}
+
+void SetWifiSheetTranslateY(void *obj, int32_t value) {
+    lv_obj_set_style_translate_y(static_cast<lv_obj_t *>(obj), value, 0);
 }
 
 } // namespace
@@ -607,7 +612,7 @@ void SettingsView::WifiRescan() {
             self->SetStatus(("Lỗi quét WiFi: " + error).c_str());
             ESP_LOGE(TAG, "WiFi scan failed: %s", error.c_str());
         } else {
-            self->SetStatus(active.empty() ? "Chạm mạng để xem/kết nối"
+            self->SetStatus(active.empty() ? "Chạm mạng để kết nối"
                                            : ("Đã kết nối: " + active).c_str());
             ESP_LOGI(TAG, "WiFi scan rendered %zu networks", self->wifi_nets_.size());
         }
@@ -645,44 +650,87 @@ void SettingsView::WifiCreateRow(const jetson::WifiNetwork &n) {
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 
-    auto *ssid = lv_label_create(row);
-    lv_obj_set_style_text_font(ssid, &BUILTIN_TEXT_FONT, 0);
+    auto *left = lv_obj_create(row);
+    lv_obj_remove_style_all(left);
+    lv_obj_set_height(left, 30);
+    lv_obj_set_flex_grow(left, 1);
+    lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(left, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(left, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(left, 8, 0);
+
+    auto *check = lv_label_create(left);
+    lv_obj_set_width(check, 22);
+    lv_obj_set_style_text_font(check, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(check, Color(p.accent), 0);
+    lv_label_set_text(check, n.in_use ? LV_SYMBOL_OK : "");
+
+    auto *ssid = lv_label_create(left);
+    lv_obj_set_style_text_font(ssid, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(ssid, Color(p.text), 0);
     lv_label_set_text(ssid, n.ssid.c_str());
     lv_label_set_long_mode(ssid, LV_LABEL_LONG_DOT);
     lv_obj_set_flex_grow(ssid, 1);
-    lv_obj_set_style_max_width(ssid, 260, 0);
 
     auto *right = lv_obj_create(row);
     lv_obj_remove_style_all(right);
-    lv_obj_set_size(right, 90, 22);
+    lv_obj_set_size(right, 132, 32);
     lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(right, 6, 0);
+    lv_obj_set_style_pad_column(right, 8, 0);
     lv_obj_set_flex_align(right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     if (n.secured) {
-        auto *lock = lv_label_create(right);
-        lv_obj_set_style_text_font(lock, &BUILTIN_ICON_FONT, 0);
-        lv_obj_set_style_text_color(lock, Color(p.sub_text), 0);
-        lv_label_set_text(lock, LV_SYMBOL_EYE_CLOSE); // "secured"
+        auto *lock = lv_obj_create(right);
+        lv_obj_remove_style_all(lock);
+        lv_obj_set_size(lock, 16, 20);
+        lv_obj_clear_flag(lock, LV_OBJ_FLAG_SCROLLABLE);
+        auto *shackle = lv_obj_create(lock);
+        lv_obj_remove_style_all(shackle);
+        lv_obj_set_size(shackle, 10, 10);
+        lv_obj_set_style_radius(shackle, 6, 0);
+        lv_obj_set_style_border_width(shackle, 2, 0);
+        lv_obj_set_style_border_color(shackle, Color(p.sub_text), 0);
+        lv_obj_set_style_bg_opa(shackle, LV_OPA_TRANSP, 0);
+        lv_obj_align(shackle, LV_ALIGN_TOP_MID, 0, 0);
+        auto *lockBody = lv_obj_create(lock);
+        lv_obj_remove_style_all(lockBody);
+        lv_obj_set_size(lockBody, 14, 11);
+        lv_obj_set_style_radius(lockBody, 2, 0);
+        lv_obj_set_style_bg_color(lockBody, Color(p.sub_text), 0);
+        lv_obj_set_style_bg_opa(lockBody, LV_OPA_COVER, 0);
+        lv_obj_align(lockBody, LV_ALIGN_BOTTOM_MID, 0, 0);
     }
     jetson::ui::CreateSignalBars(right, n.signal);
-    if (n.in_use) {
-        auto *tag = lv_label_create(right);
-        lv_obj_set_style_text_font(tag, &BUILTIN_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(tag, Color(p.accent), 0);
-        lv_label_set_text(tag, "•");
-    }
 
     auto *ctx = new WifiRowCtx{this, n};
+
+    // The information affordance is separate from the row action, matching
+    // iOS: tapping the row connects, tapping the circled i opens properties.
+    auto *info = lv_obj_create(right);
+    lv_obj_remove_style_all(info);
+    lv_obj_set_size(info, 30, 30);
+    lv_obj_set_style_radius(info, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(info, 2, 0);
+    lv_obj_set_style_border_color(info, Color(p.accent), 0);
+    lv_obj_set_style_bg_opa(info, LV_OPA_TRANSP, 0);
+    lv_obj_add_flag(info, LV_OBJ_FLAG_CLICKABLE);
+    auto *infoLabel = lv_label_create(info);
+    lv_obj_set_style_text_font(infoLabel, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(infoLabel, Color(p.accent), 0);
+    lv_label_set_text(infoLabel, "i");
+    lv_obj_center(infoLabel);
+    lv_obj_add_event_cb(info, OnWifiInfoClicked, LV_EVENT_CLICKED, ctx);
+
     lv_obj_add_event_cb(row, OnWifiRowClicked, LV_EVENT_CLICKED, ctx);
     lv_obj_add_event_cb(row, OnWifiRowDeleted, LV_EVENT_DELETE, ctx);
 }
 
-void SettingsView::WifiOpenModal(const WifiRowCtx &info) {
+void SettingsView::WifiOpenConnectSheet(const jetson::WifiNetwork &network) {
     CloseModal();
-    modal_ssid_ = info.ssid;
+    modal_ssid_ = network.ssid;
+    modal_wifi_ = network;
     const auto &p = jetson::UiTheme::Instance().Palette();
 
     popup_ = lv_obj_create(overlay_);
@@ -693,60 +741,302 @@ void SettingsView::WifiOpenModal(const WifiRowCtx &info) {
     lv_obj_add_flag(popup_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(popup_, OnPopupDismiss, LV_EVENT_CLICKED, this);
 
-    int cardW = 320, cardH = info.secured && !info.in_use ? 230 : 190;
+    const int cardW = std::min(width_ - 32, 620);
+    constexpr int sheetH = 286;
+    popup_card_ = lv_obj_create(popup_);
+    lv_obj_remove_style_all(popup_card_);
+    lv_obj_set_size(popup_card_, cardW, sheetH);
+    lv_obj_set_style_bg_color(popup_card_, Color(p.row), 0);
+    lv_obj_set_style_bg_opa(popup_card_, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(popup_card_, 22, 0);
+    lv_obj_set_style_clip_corner(popup_card_, true, 0);
+    lv_obj_set_style_pad_all(popup_card_, 16, 0);
+    lv_obj_set_style_pad_row(popup_card_, 8, 0);
+    lv_obj_set_flex_flow(popup_card_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(popup_card_, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_align(popup_card_, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(popup_card_, LV_OBJ_FLAG_CLICKABLE);
+
+    auto *header = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 40);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    auto makeCircleAction = [&](const char *glyph, uint32_t bg, uint32_t fg,
+                                lv_event_cb_t cb) {
+        auto *button = lv_obj_create(header);
+        lv_obj_remove_style_all(button);
+        lv_obj_set_size(button, 40, 40);
+        lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(button, Color(bg), 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        auto *label = lv_label_create(button);
+        lv_obj_set_style_text_font(label, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(fg), 0);
+        lv_label_set_text(label, glyph);
+        lv_obj_center(label);
+        lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, this);
+        return button;
+    };
+    makeCircleAction(LV_SYMBOL_CLOSE, p.button, p.text, OnModalClose);
+    popup_confirm_btn_ = makeCircleAction(LV_SYMBOL_OK, p.button, 0xffffff,
+                                          OnModalConnect);
+    lv_obj_set_style_bg_opa(popup_confirm_btn_, LV_OPA_60, 0);
+    lv_obj_add_state(popup_confirm_btn_, LV_STATE_DISABLED);
+
+    auto *wifiIcon = lv_label_create(popup_card_);
+    lv_obj_set_style_text_font(wifiIcon, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(wifiIcon, Color(p.accent), 0);
+    lv_label_set_text(wifiIcon, LV_SYMBOL_WIFI);
+
+    auto *title = lv_label_create(popup_card_);
+    lv_obj_set_width(title, lv_pct(100));
+    lv_obj_set_style_text_font(title, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title, Color(p.text), 0);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
+    const std::string titleText = "Kết nối “" + network.ssid + "”";
+    lv_label_set_text(title, titleText.c_str());
+
+    auto *subtitle = lv_label_create(popup_card_);
+    lv_obj_set_width(subtitle, lv_pct(100));
+    lv_obj_set_style_text_font(subtitle, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(subtitle, Color(p.sub_text), 0);
+    lv_obj_set_style_text_align(subtitle, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(subtitle, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(subtitle, "Nhập mật khẩu để kết nối vào mạng Wi-Fi này.");
+
+    popup_input_ = new TelexInput(popup_card_, cardW - 32, 50);
+    popup_input_->SetPassword(true);
+    popup_input_->SetMaxLen(63);
+    popup_input_->SetPlaceholder("Mật khẩu");
+    popup_input_->SetFont(&BUILTIN_SMALL_TEXT_FONT);
+    lv_obj_add_event_cb(popup_input_->obj(), OnModalConnect, LV_EVENT_READY, this);
+    lv_obj_add_event_cb(popup_input_->obj(), OnModalPasswordChanged,
+                        LV_EVENT_VALUE_CHANGED, this);
+    popup_input_->Focus();
+
+    // iOS-style bottom sheet: start below the viewport and ease into place.
+    lv_anim_t slide;
+    lv_anim_init(&slide);
+    lv_anim_set_var(&slide, popup_card_);
+    lv_anim_set_values(&slide, sheetH + 16, 0);
+    lv_anim_set_time(&slide, 280);
+    lv_anim_set_exec_cb(&slide, SetWifiSheetTranslateY);
+    lv_anim_set_path_cb(&slide, lv_anim_path_ease_out);
+    lv_anim_start(&slide);
+}
+
+void SettingsView::WifiLoadDetails(const jetson::WifiNetwork &network) {
+    modal_wifi_ = network;
+    modal_ssid_ = network.ssid;
+    const jetson::WifiNetwork fallback = network;
+    const std::string ssid = fallback.ssid;
+    CloseModal();
+    SetStatus(("Đang đọc thông tin " + ssid + "...").c_str());
+    std::thread([self = Self(), fallback, ssid]() {
+        auto details = self->wifi_.Details(ssid);
+        if (details.ssid.empty()) details.ssid = ssid;
+        if (details.signal == 0) details.signal = fallback.signal;
+        details.connected = details.connected || fallback.in_use;
+        details.known = details.known || fallback.known || fallback.in_use;
+        if (details.security.empty()) {
+            details.security = !fallback.security.empty() ? fallback.security
+                              : (fallback.secured ? "WPA/WEP" : "Mở");
+        }
+        if (details.bssid.empty()) details.bssid = fallback.bssid;
+
+        LvLockGuard lock;
+        if (self->current_ == Cat::Wifi && self->overlay_ && self->modal_ssid_ == ssid)
+            self->WifiOpenDetails(details);
+    }).detach();
+}
+
+void SettingsView::WifiOpenDetails(const jetson::WifiDetails &details) {
+    CloseModal();
+    modal_ssid_ = details.ssid;
+    const auto &p = jetson::UiTheme::Instance().Palette();
+
+    popup_ = lv_obj_create(overlay_);
+    lv_obj_remove_style_all(popup_);
+    lv_obj_set_size(popup_, width_, height_);
+    lv_obj_set_style_bg_color(popup_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(popup_, LV_OPA_50, 0);
+    lv_obj_add_flag(popup_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(popup_, OnPopupDismiss, LV_EVENT_CLICKED, this);
+
+    const int cardW = std::min(width_ - 32, 650);
+    const int cardH = height_ - 24;
     popup_card_ = lv_obj_create(popup_);
     lv_obj_remove_style_all(popup_card_);
     lv_obj_set_size(popup_card_, cardW, cardH);
     lv_obj_set_style_bg_color(popup_card_, Color(p.row), 0);
     lv_obj_set_style_bg_opa(popup_card_, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(popup_card_, 16, 0);
-    lv_obj_set_style_pad_all(popup_card_, 14, 0);
+    lv_obj_set_style_radius(popup_card_, 22, 0);
+    lv_obj_set_style_clip_corner(popup_card_, true, 0);
+    lv_obj_set_style_pad_all(popup_card_, 12, 0);
     lv_obj_set_style_pad_row(popup_card_, 8, 0);
     lv_obj_set_flex_flow(popup_card_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_align(popup_card_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(popup_card_, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_add_flag(popup_card_, LV_OBJ_FLAG_CLICKABLE);
 
-    auto *title = lv_label_create(popup_card_);
-    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
+    auto *header = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 42);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    auto *back = lv_obj_create(header);
+    lv_obj_remove_style_all(back);
+    lv_obj_set_size(back, 40, 40);
+    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(back, Color(p.button), 0);
+    lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+    auto *backLabel = lv_label_create(back);
+    lv_obj_set_style_text_font(backLabel, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(backLabel, Color(p.text), 0);
+    lv_label_set_text(backLabel, LV_SYMBOL_LEFT);
+    lv_obj_center(backLabel);
+    lv_obj_add_event_cb(back, OnModalClose, LV_EVENT_CLICKED, this);
+
+    auto *title = lv_label_create(header);
+    lv_obj_set_flex_grow(title, 1);
+    lv_obj_set_style_text_font(title, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(title, Color(p.text), 0);
-    lv_label_set_text(title, info.ssid.c_str());
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_label_set_text(title, details.ssid.c_str());
 
-    char line[96];
-    std::snprintf(line, sizeof(line), "Tín hiệu: %d%%", info.signal);
-    auto *sig = lv_label_create(popup_card_);
-    lv_obj_set_style_text_font(sig, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(sig, Color(p.sub_text), 0);
-    lv_label_set_text(sig, line);
+    auto *headerSpacer = lv_obj_create(header);
+    lv_obj_remove_style_all(headerSpacer);
+    lv_obj_set_size(headerSpacer, 40, 40);
+    lv_obj_clear_flag(headerSpacer, LV_OBJ_FLAG_SCROLLABLE);
 
-    auto *sec = lv_label_create(popup_card_);
-    lv_obj_set_style_text_font(sec, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(sec, Color(p.sub_text), 0);
-    lv_label_set_text(sec, info.secured ? "Bảo mật: WPA/WEP" : "Bảo mật: Mở");
+    auto *rows = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(rows);
+    lv_obj_set_width(rows, lv_pct(100));
+    lv_obj_set_flex_grow(rows, 1);
+    lv_obj_set_style_bg_opa(rows, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(rows, 4, 0);
+    lv_obj_set_style_pad_row(rows, 10, 0);
+    lv_obj_set_flex_flow(rows, LV_FLEX_FLOW_COLUMN);
+    lv_obj_add_flag(rows, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(rows, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(rows, LV_SCROLLBAR_MODE_ACTIVE);
 
-    auto *st = lv_label_create(popup_card_);
-    lv_obj_set_style_text_font(st, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(st, Color(p.sub_text), 0);
-    lv_label_set_text(st, info.in_use ? "Trạng thái: Đã kết nối" : "Trạng thái: Chưa kết nối");
+    using DetailRows = std::vector<std::pair<std::string, std::string>>;
+    auto makeGroup = [&](const DetailRows &items) {
+        if (items.empty()) return;
+        auto *group = lv_obj_create(rows);
+        lv_obj_remove_style_all(group);
+        lv_obj_set_size(group, lv_pct(100), static_cast<int>(items.size()) * 42);
+        lv_obj_set_style_bg_color(group, Color(p.bg), 0);
+        lv_obj_set_style_bg_opa(group, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(group, 14, 0);
+        lv_obj_set_style_clip_corner(group, true, 0);
+        lv_obj_set_style_pad_all(group, 0, 0);
+        lv_obj_set_flex_flow(group, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(group, LV_OBJ_FLAG_SCROLLABLE);
 
-    if (info.secured && !info.in_use) {
-        popup_input_ = new TelexInput(popup_card_, cardW - 28, 44);
-        popup_input_->SetPassword(true);
-        popup_input_->SetMaxLen(63);
-        popup_input_->SetPlaceholder("Mật khẩu...");
-        popup_input_->Focus();
-    } else {
-        popup_input_ = nullptr;
+        for (size_t i = 0; i < items.size(); ++i) {
+            auto *row = lv_obj_create(group);
+            lv_obj_remove_style_all(row);
+            lv_obj_set_size(row, lv_pct(100), 42);
+            lv_obj_set_style_pad_left(row, 12, 0);
+            lv_obj_set_style_pad_right(row, 12, 0);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                                  LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            if (i + 1 < items.size()) {
+                lv_obj_set_style_border_width(row, 1, 0);
+                lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+                lv_obj_set_style_border_color(row, Color(p.border), 0);
+            }
+
+            auto *key = lv_label_create(row);
+            lv_obj_set_width(key, 170);
+            lv_obj_set_style_text_font(key, &BUILTIN_SMALL_TEXT_FONT, 0);
+            lv_obj_set_style_text_color(key, Color(p.text), 0);
+            lv_label_set_long_mode(key, LV_LABEL_LONG_DOT);
+            lv_label_set_text(key, items[i].first.c_str());
+
+            auto *value = lv_label_create(row);
+            lv_obj_set_flex_grow(value, 1);
+            lv_obj_set_style_text_font(value, &BUILTIN_SMALL_TEXT_FONT, 0);
+            lv_obj_set_style_text_color(value, Color(p.sub_text), 0);
+            lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_RIGHT, 0);
+            lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
+            lv_label_set_text(value, items[i].second.c_str());
+        }
+    };
+
+    if (details.known || details.connected) {
+        auto *forget = lv_obj_create(rows);
+        lv_obj_remove_style_all(forget);
+        lv_obj_set_size(forget, lv_pct(100), 44);
+        lv_obj_set_style_bg_color(forget, Color(p.bg), 0);
+        lv_obj_set_style_bg_opa(forget, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(forget, 14, 0);
+        lv_obj_set_style_pad_left(forget, 12, 0);
+        lv_obj_add_flag(forget, LV_OBJ_FLAG_CLICKABLE);
+        auto *forgetLabel = lv_label_create(forget);
+        lv_obj_set_style_text_font(forgetLabel, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(forgetLabel, Color(p.accent), 0);
+        lv_label_set_text(forgetLabel, "Quên mạng này");
+        lv_obj_align(forgetLabel, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_add_event_cb(forget, OnModalForget, LV_EVENT_CLICKED, this);
     }
 
-    auto *btns = lv_obj_create(popup_card_);
-    lv_obj_remove_style_all(btns);
-    lv_obj_set_width(btns, lv_pct(100));
-    lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(btns, 8, 0);
-    lv_obj_clear_flag(btns, LV_OBJ_FLAG_SCROLLABLE);
-    if (!info.in_use) MakeButton(btns, "Kết nối", 0x2b6fd6, OnModalConnect);
-    MakeButton(btns, "Quên", 0xb03a3a, OnModalForget);
-    MakeButton(btns, "Đóng", 0x3a3a3a, OnModalClose);
+    DetailRows credentials;
+    credentials.emplace_back("Bảo mật",
+                             details.security.empty() ? "Mở" : details.security);
+    if (details.known)
+        credentials.emplace_back("Mật khẩu",
+                                 details.password.empty() ? "Không đọc được" : details.password);
+    makeGroup(credentials);
+
+    const auto shown = [](const std::string &value) {
+        return value.empty() ? std::string("—") : value;
+    };
+    std::string ipv4 = details.ip_address;
+    const auto slash = ipv4.find('/');
+    if (slash != std::string::npos) ipv4.erase(slash);
+
+    makeGroup({
+        {"Địa chỉ Wi-Fi", shown(details.adapter_address)},
+        {"Điểm truy cập", shown(details.bssid)},
+    });
+    makeGroup({
+        {"Địa chỉ IPv4", shown(ipv4)},
+        {"Gateway", shown(details.gateway)},
+        {"DNS", shown(details.dns)},
+    });
+    makeGroup({
+        {"Trạng thái", details.connected ? "Đã kết nối"
+                       : (details.known ? "Đã lưu" : "Khả dụng")},
+        {"Tín hiệu", std::to_string(details.signal) + "%"},
+        {"Kênh", shown(details.channel)},
+        {"Tần số", shown(details.frequency)},
+        {"Tốc độ", shown(details.rate)},
+    });
+
+    lv_anim_t slide;
+    lv_anim_init(&slide);
+    lv_anim_set_var(&slide, popup_card_);
+    lv_anim_set_values(&slide, cardH + 16, 0);
+    lv_anim_set_time(&slide, 240);
+    lv_anim_set_exec_cb(&slide, SetWifiSheetTranslateY);
+    lv_anim_set_path_cb(&slide, lv_anim_path_ease_out);
+    lv_anim_start(&slide);
 }
 
 void SettingsView::WifiDoConnect(const std::string &ssid, const std::string &pw) {
@@ -1016,6 +1306,7 @@ void SettingsView::BtDoRemove(const std::string &addr) {
 
 void SettingsView::CloseModal() {
     if (popup_) { lv_obj_del(popup_); popup_ = nullptr; popup_card_ = nullptr; }
+    popup_confirm_btn_ = nullptr;
     popup_input_ = nullptr; // freed via its LV_EVENT_DELETE -> delete self
     pin_a_ = nullptr; pin_b_ = nullptr;
     modal_yes_ = nullptr;
@@ -1240,7 +1531,20 @@ void SettingsView::OnWifiRowClicked(lv_event_t *e) {
     LvLockGuard lock;
     auto *ctx = static_cast<WifiRowCtx *>(lv_event_get_user_data(e));
     if (!ctx) return;
-    ctx->self->WifiOpenModal(*ctx);
+    const auto &network = ctx->network;
+    if (network.in_use) return;
+    if (network.secured && !network.known)
+        ctx->self->WifiOpenConnectSheet(network);
+    else
+        ctx->self->WifiDoConnect(network.ssid, "");
+}
+
+void SettingsView::OnWifiInfoClicked(lv_event_t *e) {
+    LvLockGuard lock;
+    lv_event_stop_bubbling(e);
+    auto *ctx = static_cast<WifiRowCtx *>(lv_event_get_user_data(e));
+    if (!ctx) return;
+    ctx->self->WifiLoadDetails(ctx->network);
 }
 
 void SettingsView::OnBtSwitch(lv_event_t *e) {
@@ -1382,8 +1686,23 @@ void SettingsView::OnModalConnect(lv_event_t *e) {
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     std::string ssid = self->modal_ssid_;
     std::string pw = self->popup_input_ ? self->popup_input_->Text() : "";
+    if (self->popup_input_ && pw.empty()) return;
     self->CloseModal();
     self->WifiDoConnect(ssid, pw);
+}
+
+void SettingsView::OnModalPasswordChanged(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (!self->popup_confirm_btn_ || !self->popup_input_) return;
+    const bool ready = !self->popup_input_->Text().empty();
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    lv_obj_set_style_bg_color(self->popup_confirm_btn_,
+                              Color(ready ? p.accent : p.button), 0);
+    lv_obj_set_style_bg_opa(self->popup_confirm_btn_,
+                            ready ? LV_OPA_COVER : LV_OPA_60, 0);
+    if (ready) lv_obj_clear_state(self->popup_confirm_btn_, LV_STATE_DISABLED);
+    else lv_obj_add_state(self->popup_confirm_btn_, LV_STATE_DISABLED);
 }
 
 void SettingsView::OnModalForget(lv_event_t *e) {

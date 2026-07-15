@@ -13,8 +13,9 @@
  * TelexInput is an lv_obj-based widget (NOT lv_textarea) so it fully owns key
  * handling and never double-inserts. It is added to the keypad group so the USB
  * keyboard types into it; printable keys go through TelexIme, Backspace deletes
- * one codepoint, Enter emits LV_EVENT_READY. SetTelex(false) makes it a plain
- * ASCII field (used for passwords / PINs, which must not be transformed).
+ * one codepoint, edits emit LV_EVENT_VALUE_CHANGED, and Enter emits
+ * LV_EVENT_READY. SetTelex(false) makes it a plain ASCII field (used for
+ * passwords / PINs, which must not be transformed).
  *
  * Terminal is intentionally NOT converted to TelexInput: it is a PTY shell and
  * transforming keystrokes would corrupt commands. */

@@ -12,9 +12,8 @@
 namespace home {
 
 /* macOS-inspired month calendar with reminders. Days that have at least one
- * task are marked with a colored dot; clicking any day opens a popup modal
- * listing that day's tasks (toggle done / delete) plus a field to add a new
- * reminder (title + optional HH:MM time).
+ * task are marked with a colored dot; clicking any day opens an iOS-inspired
+ * bottom sheet for creating a reminder and managing that day's saved tasks.
  *
  * Tasks are persisted in Settings("calendar"):
  *   - "task_dates": comma-separated "YYYY-MM-DD" index of dates that have >=1
@@ -58,13 +57,19 @@ private:
     std::array<DayCtx *, 42> day_ctxs_{};
     std::set<std::string> task_dates_;  // dates with >=1 task (for highlighting)
 
-    // Day-detail modal (built on overlay_).
+    // Day-detail bottom sheet (built on overlay_).
     lv_obj_t *popup_ = nullptr;          // full-screen backdrop
     lv_obj_t *popup_card_ = nullptr;
     lv_obj_t *popup_title_ = nullptr;
     lv_obj_t *popup_list_ = nullptr;    // scrollable column of task rows
-    TelexInput *popup_input_ = nullptr;  // new task title (Telex when vi)
-    TelexInput *popup_time_ = nullptr;   // optional "HH:MM"
+    TelexInput *popup_input_ = nullptr;     // event title (Telex when vi)
+    TelexInput *popup_location_ = nullptr;  // optional place / video call
+    TelexInput *popup_time_ = nullptr;      // optional start "HH:MM"
+    TelexInput *popup_end_time_ = nullptr;  // optional end "HH:MM"
+    TelexInput *popup_url_ = nullptr;       // explicitly optional URL
+    lv_obj_t *popup_all_day_ = nullptr;
+    lv_obj_t *popup_repeat_ = nullptr;
+    lv_obj_t *popup_alert_ = nullptr;
     std::string popup_date_;            // "YYYY-MM-DD"
     std::vector<RowCtx *> popup_rows_;  // RowCtx owned by the current modal
 
@@ -88,7 +93,7 @@ private:
     void OpenDayModal(int day);
     void CloseDayModal();
     void RenderTaskList();
-    void AddTask();
+    bool AddTask();
     void ToggleTask(const std::string &date, int idx);
     void DeleteTask(const std::string &date, int idx);
 
@@ -105,6 +110,7 @@ private:
     static void OnPopupDismiss(lv_event_t *e);
     static void OnPopupClose(lv_event_t *e);
     static void OnAddTask(lv_event_t *e);
+    static void OnAllDayChanged(lv_event_t *e);
     static void OnRowToggle(lv_event_t *e);
     static void OnRowDelete(lv_event_t *e);
 };
