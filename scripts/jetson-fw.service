@@ -2,6 +2,10 @@
 Description=Jetson Nano AI Firmware (DS-02 UI)
 After=network-online.target
 Wants=network-online.target
+# The firmware and Xorg both own the physical scanout. On a graphical boot,
+# let display-manager win; on a multi-user kiosk boot, only the firmware runs.
+Conflicts=display-manager.service
+Before=display-manager.service
 
 [Service]
 Type=simple

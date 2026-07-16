@@ -173,6 +173,14 @@ sudo systemctl stop jetson-fw
 sudo env SDL_VIDEODRIVER=kmsdrm ./run.sh --sdl
 ```
 
+Với bản FBDEV, dùng script độc quyền display. Script tự dừng
+`display-manager` và `jetson-fw.service`, sau đó khôi phục đúng display owner
+trước đó khi nhấn Ctrl+C:
+
+```bash
+sudo bash scripts/run_fbdev.sh
+```
+
 ## Cấu hình thường dùng
 
 Mọi thiết lập không nhạy cảm nằm trong `config.yaml`; `.env` chỉ chứa API key,
