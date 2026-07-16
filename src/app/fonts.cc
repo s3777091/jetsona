@@ -26,7 +26,8 @@ std::string g_regular_path;
 std::string g_bold_path;
 std::string g_font_name = "Arial";
 std::string g_assets_dir = "assets";
-int g_text_size = 28;
+constexpr int kDefaultTextSize = 26;
+int g_text_size = kDefaultTextSize;
 bool g_text_bold = false;
 std::map<std::tuple<std::string, int, bool>, lv_font_t *> g_font_cache;
 
@@ -116,7 +117,7 @@ void InitBuiltinFonts(const char *assets_dir) {
     } else {
         g_font_name = text_path.find("NotoSans") != std::string::npos ? "Noto Sans" : "Arial";
     }
-    g_text_size = std::clamp(display.GetInt("font_size", 28), 22, 34);
+    g_text_size = std::clamp(display.GetInt("font_size", kDefaultTextSize), 22, 34);
     g_text_bold = display.GetBool("bold_text", false);
     g_builtin_text_font = LoadTextFace(g_text_size, g_text_bold);
     const int small_size = std::clamp(g_text_size * 18 / 28, 16, 22);

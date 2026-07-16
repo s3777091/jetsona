@@ -11,16 +11,13 @@ import os
 import sys
 import time
 import secrets
+import getpass
 import paramiko
 
 VM_HOST = "36.50.27.142"
 VM_USER = "root"
-VM_PASS = "Dathuynh@@1909"
 REMOTE_DIR = "/root/lightpanda-search-gw"
 LOCAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)))
-# Reuse an existing token from the VM .env if present (idempotent redeploys);
-# otherwise generate a fresh one.
-TOKEN = "lp_" + secrets.token_hex(20)
 
 FILES = ["server.js", "Dockerfile", "docker-compose.yml"]
 
@@ -41,9 +38,14 @@ def run(ssh, cmd, timeout=300):
 
 def main():
     print(f"Connecting to {VM_USER}@{VM_HOST} ...")
+    # Never keep the VM credential in source control. CI/automation can inject
+    # JETSON_VM_PASSWORD; interactive deploys use a hidden prompt.
+    vm_password = os.environ.get("JETSON_VM_PASSWORD")
+    if not vm_password:
+        vm_password = getpass.getpass(f"Password for {VM_USER}@{VM_HOST}: ")
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(VM_HOST, username=VM_USER, password=VM_PASS, timeout=30)
+    ssh.connect(VM_HOST, username=VM_USER, password=vm_password, timeout=30)
 
     # Make sure the external network exists (it should; create if missing — harmless).
     run(ssh, "docker network ls --format '{{.Name}}' | grep -qx xiaozhi_default && "
@@ -56,7 +58,11 @@ def main():
     # SFTP the files up.
     print(f"\nSFTP -> {REMOTE_DIR}")
     run(ssh, f"mkdir -p {REMOTE_DIR}")
-    # Reuse existing token from the VM-local .env if it exists (idempotent).
+    # Reuse the token from the VM-local .env if present (idempotent redeploys);
+    # otherwise generate a fresh one. NB: keep every TOKEN assignment on this
+    # local — a bare module-level TOKEN read after an in-function assignment is
+    # an UnboundLocalError on first-ever deploys (no .env on the VM yet).
+    TOKEN = "lp_" + secrets.token_hex(20)
     try:
         sftp_tmp = ssh.open_sftp()
         with sftp_tmp.open(f"{REMOTE_DIR}/.env", "r") as fh:
@@ -64,7 +70,7 @@ def main():
         sftp_tmp.close()
         for line in data.decode("utf-8", "replace").splitlines():
             line = line.strip()
-            if line.startswith("GATEWAY_TOKEN="):
+            if line.startswith("GATEWAY_TOKEN=") and line.split("=", 1)[1]:
                 TOKEN = line.split("=", 1)[1]
                 print(f"  reusing existing GATEWAY_TOKEN=<{TOKEN[:7]}...>")
                 break
@@ -90,10 +96,13 @@ def main():
     run(ssh, f"docker ps --filter name=lightpanda-search-gw --format '{{.Names}}\t{{.Status}}\t{{.Ports}}'")
     run(ssh, "docker logs --tail 30 lightpanda-search-gw")
 
-    # Internal test from the VM host.
-    print("\n=== internal test (VM host -> localhost:9233) ===")
+    # Internal tests from the VM host.
+    print("\n=== internal test: /search (VM host -> localhost:9233) ===")
     run(ssh, f"curl -sS -m 60 -H 'Authorization: Bearer {TOKEN}' "
              "'http://localhost:9233/search?q=jetson%20nano' | head -c 2000")
+    print("\n=== internal test: /fetch (lightpanda CDP + fallback) ===")
+    run(ssh, f"curl -sS -m 90 -H 'Authorization: Bearer {TOKEN}' "
+             "'http://localhost:9233/fetch?url=https%3A%2F%2Fexample.com' | head -c 800")
 
     ssh.close()
 

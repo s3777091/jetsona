@@ -4,6 +4,7 @@
 #include "display/core/lvgl_image.h"
 #include "fonts.h"
 #include "net/airplane_mode.h"
+#include "net/vpn_manager.h"
 #include "settings.h"
 #include "board.h"
 
@@ -99,6 +100,14 @@ StatusBar::StatusBar(lv_obj_t *parent) {
 
     airplane_icon_ = jetson::ui::CreateAirplaneIcon(right_cluster_, lv_color_white());
     lv_obj_add_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
+
+    vpn_label_ = lv_label_create(right_cluster_);
+    lv_obj_set_style_text_font(vpn_label_, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(vpn_label_, Color(0x30c967), 0);
+    lv_label_set_text(vpn_label_, "VPN");
+    lv_obj_add_flag(vpn_label_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(vpn_label_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     add_icon(&wifi_label_, LV_SYMBOL_WIFI, OnWifiClick);
     add_icon(&bt_label_, LV_SYMBOL_BLUETOOTH, OnBtClick);
@@ -313,9 +322,13 @@ void StatusBar::Refresh() {
 
 void StatusBar::RefreshConnectivity() {
     const bool airplane = jetson::IsAirplaneModeEnabled();
-    if (airplane_state_read_ && airplane == cached_airplane_mode_) return;
+    const bool vpn = jetson::VpnManager::Instance().CachedEnabled();
+    if (airplane_state_read_ && airplane == cached_airplane_mode_ &&
+        vpn_state_read_ && vpn == cached_vpn_enabled_) return;
     airplane_state_read_ = true;
     cached_airplane_mode_ = airplane;
+    vpn_state_read_ = true;
+    cached_vpn_enabled_ = vpn;
 
     if (airplane_icon_) {
         if (airplane) lv_obj_clear_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
@@ -328,6 +341,10 @@ void StatusBar::RefreshConnectivity() {
     if (bt_label_) {
         if (airplane) lv_obj_add_flag(bt_label_, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_clear_flag(bt_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (vpn_label_) {
+        if (vpn) lv_obj_clear_flag(vpn_label_, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(vpn_label_, LV_OBJ_FLAG_HIDDEN);
     }
 }
 

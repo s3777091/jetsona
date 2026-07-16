@@ -13,6 +13,15 @@
 set -u
 
 HOME_URL="${CHROMIUM_HOME_URL:-https://www.google.com}"
+# One-shot start URL written by the firmware right before the kiosk hand-off
+# (the exit-42 path goes through the supervisor, so the firmware's environment
+# can't reach us). Used by the GitHub tile and the Pods/Studio web-IDE flow.
+URL_FILE=/tmp/jetson_chromium_url
+if [ -f "$URL_FILE" ]; then
+    REQ_URL="$(head -c 2048 "$URL_FILE" | tr -d '[:space:]')"
+    rm -f "$URL_FILE"
+    [ -n "$REQ_URL" ] && HOME_URL="$REQ_URL"
+fi
 DISPLAY_NO="${CHROMIUM_DISPLAY:-:0}"
 export DISPLAY="$DISPLAY_NO"
 

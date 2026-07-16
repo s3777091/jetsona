@@ -7,6 +7,7 @@
 #include "display/theme/ui_theme.h"
 #include "lvgl_runtime.h"
 #include "net/airplane_mode.h"
+#include "net/vpn_manager.h"
 #include "platform/shell_command.h"
 #include "settings.h"
 #include "esp_log.h"
@@ -57,6 +58,7 @@ const SleepOpt kSleepOpts[] = {
     {240, "4 phút"}, {300, "5 phút"}, {0, "Không"},
 };
 constexpr int kFontSizes[] = {22, 24, 26, 28, 30, 32, 34};
+constexpr int kDefaultFontSize = 26;
 
 int FontStepForSize(int size) {
     int best = 0;
@@ -386,7 +388,8 @@ SettingsView::SettingsView(lv_obj_t *parent, int width, int height,
                            ClosedCb on_closed)
     : OverlayView(parent, width, height, u8"Cài đặt", std::move(on_closed)),
       wifi_(wifi), bluetooth_(bluetooth),
-      airplane_enabled_(jetson::IsAirplaneModeEnabled()) {
+      airplane_enabled_(jetson::IsAirplaneModeEnabled()),
+      vpn_enabled_(jetson::VpnManager::Instance().CachedEnabled()) {
     // The settings cog already identifies this window. Keep the title string
     // internally (logs/minimize label) but do not spend header space repeating
     // "Cài đặt" on the device.
@@ -425,6 +428,7 @@ void SettingsView::BuildShell() {
     lv_obj_set_scrollbar_mode(sidebar_, LV_SCROLLBAR_MODE_ACTIVE);
 
     AddAirplaneRow();
+    AddVpnRow();
 
     struct Entry { Cat cat; const char *glyph; const char *label; };
     const Entry cats[] = {
@@ -517,6 +521,79 @@ void SettingsView::AirplaneRefreshUi() {
         if (airplane_enabled_) lv_obj_add_state(bt_switch_, LV_STATE_DISABLED);
         else lv_obj_clear_state(bt_switch_, LV_STATE_DISABLED);
     }
+    VpnRefreshUi();
+}
+
+void SettingsView::AddVpnRow() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    vpn_row_ = lv_obj_create(sidebar_);
+    lv_obj_remove_style_all(vpn_row_);
+    lv_obj_set_width(vpn_row_, lv_pct(100));
+    lv_obj_set_height(vpn_row_, 48);
+    lv_obj_set_style_radius(vpn_row_, 10, 0);
+    lv_obj_set_style_bg_color(vpn_row_, Color(p.row), 0);
+    lv_obj_set_style_bg_opa(vpn_row_, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(vpn_row_, 5, 0);
+    lv_obj_set_style_pad_right(vpn_row_, 5, 0);
+    lv_obj_set_style_pad_column(vpn_row_, 6, 0);
+    lv_obj_set_flex_flow(vpn_row_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(vpn_row_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(vpn_row_, LV_OBJ_FLAG_SCROLLABLE);
+
+    vpn_icon_bg_ = lv_obj_create(vpn_row_);
+    lv_obj_remove_style_all(vpn_icon_bg_);
+    lv_obj_set_size(vpn_icon_bg_, 30, 30);
+    lv_obj_set_style_radius(vpn_icon_bg_, 8, 0);
+    lv_obj_set_style_bg_opa(vpn_icon_bg_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(vpn_icon_bg_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    auto *icon = lv_label_create(vpn_icon_bg_);
+    lv_obj_set_style_text_font(icon, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+    lv_label_set_text(icon, "VPN");
+    lv_obj_center(icon);
+
+    auto *label = lv_label_create(vpn_row_);
+    lv_obj_set_width(label, 1);
+    lv_obj_set_flex_grow(label, 1);
+    lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(label, Color(p.text), 0);
+    lv_label_set_text(label, "VPN");
+
+    vpn_switch_ = MakeSwitch(vpn_row_, vpn_enabled_, OnVpnSwitch);
+    lv_obj_set_size(vpn_switch_, 42, 24);
+    VpnRefreshUi();
+}
+
+void SettingsView::VpnRefreshUi() {
+    if (vpn_switch_) {
+        if (vpn_enabled_) lv_obj_add_state(vpn_switch_, LV_STATE_CHECKED);
+        else lv_obj_clear_state(vpn_switch_, LV_STATE_CHECKED);
+        if (vpn_busy_.load() || airplane_enabled_)
+            lv_obj_add_state(vpn_switch_, LV_STATE_DISABLED);
+        else
+            lv_obj_clear_state(vpn_switch_, LV_STATE_DISABLED);
+    }
+    if (vpn_icon_bg_) {
+        lv_obj_set_style_bg_color(vpn_icon_bg_,
+                                  Color(vpn_enabled_ ? 0x30c967 : 0x8e8e93), 0);
+    }
+}
+
+void SettingsView::RefreshVpnStatus() {
+    if (vpn_busy_.exchange(true)) return;
+    VpnRefreshUi();
+    std::thread([self = Self()]() {
+        const auto status = jetson::VpnManager::Instance().QueryStatus();
+        LvLockGuard lock;
+        self->vpn_busy_ = false;
+        self->vpn_enabled_ = status.authenticated
+                                 ? status.enabled
+                                 : jetson::VpnManager::Instance().CachedEnabled();
+        self->VpnRefreshUi();
+    }).detach();
 }
 
 void SettingsView::AddSidebarRow(Cat cat, const char *glyph, const char *label) {
@@ -749,7 +826,8 @@ lv_obj_t *SettingsView::DisplayRow(lv_obj_t *card, const char *title,
         lv_obj_set_height(left, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_row(left, 1, 0);
-        lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(left, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                                LV_OBJ_FLAG_CLICKABLE));
 
         auto *label = lv_label_create(left);
         lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
@@ -757,6 +835,7 @@ lv_obj_t *SettingsView::DisplayRow(lv_obj_t *card, const char *title,
         lv_obj_set_width(label, lv_pct(100));
         lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
         lv_label_set_text(label, title);
+        lv_obj_clear_flag(label, LV_OBJ_FLAG_CLICKABLE);
         if (sub) {
             auto *caption = lv_label_create(left);
             lv_obj_set_style_text_font(caption, &BUILTIN_SMALL_TEXT_FONT, 0);
@@ -764,6 +843,7 @@ lv_obj_t *SettingsView::DisplayRow(lv_obj_t *card, const char *title,
             lv_obj_set_width(caption, lv_pct(100));
             lv_label_set_long_mode(caption, LV_LABEL_LONG_DOT);
             lv_label_set_text(caption, sub);
+            lv_obj_clear_flag(caption, LV_OBJ_FLAG_CLICKABLE);
         }
     }
     return row;
@@ -825,6 +905,7 @@ void SettingsView::MakeDisplayNavigationRow(lv_obj_t *card, const char *title,
     const auto &p = jetson::UiTheme::Instance().Palette();
     auto *row = DisplayRow(card, title, nullptr);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(row, 4);
     lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, this);
 
     auto *right = lv_obj_create(row);
@@ -835,17 +916,20 @@ void SettingsView::MakeDisplayNavigationRow(lv_obj_t *card, const char *title,
     lv_obj_set_flex_align(right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(right, 8, 0);
-    lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(right, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                             LV_OBJ_FLAG_CLICKABLE));
     if (value && *value) {
         auto *status = lv_label_create(right);
         lv_obj_set_style_text_font(status, &BUILTIN_SMALL_TEXT_FONT, 0);
         lv_obj_set_style_text_color(status, Color(p.sub_text), 0);
         lv_label_set_text(status, value);
+        lv_obj_clear_flag(status, LV_OBJ_FLAG_CLICKABLE);
     }
     auto *chevron = lv_label_create(right);
     lv_obj_set_style_text_font(chevron, &BUILTIN_ICON_FONT, 0);
     lv_obj_set_style_text_color(chevron, Color(p.sub_text), 0);
     lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
+    lv_obj_clear_flag(chevron, LV_OBJ_FLAG_CLICKABLE);
 }
 
 // =========================================================================
@@ -867,10 +951,11 @@ void SettingsView::BuildDisplayMain() {
     DisplayPageHeader("Màn hình & Độ sáng", false);
 
     auto *text_card = DisplayCard();
-    const int font_size = Settings("display", false).GetInt("font_size", 28);
+    const int font_size = Settings("display", false).GetInt("font_size", kDefaultFontSize);
     char font_value[24];
-    if (font_size == 28) std::snprintf(font_value, sizeof(font_value), "Mặc định");
-    else std::snprintf(font_value, sizeof(font_value), "%d%%", font_size * 100 / 28);
+    if (font_size == kDefaultFontSize) std::snprintf(font_value, sizeof(font_value), "Mặc định");
+    else std::snprintf(font_value, sizeof(font_value), "%d%%",
+                       font_size * 100 / kDefaultFontSize);
     MakeDisplayNavigationRow(text_card, "Cỡ chữ", font_value, OnOpenTextSize);
     DisplayDivider(text_card);
     auto *bold_row = DisplayRow(text_card, "Chữ đậm", nullptr);
@@ -954,7 +1039,7 @@ void SettingsView::BuildTextSizePage() {
     lv_obj_set_style_text_font(small_a, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(small_a, Color(p.sub_text), 0);
     lv_label_set_text(small_a, "A");
-    const int size = Settings("display", false).GetInt("font_size", 28);
+    const int size = Settings("display", false).GetInt("font_size", kDefaultFontSize);
     text_size_slider_ = MakeSlider(size_row, 0, 6, FontStepForSize(size), OnTextSizeChanged);
     lv_obj_set_flex_grow(text_size_slider_, 1);
     lv_obj_set_width(text_size_slider_, 1);
@@ -2122,7 +2207,11 @@ void SettingsView::BtRescan() {
         self->BtRefreshSwitch();
         if (self->bt_list_) self->BtRenderList();
         if (!powered) {
-            self->SetStatus("Bluetooth đang tắt hoặc không có adapter");
+            // Distinguish "adapter is simply off" from a real failure
+            // (e.g. bluetoothd not running) so the user sees the cause.
+            self->SetStatus(error.empty()
+                                ? "Bluetooth đang tắt. Bật công tắc Bluetooth để quét."
+                                : ("Lỗi Bluetooth: " + error).c_str());
         } else if (self->bt_devs_.empty() && !error.empty()) {
             self->SetStatus(("Lỗi quét Bluetooth: " + error).c_str());
             ESP_LOGE(TAG, "Bluetooth scan failed: %s", error.c_str());
@@ -2426,6 +2515,7 @@ void SettingsView::OpenPinModal() {
 
 void SettingsView::OnStart() {
     SetStatus("");
+    RefreshVpnStatus();
 }
 
 void SettingsView::OnResize(int /*w*/, int h) {
@@ -2536,7 +2626,7 @@ void SettingsView::OnBoldToggle(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
-    const int size = Settings("display", false).GetInt("font_size", 28);
+    const int size = Settings("display", false).GetInt("font_size", kDefaultFontSize);
     jetson::ApplyBuiltinTypography(size, on);
     self->SetStatus(on ? "Đã bật chữ đậm" : "Đã tắt chữ đậm");
 }
@@ -2648,6 +2738,9 @@ void SettingsView::OnAirplaneSwitch(lv_event_t *e) {
         return;
     }
 
+    // Optimistic UI: show the user's choice at once (the switch stays disabled
+    // while busy). The worker below reverts it if the transition fails.
+    self->airplane_enabled_ = enabled;
     self->AirplaneRefreshUi();
     self->SetStatus(enabled ? "Đang bật chế độ máy bay..."
                             : "Đang tắt chế độ máy bay...");
@@ -2685,6 +2778,57 @@ void SettingsView::OnAirplaneSwitch(lv_event_t *e) {
     }).detach();
 }
 
+void SettingsView::OnVpnSwitch(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (!self || !self->vpn_switch_) return;
+    const bool enabled = lv_obj_has_state(self->vpn_switch_, LV_STATE_CHECKED);
+
+    if (enabled && (self->airplane_enabled_ || self->airplane_busy_.load() ||
+                    jetson::IsAirplaneModeEnabled())) {
+        self->vpn_enabled_ = false;
+        self->VpnRefreshUi();
+        const char *message = "Tắt chế độ máy bay trước khi bật VPN";
+        self->SetStatus(message);
+        if (self->notification_cb_) self->notification_cb_(message);
+        return;
+    }
+    if (self->vpn_busy_.exchange(true)) {
+        self->VpnRefreshUi();
+        return;
+    }
+
+    self->vpn_enabled_ = enabled;
+    self->VpnRefreshUi();
+    self->SetStatus(enabled ? "Đang kết nối VPN..." : "Đang ngắt VPN...");
+    std::thread([self = self->Self(), enabled]() {
+        const auto result = jetson::VpnManager::Instance().SetEnabled(enabled);
+
+        LvLockGuard lock;
+        self->vpn_busy_ = false;
+        self->vpn_enabled_ = result.enabled;
+        self->VpnRefreshUi();
+
+        std::string status;
+        const char *notification = nullptr;
+        if (result.success && result.enabled) {
+            status = "VPN đã kết nối qua " +
+                     jetson::VpnManager::Instance().ExitNode();
+            notification = "Kết nối VPN thành công";
+        } else if (result.success) {
+            status = "VPN đã ngắt kết nối";
+            notification = "Đã ngắt kết nối VPN";
+        } else {
+            status = result.error.empty() ? "Không thể thay đổi trạng thái VPN"
+                                          : result.error;
+            notification = enabled ? "Kết nối VPN thất bại"
+                                   : "Không thể ngắt kết nối VPN";
+        }
+        self->SetStatus(status.c_str());
+        if (self->notification_cb_) self->notification_cb_(notification);
+    }).detach();
+}
+
 void SettingsView::OnWifiSwitch(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
@@ -2699,6 +2843,8 @@ void SettingsView::OnWifiSwitch(lv_event_t *e) {
         self->WifiRefreshSwitch();
         return;
     }
+    // Optimistic UI: keep the switch where the user put it; revert on failure.
+    self->wifi_enabled_ = on;
     std::thread([self = self->Self(), on]() {
         const bool ok = self->wifi_.Enable(on);
         std::vector<jetson::WifiNetwork> nets;
@@ -2720,8 +2866,11 @@ void SettingsView::OnWifiSwitch(lv_event_t *e) {
                                                  : ("Đã kết nối: " + active).c_str())
                                : "Đã tắt WiFi");
         } else {
+            self->wifi_enabled_ = !on; // revert the optimistic toggle
             self->WifiRefreshSwitch();
-            self->SetStatus(("Lỗi WiFi: " + error).c_str());
+            const std::string message = "Lỗi WiFi: " + error;
+            self->SetStatus(message.c_str());
+            if (self->notification_cb_) self->notification_cb_(message.c_str());
             ESP_LOGE(TAG, "WiFi power change failed: %s", error.c_str());
         }
     }).detach();
@@ -2767,6 +2916,8 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
         self->BtRefreshSwitch();
         return;
     }
+    // Optimistic UI: keep the switch where the user put it; revert on failure.
+    self->bt_powered_ = on;
     std::thread([self = self->Self(), on]() {
         const bool ok = on ? self->bluetooth_.PowerOn() : self->bluetooth_.PowerOff();
         std::vector<jetson::BtDevice> devs;
@@ -2782,8 +2933,11 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
             if (self->bt_list_) self->BtRenderList();
             self->SetStatus(on ? "Đã bật Bluetooth" : "Đã tắt Bluetooth");
         } else {
+            self->bt_powered_ = !on; // revert the optimistic toggle
             self->BtRefreshSwitch();
-            self->SetStatus(("Lỗi Bluetooth: " + error).c_str());
+            const std::string message = "Lỗi Bluetooth: " + error;
+            self->SetStatus(message.c_str());
+            if (self->notification_cb_) self->notification_cb_(message.c_str());
             ESP_LOGE(TAG, "Bluetooth power change failed: %s", error.c_str());
         }
     }).detach();

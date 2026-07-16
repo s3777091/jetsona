@@ -185,6 +185,10 @@ sudo env SDL_VIDEODRIVER=kmsdrm ./build/jetson_fw
 | `JETSON_MOUSE_DEVICE` | Ép thiết bị chuột evdev |
 | `JETSON_FILES_HOME` | Thư mục gốc của ứng dụng Tệp |
 | `JETSON_SETTINGS_FILE` | Đường dẫn file lưu cài đặt |
+| `JETSON_VPN_EXIT_NODE` | Tên máy/IP Tailscale của VM exit node (mặc định `jetsona-vpn`) |
+| `RUNPOD_API_KEY` | API key RunPod cho app **Pods**/**Studio** (thuê & quản lý GPU cloud) |
+| `JETSON_STUDIO_URL` | code-server trên VM — đích mặc định của tile **Studio** |
+| `JETSON_WEATHER_LAT/LON/NAME` | Toạ độ + tên hiển thị cho dòng thời tiết standby (open-meteo, mặc định TP.HCM) |
 
 Ví dụ ép touch và thư mục Home:
 
@@ -195,6 +199,80 @@ sudo env \
   JETSON_FILES_HOME=/home/ekkohuynh \
   ./build/jetson_fw
 ```
+
+## PS5 Remote Play
+
+Icon **Trò chơi** mở bảng điều khiển PS5 cho panel 800×480, gồm đăng ký máy,
+nhập IP, kiểm tra trạng thái, chọn `540p60` hoặc `720p30` và kết nối fullscreen.
+Khi bắt đầu thiết lập/chơi, firmware dừng hoàn toàn rồi bàn giao framebuffer
+cho bare Xorg + `chiaki-ng`; thoát Chiaki sẽ tự quay lại giao diện DS-02.
+
+Xem flow, cách cài binary ARM64, cấu hình PS5 và chẩn đoán tại
+[docs/ps-remote-play.md](docs/ps-remote-play.md).
+
+## GPU cloud: Pods → Studio → GitHub
+
+Bộ ba icon trong drawer biến Jetson thành "thin client" code trên GPU thuê:
+
+- **Pods** — quản lý GPU pod trên [RunPod](https://www.runpod.io) qua REST API
+  (`https://rest.runpod.io/v1`): xem danh sách pod (trạng thái, GPU, $/giờ),
+  bật/tắt, xoá (nhấn thùng rác 2 lần), và **Thuê GPU** mới — chọn preset
+  workspace (*VS Code Studio* chạy `code-server`, hoặc *PyTorch + Jupyter*)
+  rồi chọn loại GPU với giá theo giờ lấy trực tiếp từ RunPod. Pod thuê từ app
+  mở sẵn cổng web IDE + SSH; mật khẩu web IDE mặc định là `jetsona` (xem
+  trong chi tiết pod).
+- **Studio** — luôn mở **code-server self-host trên VM** (miễn phí, CPU)
+  trong Chromium kiosk: deploy một lần bằng `python vm/code-server/deploy.py`
+  rồi điền `JETSON_STUDIO_URL` mà script in ra vào `.env`. Đây là chỗ code
+  mặc định hằng ngày. Khi cần GPU: thuê pod trong **Pods**, rồi hoặc bấm
+  **Mở Studio** trên pod (IDE của pod, URL proxy
+  `https://{podId}-{port}.proxy.runpod.net`), hoặc ngay trong Studio VM mở
+  terminal và SSH vào pod (lệnh SSH hiện trong sheet chi tiết pod) — code
+  nằm một chỗ trên VM/GitHub, GPU chỉ là chỗ chạy.
+- **GitHub** — mở `github.com` trong Chromium kiosk. Đăng nhập một lần trong
+  kiosk (profile lưu ở `/tmp/chromium-kiosk-profile`), sau đó trong Studio
+  dùng terminal của code-server để `git clone`/`push` repo của bạn — tức là
+  code trực tiếp trên GitHub bằng GPU thuê.
+
+Cấu hình một lần: tạo API key (quyền đọc/ghi pods) tại RunPod Console →
+Settings → API Keys, điền `RUNPOD_API_KEY=` vào `.env` rồi cài lại firmware
+(service đọc `/opt/jetson-fw/.env`). Chưa có key thì các tile sẽ báo ngay
+trên Dynamic Island. Lưu ý: pod **Đã tắt** vẫn tính phí ổ đĩa; xoá pod mới
+hết phí hoàn toàn.
+
+## VPN qua Tailscale exit node
+
+Firmware không mở một ứng dụng Tailscale riêng. Trong **Cài đặt**, toggle
+**VPN** chọn/bỏ VM exit node; Dynamic Island báo kết quả và top bar hiện chữ
+`VPN` khi exit node đang được chọn.
+
+IP public của VM chỉ dùng để SSH. Tailscale yêu cầu VM và Jetson ở cùng một
+tailnet, và client phải chọn **tên máy hoặc IP Tailscale `100.x`** của exit
+node. Thiết lập một lần như sau:
+
+1. Chép script cấu hình lên VM rồi chạy ở đó (script sẽ mở URL đăng nhập nếu
+   không truyền `TS_AUTHKEY`):
+
+   ```bash
+   scp scripts/setup-tailscale-exit-node.sh root@36.50.27.142:/root/
+   ssh root@36.50.27.142 'bash /root/setup-tailscale-exit-node.sh'
+   ```
+
+2. Trong trang Machines của Tailscale Admin, duyệt **Use as exit node** cho
+   máy `jetsona-vpn`.
+
+3. Trên Jetson, cài/đăng nhập Tailscale vào cùng tailnet:
+
+   ```bash
+   sudo bash scripts/setup-tailscale-client.sh
+   ```
+
+4. Đặt `JETSON_VPN_EXIT_NODE=jetsona-vpn` trong `.env`, cài lại firmware và
+   bật toggle VPN. Có thể thay bằng IP Tailscale `100.x` nếu không dùng
+   MagicDNS.
+
+Không lưu mật khẩu SSH hoặc Tailscale auth key trong repository. Nếu dùng
+`TS_AUTHKEY`, chỉ truyền nó qua biến môi trường khi chạy script.
 
 ## Xử lý lỗi nhanh
 

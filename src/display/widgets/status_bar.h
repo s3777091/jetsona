@@ -61,6 +61,7 @@ private:
     lv_obj_t *left_cluster_ = nullptr;
     lv_obj_t *right_cluster_ = nullptr;
     lv_obj_t *airplane_icon_ = nullptr;
+    lv_obj_t *vpn_label_ = nullptr;
     lv_obj_t *wifi_label_ = nullptr;
     lv_obj_t *bt_label_ = nullptr;
     lv_obj_t *battery_icon_root_ = nullptr;
@@ -94,6 +95,8 @@ private:
     std::string cached_lang_;
     bool cached_airplane_mode_ = false;
     bool airplane_state_read_ = false;
+    bool cached_vpn_enabled_ = false;
+    bool vpn_state_read_ = false;
 
     Action wifi_action_, bt_action_, lock_action_, reboot_action_, shutdown_action_;
     Action island_action_;

@@ -7,13 +7,17 @@
 #include "display/views/chat_view.h"
 #include "display/views/documents_view.h"
 #include "display/views/lock_screen_view.h"
+#include "display/views/pods_view.h"
+#include "display/views/ps_remote_play_view.h"
 #include "display/views/reminders_view.h"
 #include "display/views/settings_view.h"
 #include "display/views/terminal_view.h"
 #include "display/views/trash_view.h"
 #include "display/views/wifi_settings_view.h"
 #include "agent/conversation.h"
+#include "application.h"
 #include "net/bluetooth_manager.h"
+#include "net/weather_client.h"
 #include "net/wifi_manager.h"
 #include "board.h"
 #include "fonts.h"
@@ -277,8 +281,35 @@ void Ds02HomeDisplay::SetupUI() {
     // Ds02HomeDisplay lives for the whole app lifetime, so capturing `this` is safe.
     jetson::UiTheme::Instance().Subscribe([this]() { RepaintForTheme(); });
 
+    StartWeatherUpdater();
+
     // Boot splash on top of the freshly-built home UI; fades out on its own.
     ShowOnboardSplash(2500);
+}
+
+void Ds02HomeDisplay::StartWeatherUpdater() {
+    /* The standby weather line comes from open-meteo (free, keyless; location
+     * via JETSON_WEATHER_LAT/LON). Blocking HTTP, so a detached worker loop:
+     * fetch, marshal the text to the LVGL thread, sleep 30 min (5 min after a
+     * failure so a flaky boot-time network recovers quickly). `this` lives for
+     * the whole process, like the theme subscription above. */
+    std::thread([this]() {
+        for (;;) {
+            jetson::WeatherInfo info;
+            std::string err;
+            const bool ok = jetson::WeatherClient::Fetch(info, err);
+            if (ok) {
+                std::string line = jetson::WeatherClient::FormatLine(info);
+                Application::GetInstance().Schedule([this, line]() {
+                    DisplayLockGuard lock(this);
+                    if (weather_label_) lv_label_set_text(weather_label_, line.c_str());
+                });
+            } else {
+                ESP_LOGW(TAG, "weather fetch failed: %s", err.c_str());
+            }
+            std::this_thread::sleep_for(std::chrono::minutes(ok ? 30 : 5));
+        }
+    }).detach();
 }
 
 void Ds02HomeDisplay::CreateStandbyObjects() {
@@ -358,29 +389,61 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
         {"assets/icons/drawer/photos.png",      "Ảnh",        5},
         {"assets/icons/drawer/pods.png",        "Pods",      10},
         {"assets/icons/drawer/record.png",      "Ghi âm",    11},
-        {"assets/icons/drawer/tailscale.png",   "Tailscale", 12},
+        {"assets/icons/drawer/studio.png",      "Studio",    12},
         {"assets/icons/drawer/translate.png",   "Dịch",       7},
     };
     constexpr int kCols = 4;
+    static const int32_t kGridCols[] = {
+        LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
+        LV_GRID_TEMPLATE_LAST,
+    };
+    static const int32_t kGridRows[] = {
+        LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST,
+    };
 
+    // Horizontal, snap-to-page drawer. Each child page contains a fixed 4x2
+    // grid; swiping left/right moves exactly one page at a time.
     app_grid_ = lv_obj_create(launcher_layer_);
     lv_obj_remove_style_all(app_grid_);
     int grid_w = Clamp(width_ - 48, 360, 640);
-    int grid_h = Clamp(height_ - 80, 320, 420);
+    int grid_h = Clamp(height_ - 156, 250, 300);
     lv_obj_set_size(app_grid_, grid_w, grid_h);
-    lv_obj_align(app_grid_, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_pad_all(app_grid_, 12, 0);
-    lv_obj_set_style_pad_row(app_grid_, 16, 0);
-    lv_obj_set_style_pad_column(app_grid_, 16, 0);
-    lv_obj_set_flex_flow(app_grid_, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(app_grid_, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(app_grid_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(app_grid_, LV_ALIGN_CENTER, 0, -14);
+    lv_obj_set_flex_flow(app_grid_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(app_grid_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scroll_dir(app_grid_, LV_DIR_HOR);
+    lv_obj_set_scroll_snap_x(app_grid_, LV_SCROLL_SNAP_CENTER);
+    lv_obj_set_scrollbar_mode(app_grid_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_add_flag(app_grid_, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                               LV_OBJ_FLAG_SCROLL_ONE));
+    lv_obj_add_event_cb(app_grid_, OnDrawerScrollEnd, LV_EVENT_SCROLL_END, this);
 
-    int cellW = (grid_w - 16 * (kCols - 1) - 24) / kCols;
+    for (size_t page_index = 0; page_index < kDrawerPageCount; ++page_index) {
+        auto *page = lv_obj_create(app_grid_);
+        drawer_pages_[page_index] = page;
+        lv_obj_remove_style_all(page);
+        lv_obj_set_size(page, grid_w, grid_h);
+        lv_obj_set_grid_dsc_array(page, kGridCols, kGridRows);
+        lv_obj_set_style_pad_all(page, 10, 0);
+        lv_obj_set_style_pad_column(page, 10, 0);
+        lv_obj_set_style_pad_row(page, 10, 0);
+        lv_obj_clear_flag(page, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                                LV_OBJ_FLAG_CLICKABLE));
+        lv_obj_add_flag(page, LV_OBJ_FLAG_SNAPPABLE);
+    }
+
+    int cellW = (grid_w - 20 - 10 * (kCols - 1)) / kCols;
     for (size_t i = 0; i < kDrawerItemCount; ++i) {
-        auto *btn = lv_obj_create(app_grid_);
+        const size_t page_index = i / kDrawerItemsPerPage;
+        const size_t page_item = i % kDrawerItemsPerPage;
+        auto *btn = lv_obj_create(drawer_pages_[page_index]);
         lv_obj_remove_style_all(btn);
-        lv_obj_set_size(btn, cellW, 96);
+        lv_obj_set_size(btn, cellW, 104);
+        lv_obj_set_grid_cell(btn, LV_GRID_ALIGN_STRETCH,
+                             (int32_t)(page_item % kCols), 1,
+                             LV_GRID_ALIGN_CENTER,
+                             (int32_t)(page_item / kCols), 1);
         // No "glass" tile behind the icon -- transparent, just a tap target.
         lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
@@ -404,7 +467,7 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
 
         auto *label = lv_label_create(btn);
         lv_obj_set_width(label, cellW);
-        lv_obj_set_style_text_font(label, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
         lv_obj_set_style_text_color(label, Color(p.text), 0);
         lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
@@ -414,6 +477,54 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
         auto *ctx = new AppCtx{this, kApps[i].id};
         lv_obj_add_event_cb(btn, OnAppButtonClicked, LV_EVENT_CLICKED, ctx);
         lv_obj_add_event_cb(btn, OnAppDeleted, LV_EVENT_DELETE, ctx);
+    }
+    lv_obj_update_layout(app_grid_);
+    lv_obj_update_snap(app_grid_, LV_ANIM_OFF);
+
+    drawer_page_indicator_ = lv_obj_create(launcher_layer_);
+    lv_obj_remove_style_all(drawer_page_indicator_);
+    lv_obj_set_size(drawer_page_indicator_, (int32_t)kDrawerPageCount * 16, 12);
+    lv_obj_align(drawer_page_indicator_, LV_ALIGN_BOTTOM_MID, 0,
+                 -(kDockHeight + kDockBottomMargin + 10));
+    lv_obj_set_flex_flow(drawer_page_indicator_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(drawer_page_indicator_, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(drawer_page_indicator_, 8, 0);
+    lv_obj_clear_flag(drawer_page_indicator_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    for (size_t i = 0; i < kDrawerPageCount; ++i) {
+        auto *dot = lv_obj_create(drawer_page_indicator_);
+        drawer_page_dots_[i] = dot;
+        lv_obj_remove_style_all(dot);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+        lv_obj_clear_flag(dot, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                               LV_OBJ_FLAG_CLICKABLE));
+    }
+    drawer_page_index_ = 0;
+    UpdateDrawerPageDots();
+}
+
+void Ds02HomeDisplay::OnDrawerScrollEnd(lv_event_t *e) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
+    if (!self || !self->app_grid_) return;
+    const int page_width = lv_obj_get_width(self->app_grid_);
+    if (page_width <= 0) return;
+    const int scroll_x = lv_obj_get_scroll_x(self->app_grid_);
+    const int page = Clamp((scroll_x + page_width / 2) / page_width,
+                           0, (int)kDrawerPageCount - 1);
+    self->drawer_page_index_ = (size_t)page;
+    self->UpdateDrawerPageDots();
+}
+
+void Ds02HomeDisplay::UpdateDrawerPageDots() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    for (size_t i = 0; i < kDrawerPageCount; ++i) {
+        auto *dot = drawer_page_dots_[i];
+        if (!dot) continue;
+        const bool active = i == drawer_page_index_;
+        lv_obj_set_size(dot, active ? 8 : 6, active ? 8 : 6);
+        lv_obj_set_style_bg_color(dot, Color(active ? p.text : p.sub_text), 0);
+        lv_obj_set_style_bg_opa(dot, active ? LV_OPA_COVER : LV_OPA_50, 0);
     }
 }
 
@@ -426,7 +537,11 @@ void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
     // icon can open the drawer itself.
     switch (ctx->id) {
     case 1: self->OpenChromium(); break;        // drawer "Chromium" -> Xorg kiosk
+    case 2: self->OpenChromium("https://github.com"); break; // GitHub in kiosk
     case 5: self->OpenBackgroundGallery(); break;
+    case 9: self->OpenPsRemotePlay(); break;    // drawer "Trò chơi" -> PS5 Remote Play
+    case 10: self->OpenPods(); break;           // RunPod GPU manager
+    case 12: self->OpenStudio(); break;         // running pod's web IDE
     default: self->ShowNotification("Sắp ra mắt", 1500); break;
     }
 }
@@ -922,7 +1037,78 @@ void Ds02HomeDisplay::OpenTerminal() {
     NoteAppOpened(kAppTerminal);
 }
 
-void Ds02HomeDisplay::OpenChromium() {
+void Ds02HomeDisplay::OpenPsRemotePlay() {
+    DisplayLockGuard lock(this);
+    if (ps_remote_play_view_) { RestoreApp(kAppPsRemotePlay); return; }
+    if (!root_) root_ = lv_screen_active();
+    ps_remote_play_view_ = std::make_shared<PsRemotePlayView>(
+        root_, width_, height_,
+        [this]() {
+            ps_remote_play_view_.reset();
+            OnAppClosed(kAppPsRemotePlay);
+        });
+    ps_remote_play_view_->SetLaunchRequest(
+        [this](bool configure) { LaunchPsRemotePlay(configure); });
+    ps_remote_play_view_->SetBackgroundRequest(
+        [this]() { BackgroundApp(kAppPsRemotePlay); });
+    ps_remote_play_view_->Start();
+    NoteAppOpened(kAppPsRemotePlay);
+}
+
+void Ds02HomeDisplay::LaunchPsRemotePlay(bool configure) {
+    ShowNotification(configure ? "Đang mở thiết lập PS5..."
+                               : "Đang kết nối PS5...", 1200);
+    std::thread([configure]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        jetson::LvglRuntime::Instance().Stop();  // release /dev/fb0 completely
+        sync();
+        const int request_code = configure ? 43 : 44;
+        if (std::getenv("JETSON_FW_SUPERVISED"))
+            _exit(request_code);
+
+        const char *launcher = "/opt/jetson-fw/scripts/launch_ps_remote_play.sh";
+        if (::access(launcher, R_OK) != 0)
+            launcher = "scripts/launch_ps_remote_play.sh";
+        const char *mode = configure ? "configure" : "stream";
+        const std::string command = std::string("bash '") + launcher + "' " + mode;
+        ::system(command.c_str());
+        ::execl("/proc/self/exe", "jetson_fw", (char *)nullptr);
+        _exit(1);
+    }).detach();
+}
+
+void Ds02HomeDisplay::OpenPods() {
+    DisplayLockGuard lock(this);
+    if (pods_view_) { RestoreApp(kAppPods); return; }
+    if (!root_) root_ = lv_screen_active();
+    pods_view_ = std::make_shared<PodsView>(
+        root_, width_, height_,
+        [this]() { pods_view_.reset(); OnAppClosed(kAppPods); });
+    pods_view_->SetNotifyCb([this](const char *msg) { ShowNotification(msg, 2500); });
+    pods_view_->SetOpenUrlCb([this](const std::string &url) { OpenChromium(url); });
+    pods_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppPods); });
+    pods_view_->Start();
+    NoteAppOpened(kAppPods);
+}
+
+void Ds02HomeDisplay::OpenStudio() {
+    /* Studio = the self-hosted code-server on the VM (JETSON_STUDIO_URL,
+     * deployed once by vm/code-server/deploy.py). Always. GPU pods are an
+     * explicit, paid choice: rent one in the Pods app and open its IDE from
+     * there ("Mở Studio" on the pod), or SSH into it from this VM studio's
+     * terminal (the SSH command is shown in the pod's detail sheet). No
+     * RunPod calls here — the tile must work instantly and offline from
+     * any GPU account state. */
+    const char *vm_studio = std::getenv("JETSON_STUDIO_URL");
+    if (!vm_studio || !vm_studio[0]) {
+        ShowNotification("Chưa cấu hình JETSON_STUDIO_URL — chạy vm/code-server/deploy.py", 3500);
+        return;
+    }
+    ShowNotification("Đang mở Studio trên VM...", 1500);
+    OpenChromium(vm_studio);
+}
+
+void Ds02HomeDisplay::OpenChromium(const std::string &url) {
     /* Hand the panel to a Chromium kiosk. We can't run a browser inside the
      * firmware (it owns /dev/fb0 via FBDEV with no display server), so the
      * deal is: stop the LVGL render threads (no more writes to the framebuffer),
@@ -933,13 +1119,40 @@ void Ds02HomeDisplay::OpenChromium() {
      *
      * Stop() joins the LVGL tick + handler threads, so it must NOT run on the
      * LVGL handler thread (we're inside an event callback here). Sleep briefly
-     * so the click feedback paints, then stop + exit from a detached thread. */
+     * so the click feedback paints, then stop + exit from a detached thread.
+     *
+     * The exit-42 contract only works under the supervisor (jetson-fw service /
+     * jetson_fw_run.sh, which sets JETSON_FW_SUPERVISED=1). When the firmware
+     * was started directly (sudo ./jetson_fw, run_fbdev.sh) exiting would just
+     * kill the UI, so in that case we run the kiosk ourselves and re-exec this
+     * binary afterwards to re-acquire /dev/fb0. */
+    if (::system("command -v chromium-browser >/dev/null 2>&1 || "
+                 "command -v chromium >/dev/null 2>&1") != 0) {
+        ShowNotification("Chromium chưa được cài: sudo apt install chromium-browser", 3500);
+        return;
+    }
     ShowNotification("Đang mở Chromium...", 1200);
+    // Hand the start URL to launch_chromium.sh through a file: the supervisor
+    // path (exit 42) can't inherit our environment.
+    if (!url.empty()) {
+        if (FILE *f = std::fopen("/tmp/jetson_chromium_url", "w")) {
+            std::fputs(url.c_str(), f);
+            std::fclose(f);
+        }
+    } else {
+        ::unlink("/tmp/jetson_chromium_url"); // stale URL from a previous run
+    }
     std::thread([]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(400));
         jetson::LvglRuntime::Instance().Stop();  // release /dev/fb0 writes
         sync();
-        _exit(42);  // 42 -> supervisor launches Chromium kiosk, then restarts us
+        if (std::getenv("JETSON_FW_SUPERVISED"))
+            _exit(42);  // 42 -> supervisor launches the kiosk, then restarts us
+        const char *kiosk = "/opt/jetson-fw/scripts/launch_chromium.sh";
+        if (::access(kiosk, R_OK) != 0) kiosk = "scripts/launch_chromium.sh";
+        ::system((std::string("bash ") + kiosk).c_str());
+        ::execl("/proc/self/exe", "jetson_fw", (char *)nullptr);
+        _exit(1);  // execl failed; nothing left to render with
     }).detach();
 }
 
@@ -972,6 +1185,8 @@ OverlayView *Ds02HomeDisplay::GetAppView(AppId id) const {
     case kAppTerminal:  return terminal_view_.get();
     case kAppTrash:     return trash_view_.get();
     case kAppGallery:   return gallery_view_.get();
+    case kAppPsRemotePlay: return ps_remote_play_view_.get();
+    case kAppPods:      return pods_view_.get();
     default:            return nullptr;
     }
 }
@@ -1089,6 +1304,8 @@ void Ds02HomeDisplay::OpenAppSwitcher() {
         case kAppTerminal:  *path = "assets/icons/dock/terminal.png"; return dock_icon_cache_[7].get();
         case kAppTrash:     *path = "assets/icons/dock/trash.png";    return dock_icon_cache_[8].get();
         case kAppGallery:   *path = "assets/icons/drawer/photos.png"; return drawer_icon_cache_[kGalleryDrawerIndex].get();
+        case kAppPsRemotePlay: *path = "assets/icons/drawer/game.png"; return drawer_icon_cache_[3].get();
+        case kAppPods:      *path = "assets/icons/drawer/pods.png";   return drawer_icon_cache_[kPodsDrawerIndex].get();
         default:            *path = nullptr; return nullptr;
         }
     };
@@ -1253,16 +1470,20 @@ void Ds02HomeDisplay::RepaintForTheme() {
     }
     if (launcher_layer_) lv_obj_set_style_bg_color(launcher_layer_, Color(p.bg), 0);
     if (app_grid_) {
-        uint32_t n = lv_obj_get_child_cnt(app_grid_);
-        for (uint32_t i = 0; i < n; ++i) {
-            auto *btn = lv_obj_get_child(app_grid_, i);
-            lv_obj_set_style_bg_color(btn, Color(p.row), 0);
-            // icon = child 0, label = child 1
-            auto *icon = lv_obj_get_child(btn, 0);
-            auto *lbl = lv_obj_get_child(btn, 1);
-            if (icon) lv_obj_set_style_text_color(icon, Color(p.text), 0);
-            if (lbl) lv_obj_set_style_text_color(lbl, Color(p.text), 0);
+        const uint32_t page_count = lv_obj_get_child_cnt(app_grid_);
+        for (uint32_t page_index = 0; page_index < page_count; ++page_index) {
+            auto *page = lv_obj_get_child(app_grid_, page_index);
+            const uint32_t button_count = lv_obj_get_child_cnt(page);
+            for (uint32_t i = 0; i < button_count; ++i) {
+                auto *btn = lv_obj_get_child(page, i);
+                // icon/fallback = child 0, app name = child 1
+                auto *icon = lv_obj_get_child(btn, 0);
+                auto *label = lv_obj_get_child(btn, 1);
+                if (icon) lv_obj_set_style_text_color(icon, Color(p.text), 0);
+                if (label) lv_obj_set_style_text_color(label, Color(p.text), 0);
+            }
         }
+        UpdateDrawerPageDots();
     }
     if (dock_) lv_obj_set_style_bg_color(dock_, Color(p.dock_bg), 0);
 }

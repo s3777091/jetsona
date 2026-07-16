@@ -12,6 +12,9 @@ services:
     environment:
       GATEWAY_TOKEN: ${GATEWAY_TOKEN}
       PORT: 9233
+      # CDP endpoint of the existing lightpanda container (same network).
+      # Override in ./.env if that container uses another name/port.
+      LIGHTPANDA_CDP: ${LIGHTPANDA_CDP:-ws://lightpanda:9222}
     ports:
       - "9233:9233"
     networks:

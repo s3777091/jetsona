@@ -19,11 +19,19 @@ sudo cp -r "$JETSON_DIR/assets" /opt/jetson-fw/
 sudo mkdir -p /opt/jetson-fw/scripts
 sudo cp "$JETSON_DIR/scripts/s3_assets.py" /opt/jetson-fw/scripts/
 sudo chmod +x /opt/jetson-fw/scripts/s3_assets.py
-# Supervisor + Chromium kiosk launcher (drawer "Chromium" tile hands the panel
-# to Xorg + chromium --kiosk; supervisor restarts the firmware when it exits).
+# Supervisor + bare-X launchers. Chromium and PS Remote Play each take the
+# panel while the framebuffer firmware is stopped; it restarts on app exit.
 sudo cp "$JETSON_DIR/scripts/jetson_fw_run.sh" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/launch_chromium.sh" /opt/jetson-fw/scripts/
-sudo chmod +x /opt/jetson-fw/scripts/jetson_fw_run.sh /opt/jetson-fw/scripts/launch_chromium.sh
+sudo cp "$JETSON_DIR/scripts/launch_ps_remote_play.sh" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/ps_remote_play_ctl.sh" /opt/jetson-fw/scripts/
+sudo chmod +x \
+    /opt/jetson-fw/scripts/jetson_fw_run.sh \
+    /opt/jetson-fw/scripts/launch_chromium.sh \
+    /opt/jetson-fw/scripts/launch_ps_remote_play.sh \
+    /opt/jetson-fw/scripts/ps_remote_play_ctl.sh
+sudo mkdir -p /var/lib/jetson-fw/chiaki
+sudo chmod 700 /var/lib/jetson-fw/chiaki
 if [ -f "$JETSON_DIR/.env" ]; then
     sudo cp "$JETSON_DIR/.env" /opt/jetson-fw/.env
     sudo chmod 600 /opt/jetson-fw/.env

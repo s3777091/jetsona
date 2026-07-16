@@ -30,6 +30,8 @@ class ChatView;
 class DocumentsView;
 class LockScreenView;
 class OverlayView;
+class PodsView;
+class PsRemotePlayView;
 class RemindersView;
 class SettingsView;
 class TerminalView;
@@ -71,12 +73,22 @@ public:
     void OpenChat();
     void OpenTerminal();
     void OpenTrash();
-    /* Hand the HDMI panel to a Chromium kiosk: stops the FBDEV render loop and
-     * exits the process with code 42 so the jetson-fw supervisor runs
-     * launch_chromium.sh (Xorg + chromium --kiosk on /dev/fb0), then restarts
-     * this firmware when the browser closes. Not an OverlayView app -- the
-     * whole UI is suspended while the kiosk owns the panel. */
-    void OpenChromium();
+    void OpenPsRemotePlay();
+    /* RunPod GPU pod manager (drawer "Pods"): rent, start/stop, delete pods
+     * and jump into a pod's web IDE. Needs RUNPOD_API_KEY in .env. */
+    void OpenPods();
+    /* Drawer "Studio": open the self-hosted code-server on the VM
+     * (JETSON_STUDIO_URL, vm/code-server/deploy.py) in the Chromium kiosk.
+     * GPU pods are opened explicitly from the Pods app instead. */
+    void OpenStudio();
+    /* Hand the HDMI panel to a Chromium kiosk: stops the FBDEV render loop,
+     * then either exits with code 42 (under the jetson-fw supervisor, which
+     * runs launch_chromium.sh and restarts us) or -- when started without a
+     * supervisor -- runs the kiosk in-process and re-execs this binary when
+     * the browser closes. Not an OverlayView app; the whole UI is suspended
+     * while the kiosk owns the panel. A non-empty `url` is handed to the
+     * kiosk via /tmp/jetson_chromium_url (read by launch_chromium.sh). */
+    void OpenChromium(const std::string &url = std::string());
     void OpenLockScreen();
     void SetBrightness(int pct);
     void ApplyDisplayPreferences();
@@ -95,7 +107,11 @@ private:
 
     static constexpr size_t kDockItemCount = 9;
     static constexpr size_t kDrawerItemCount = 12;
+    static constexpr size_t kDrawerItemsPerPage = 8;
+    static constexpr size_t kDrawerPageCount =
+        (kDrawerItemCount + kDrawerItemsPerPage - 1) / kDrawerItemsPerPage;
     static constexpr size_t kGalleryDrawerIndex = 7;
+    static constexpr size_t kPodsDrawerIndex = 8;
 
     /* ---- Multitasking ----
      * Every OverlayView app that opens joins an LRU queue and stays alive when
@@ -114,6 +130,8 @@ private:
         kAppTerminal,
         kAppTrash,
         kAppGallery, // drawer app: gets a temporary dock slot while running
+        kAppPsRemotePlay,
+        kAppPods,    // drawer app: RunPod GPU manager
     };
     static constexpr size_t kMaxRunningApps = 5;
 
@@ -123,6 +141,7 @@ private:
     };
 
     void CreateStandbyObjects();
+    void StartWeatherUpdater();
     void CreateDrawerObjects();
     void CreateSystemBarObjects();
     void CreateDockObjects();
@@ -139,7 +158,9 @@ private:
     static void OnDockButtonEvent(lv_event_t *e);
     static void OnAppButtonClicked(lv_event_t *e);
     static void OnAppDeleted(lv_event_t *e);
+    static void OnDrawerScrollEnd(lv_event_t *e);
     static void OnScreenOffClicked(lv_event_t *e);
+    void UpdateDrawerPageDots();
     // Multitask queue plumbing.
     OverlayView *GetAppView(AppId id) const;
     void NoteAppOpened(AppId id);
@@ -153,6 +174,10 @@ private:
     void OpenAppSwitcher();
     void AddGalleryDockItem();
     void RemoveGalleryDockItem();
+    /* Release the framebuffer and hand the panel to chiaki-ng. `configure`
+     * opens chiaki-ng's official registration UI; stream mode starts the
+     * selected PS5 directly. The supervisor maps these to exit 43/44. */
+    void LaunchPsRemotePlay(bool configure);
     static void OnGalleryDockClicked(lv_event_t *e);
     void ToggleVolume();
     static void OnSplashOpa(void *var, int32_t v);
@@ -215,10 +240,16 @@ private:
     std::shared_ptr<ChatView> chat_view_;
     std::shared_ptr<TerminalView> terminal_view_;
     std::shared_ptr<TrashView> trash_view_;
+    std::shared_ptr<PsRemotePlayView> ps_remote_play_view_;
+    std::shared_ptr<PodsView> pods_view_;
     std::shared_ptr<LockScreenView> lock_screen_view_;
     std::shared_ptr<jetson::Conversation> chat_conv_;
 
     lv_obj_t *app_grid_ = nullptr;
+    lv_obj_t *drawer_page_indicator_ = nullptr;
+    std::array<lv_obj_t *, kDrawerPageCount> drawer_pages_ = {};
+    std::array<lv_obj_t *, kDrawerPageCount> drawer_page_dots_ = {};
+    size_t drawer_page_index_ = 0;
 
     /* Full-screen boot greeting shown for ~duration_ms. It fades away, then
      * hands off to the welcome animation in the Dynamic Island. */

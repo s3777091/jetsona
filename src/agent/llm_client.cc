@@ -50,7 +50,8 @@ void LlmClient::ConfigureFromSettings() {
     system_prompt_ = s.GetString("system_prompt",
         "Ban la tro ly AI tieng Viet, huu ich va thuc tinh. "
         "Khi nguoi dung muon ghi nho/cong viec/nhac nho, dung tool de luu va quan ly. "
-        "Khi can thong tin moi, dung web_search. Tra loi ngan gon, tieng Viet tu nhien.");
+        "Khi can thong tin moi, dung web_search; muon doc chi tiet mot trang "
+        "ket qua, dung web_open voi URL do. Tra loi ngan gon, tieng Viet tu nhien.");
     temperature_ = (double)s.GetInt("temperature_x100", 70) / 100.0; // 70 -> 0.7
 }
 

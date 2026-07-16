@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <utility>
 
+#include <sys/wait.h>
+
 namespace jetson::platform {
 
 ShellCommandResult RunShellCommand(const std::string &command) {
@@ -12,7 +14,13 @@ ShellCommandResult RunShellCommand(const std::string &command) {
 
     char buffer[1024];
     while (fgets(buffer, sizeof(buffer), process)) result.output += buffer;
-    result.status = pclose(process);
+    // pclose() returns a raw wait(2) status; report the child's exit code
+    // (e.g. 124 from `timeout`) instead of the shifted value (124<<8=31744).
+    const int raw = pclose(process);
+    if (raw == -1) result.status = -1;
+    else if (WIFEXITED(raw)) result.status = WEXITSTATUS(raw);
+    else if (WIFSIGNALED(raw)) result.status = 128 + WTERMSIG(raw);
+    else result.status = raw;
     return result;
 }
 

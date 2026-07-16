@@ -93,12 +93,17 @@ private:
     GeneralPage general_page_ = GeneralPage::Main;
     std::vector<lv_obj_t *> side_rows_;
 
-    // Global airplane-mode row at the top of the sidebar.
+    // Global airplane/VPN rows at the top of the sidebar.
     lv_obj_t *airplane_row_ = nullptr;
     lv_obj_t *airplane_icon_bg_ = nullptr;
     lv_obj_t *airplane_switch_ = nullptr;
     bool airplane_enabled_ = false;
     std::atomic<bool> airplane_busy_{false};
+    lv_obj_t *vpn_row_ = nullptr;
+    lv_obj_t *vpn_icon_bg_ = nullptr;
+    lv_obj_t *vpn_switch_ = nullptr;
+    bool vpn_enabled_ = false;
+    std::atomic<bool> vpn_busy_{false};
 
     // WiFi pane.
     lv_obj_t *wifi_switch_ = nullptr;
@@ -160,6 +165,9 @@ private:
     void BuildShell();
     void AddAirplaneRow();
     void AirplaneRefreshUi();
+    void AddVpnRow();
+    void VpnRefreshUi();
+    void RefreshVpnStatus();
     void AddSidebarRow(Cat cat, const char *glyph, const char *label);
     void HighlightSide(Cat cat);
     void ShowCategory(Cat c);
@@ -265,6 +273,7 @@ private:
     static void OnVolChanged(lv_event_t *e);
     static void OnMuteToggle(lv_event_t *e);
     static void OnAirplaneSwitch(lv_event_t *e);
+    static void OnVpnSwitch(lv_event_t *e);
 
     static void OnWifiSwitch(lv_event_t *e);
     static void OnWifiRescan(lv_event_t *e);

@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
+#include <thread>
 
 #define TAG "Bt"
 
@@ -30,7 +31,26 @@ int runBt(const std::string &script, std::string &out, int timeout_s = 30) {
     std::string cmd = "printf '%s' " + QuoteShellArgument(script) +
                       " | timeout --signal=TERM " + std::to_string(timeout_s) +
                       "s bluetoothctl";
-    return RunShellCommand(cmd, out);
+    const int rc = RunShellCommand(cmd, out);
+    // bluetoothctl redraws its prompt with bare carriage returns, which
+    // garbles single-line logs and UI status text ("Waiting to connect
+    // ...iled"). Normalize them to newlines; the field parsers split on \n.
+    for (char &c : out) if (c == '\r') c = '\n';
+    return rc;
+}
+
+// bluetoothctl prints this and blocks forever when bluetoothd is not
+// reachable over D-Bus (daemon dead or not yet registered); `timeout`
+// then kills it with rc=124.
+bool DaemonUnreachable(int rc, const std::string &out) {
+    return rc != 0 && out.find("Waiting to connect to bluetoothd") != std::string::npos;
+}
+
+bool DaemonActive() {
+    std::string out;
+    return RunShellCommand(
+               "timeout --signal=TERM 3s systemctl is-active --quiet bluetooth",
+               out) == 0;
 }
 
 bool contains(const std::string &hay, const std::string &needle) {
@@ -62,10 +82,42 @@ BluetoothManager &BluetoothManager::Instance() {
     return inst;
 }
 
+bool BluetoothManager::EnsureDaemon(bool force_restart) const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!force_restart && DaemonActive()) return true;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now < daemon_retry_after_) return false; // recent start failed: fail fast
+
+    ESP_LOGW(TAG, "bluetoothd not reachable; restarting bluetooth.service");
+    std::string out;
+    RunShellCommand("timeout --signal=TERM 10s systemctl restart bluetooth", out);
+    for (int i = 0; i < 10; ++i) {
+        if (DaemonActive()) {
+            // Give bluetoothd a moment to claim its D-Bus name and adapter.
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            ESP_LOGI(TAG, "bluetooth.service is active");
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    daemon_retry_after_ = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    ESP_LOGE(TAG, "bluetooth.service could not be started: %s", out.c_str());
+    return false;
+}
+
 bool BluetoothManager::Available() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!EnsureDaemon()) {
+        last_error_ = "Dịch vụ Bluetooth (bluetoothd) chưa chạy";
+        return false;
+    }
     std::string out;
     int rc = runBt("show\n", out, 6);
+    if (DaemonUnreachable(rc, out)) {
+        // systemd says active but bluetoothctl cannot reach it: restart once.
+        if (EnsureDaemon(true)) rc = runBt("show\n", out, 6);
+    }
     if (rc != 0) {
         last_error_ = "bluetoothctl not available: " + out;
         ESP_LOGE(TAG, "availability check failed (rc=%d): %s", rc, out.c_str());
@@ -89,6 +141,9 @@ bool BluetoothManager::PowerOn() {
         ESP_LOGW(TAG, "power on rejected while airplane mode is enabled");
         return false;
     }
+    // OnBtSwitch calls PowerOn() directly; make sure bluetoothd is up first
+    // instead of letting `power on` burn its full timeout against nothing.
+    if (!Available()) return false;
     // The AC8265's BT half is often rfkill-soft-blocked after boot, which makes
     // `power on` fail with org.bluez.Error.Blocked. Unblock first, best-effort.
     std::string rfkillOut;
@@ -117,6 +172,7 @@ bool BluetoothManager::PowerOn() {
 
 bool BluetoothManager::PowerOff() {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!Available()) return false;
     std::string out;
     int rc = runBt("power off\n", out, 8);
     if (rc != 0) {

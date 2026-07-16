@@ -1,0 +1,23 @@
+# Self-hosted "Studio" for the Jetson DS-02 Studio tile: code-server (VS Code
+# web) on the VM, CPU-only and free — the fallback when no RunPod GPU pod is
+# running (see Ds02HomeDisplay::OpenStudio + JETSON_STUDIO_URL in .env).
+#
+# Deployed by deploy.py, which writes the VM-local .env (STUDIO_PASSWORD) and
+# pre-creates ./project + ./config owned by uid 1000 (the container's `coder`
+# user) so the workspace is writable.
+#
+# No `command:` override: the image's ENTRYPOINT already binds 0.0.0.0:8080
+# and opens the coder home; adding command args would append a second
+# positional dir to the entrypoint.
+services:
+  code-server:
+    image: codercom/code-server:latest
+    container_name: jetsona-code-server
+    restart: unless-stopped
+    ports:
+      - "8443:8080"
+    environment:
+      - PASSWORD=${STUDIO_PASSWORD}
+    volumes:
+      - ./project:/home/coder/project
+      - ./config:/home/coder/.config

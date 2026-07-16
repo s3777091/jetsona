@@ -14,6 +14,7 @@
  * No password entry is needed from the UI: bluetoothctl's default-agent handles
  * PIN/Just-Works pairing automatically. */
 
+#include <chrono>
 #include <string>
 #include <mutex>
 #include <vector>
@@ -73,8 +74,17 @@ public:
 
 private:
     BluetoothManager() = default;
+
+    // Make sure bluetoothd is reachable, (re)starting bluetooth.service if
+    // needed. With `force_restart` the service is restarted even if systemd
+    // reports it active (bluetoothctl can still fail to reach it on D-Bus).
+    // Failed start attempts are rate-limited so every UI call afterwards
+    // fails fast instead of burning a full bluetoothctl timeout.
+    bool EnsureDaemon(bool force_restart = false) const;
+
     mutable std::recursive_mutex mutex_;
     mutable std::string last_error_;
+    mutable std::chrono::steady_clock::time_point daemon_retry_after_{};
 };
 
 } // namespace jetson

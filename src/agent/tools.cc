@@ -331,6 +331,82 @@ std::string WebSearchTool::Execute(const std::string &args_json) {
     return resp.substr(0, 1200);
 }
 
+// ---- WebOpenTool ---------------------------------------------------------
+
+WebOpenTool::WebOpenTool()
+    : Tool("web_open",
+           "Mo mot URL (thuong tu ket qua web_search) va doc noi dung trang duoi dang text. "
+           "Dung khi can chi tiet thay vi chi snippet.",
+           R"({"type":"object","properties":{"url":{"type":"string","description":"URL http(s) can doc"}},"required":["url"]})") {}
+
+std::string WebOpenTool::Execute(const std::string &args_json) {
+    json a;
+    try { a = json::parse(args_json.empty() ? "{}" : args_json); } catch (...) { a = json::object(); }
+    std::string page_url = Jstring(a, "url");
+    if (page_url.rfind("http://", 0) != 0 && page_url.rfind("https://", 0) != 0)
+        return "ERROR: url phai bat dau bang http(s)://";
+
+    // Same gateway as web_search; /fetch lives next to /search.
+    std::string fetch_url = StrEnv("LIGHTPANDA_FETCH_URL", "");
+    if (fetch_url.empty()) {
+        std::string base = StrEnv("LIGHTPANDA_SEARCH_URL", "");
+        if (base.empty()) return "web_open chua cau hinh (LIGHTPANDA_SEARCH_URL).";
+        const std::string suffix = "/search";
+        if (base.size() >= suffix.size() &&
+            base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0)
+            base.erase(base.size() - suffix.size());
+        while (!base.empty() && base.back() == '/') base.pop_back();
+        fetch_url = base + "/fetch";
+    }
+    std::string token = StrEnv("LIGHTPANDA_SEARCH_TOKEN", "");
+
+    std::string url = fetch_url;
+    url += (url.find('?') == std::string::npos ? "?" : "&");
+    url += "url=" + UrlEncode(page_url);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return "ERROR: curl init";
+    std::string resp;
+    struct curl_slist *headers = nullptr;
+    if (!token.empty()) {
+        std::string auth = "Authorization: Bearer " + token;
+        headers = curl_slist_append(headers, auth.c_str());
+    }
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    // The gateway may drive a browser render + fallback fetch: allow longer
+    // than web_search before giving up.
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 90L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    CURLcode rc = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    if (rc != CURLE_OK) return std::string("ERROR: ") + curl_easy_strerror(rc);
+    if (http_code < 200 || http_code >= 300)
+        return "ERROR: HTTP " + std::to_string(http_code) + " " + resp.substr(0, 160);
+
+    // Expect JSON: {"url","source","title","text"}
+    try {
+        auto j = json::parse(resp);
+        std::string title = j.value("title", std::string());
+        std::string text = j.value("text", std::string());
+        if (text.empty()) return "ERROR: trang khong co noi dung doc duoc";
+        // Keep the tool reply bounded; the LLM context is small.
+        if (text.size() > 4000) text = text.substr(0, 4000) + "\n[...cat bot...]";
+        std::string out;
+        if (!title.empty()) out += "Tieu de: " + title + "\n\n";
+        out += text;
+        return out;
+    } catch (...) {}
+    if (resp.empty()) return "ERROR: khong co noi dung";
+    return resp.substr(0, 4000);
+}
+
 // ---- Default registry ----------------------------------------------------
 
 std::shared_ptr<ToolRegistry> BuildDefaultToolRegistry() {
@@ -342,6 +418,7 @@ std::shared_ptr<ToolRegistry> BuildDefaultToolRegistry() {
     reg->Register(std::make_unique<NoteTool>(NoteTool::Add));
     reg->Register(std::make_unique<NoteTool>(NoteTool::List));
     reg->Register(std::make_unique<WebSearchTool>());
+    reg->Register(std::make_unique<WebOpenTool>());
     return reg;
 }
 

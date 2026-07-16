@@ -35,7 +35,14 @@
 ====================*/
 #define LV_USE_DRAW_SW 1
 #if LV_USE_DRAW_SW
-    #define LV_DRAW_SW_SHADOW_CACHE_SIZE 0
+    /* Box-shadow corner-mask cache. The UI uses shadows heavily (dock width 18,
+     * app-switcher/calendar/reminders popup cards width 24, corner radius up
+     * to 24). corner_size = shadow_width + radius, worst case 24 + 24 = 48.
+     * With RENDER_MODE = FULL every frame re-rasterizes each shadow corner from
+     * scratch; this cache holds the most-recent corner mask (one slot, keyed by
+     * corner_size + radius) so repeated cards hit instead of re-blurring. Cost
+     * is CACHE_SIZE^2 bytes; 64 -> 4 KB and covers the worst case (48 < 64). */
+    #define LV_DRAW_SW_SHADOW_CACHE_SIZE 64
     /* MUST stay 1: TinyTTF (lv_tiny_ttf.c) rasterizes glyphs into a shared
      * cache with no locking, so >1 draw unit makes parallel text draws race —
      * glyphs come out missing/corrupted all over the UI (seen on-device with
@@ -139,7 +146,12 @@
 #if LV_USE_TINY_TTF
     /* Allow tiny_ttf to read TTF files from the filesystem. */
     #define LV_TINY_TTF_FILE_SUPPORT 1
-    #define LV_TINY_TTF_FILE_CACHE_SIZE 4096
+    /* TTF byte cache for stb_truetype glyph-outline reads. Glyph BITMAPS are
+     * already cached separately (256 glyph/font), so this only avoids re-reading
+     * the same TTF outline bytes when rasterizing a cache-miss glyph. 4 KB is
+     * small enough to thrash on a font with spread-out glyph offsets; 32 KB
+     * keeps the glyph directory + locality hot per font at trivial RAM cost. */
+    #define LV_TINY_TTF_FILE_CACHE_SIZE (32 * 1024)
 #endif
 #define LV_USE_GIF 0
 #define LV_USE_BIN_DECODER 1
@@ -156,6 +168,26 @@
 #define LV_USE_QRCODE 0
 #define LV_USE_BARCODE 0
 #define LV_USE_TINY_TTF 1
+
+/*====================
+   IMAGE CACHE (trade RAM for CPU)
+====================*/
+/* Decoded-image cache in BYTES, shared by lodepng/tjpgd. Default 0 disables it,
+ * so every decoded icon ARGB is freed right after the draw — and with
+ * LV_LINUX_FBDEV_RENDER_MODE = FULL (forced because the sys-layer cursor
+ * smears on the tegra fb in PARTIAL mode) every frame re-decodes every visible
+ * icon from scratch. 32 MB holds the full UI icon set with room to spare: a
+ * full-screen RGB565 is 750 KB and an ARGB8888 decode is 1.5 MB, so this is
+ * negligible against free RAM but cuts the bulk of the per-frame CPU work that
+ * FULL mode otherwise piles on. (Does NOT help the pure-CPU choke points:
+ * NEON asm stays off — lv_blend_neon.S is 32-bit armv7a and won't assemble on
+ * aarch64 — and LV_DRAW_SW_DRAW_UNIT_CNT stays 1 due to the TinyTTF race; both
+ * are RAM-independent, see RENDERING above.) */
+#define LV_CACHE_DEF_SIZE (32 * 1024 * 1024)
+/* Image-header cache entries. Headers are a few bytes each; caching them skips
+ * re-reading the header bytes from disk on every draw of a cached image. Cheap,
+ * so set generously to cover the whole UI icon set. */
+#define LV_IMAGE_HEADER_CACHE_DEF_CNT 128
 
 /*====================
    THEMES
@@ -208,12 +240,24 @@
 ====================*/
 #define LV_USE_LINUX_DRM        1
 #define LV_USE_LINUX_FBDEV      1
-/* Repaint the whole framebuffer every frame. In the default PARTIAL mode the
- * sys-layer mouse cursor leaves a smeared trail: its previous position isn't
- * reliably repainted on the tegra framebuffer. FULL mode redraws everything
- * each frame so the old cursor pixels are always overwritten. force_refresh
- * (set in createDisplayFbdev) is documented as intended for FULL/DIRECT. */
+/* Render the whole screen into the draw buffer every frame. In PARTIAL mode
+ * the sys-layer mouse cursor leaves a smeared trail: its previous position
+ * isn't reliably repainted on the tegra framebuffer. FULL mode redraws
+ * everything each frame so the old cursor pixels are always overwritten by the
+ * full-frame copy to the fb. force_refresh (the FBIOPUT_VSCREENINFO vsync pan
+ * ioctl) is intentionally left FALSE in createDisplayFbdev: on the
+ * single-buffered tegrafb panel it shows as continuous full-screen flicker
+ * and wipes one-shot draws (e.g. splash wordmark) between frames. The full-frame
+ * memcpy that FULL mode already does is enough to keep the cursor crisp. */
 #define LV_LINUX_FBDEV_RENDER_MODE   LV_DISPLAY_RENDER_MODE_FULL
+/* Double draw buffer: the fbdev driver allocates a second full-screen buffer
+ * (see lv_linux_fbdev.c: LV_LINUX_FBDEV_BUFFER_COUNT == 2), letting LVGL start
+ * rendering frame N+1 into buffer B while frame N is still being flushed from
+ * buffer A. On the synchronous single-fb tegrafb path the flush is a blocking
+ * memcpy, so the win is partial (render overlaps the memcpy, not a vsync flip),
+ * but it does hide the rasterization time of the next frame behind the current
+ * frame's copy. Cost: one extra full-screen buffer. RGB565 800x480 -> ~750 KB. */
+#define LV_LINUX_FBDEV_BUFFER_COUNT  2
 #define LV_USE_TFT_ESPI         0
 #define LV_USE_EVDEV            1
 #define LV_USE_LIBINPUT         0

@@ -105,6 +105,17 @@ public:
     std::string Execute(const std::string &arguments_json) override;
 };
 
+/* Open a URL and read the page text through the gateway's /fetch endpoint
+ * (LightPanda CDP render on the VM, plain-fetch fallback) so the agent can
+ * read a search result instead of answering from snippets. The endpoint is
+ * derived from LIGHTPANDA_SEARCH_URL (".../search" -> ".../fetch"); set
+ * LIGHTPANDA_FETCH_URL to override. Same bearer token as web_search. */
+class WebOpenTool : public Tool {
+public:
+    WebOpenTool();
+    std::string Execute(const std::string &arguments_json) override;
+};
+
 /* Convenience: build the default registry used by the firmware. */
 std::shared_ptr<ToolRegistry> BuildDefaultToolRegistry();
 
