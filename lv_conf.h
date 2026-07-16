@@ -250,14 +250,12 @@
  * and wipes one-shot draws (e.g. splash wordmark) between frames. The full-frame
  * memcpy that FULL mode already does is enough to keep the cursor crisp. */
 #define LV_LINUX_FBDEV_RENDER_MODE   LV_DISPLAY_RENDER_MODE_FULL
-/* Double draw buffer: the fbdev driver allocates a second full-screen buffer
- * (see lv_linux_fbdev.c: LV_LINUX_FBDEV_BUFFER_COUNT == 2), letting LVGL start
- * rendering frame N+1 into buffer B while frame N is still being flushed from
- * buffer A. On the synchronous single-fb tegrafb path the flush is a blocking
- * memcpy, so the win is partial (render overlaps the memcpy, not a vsync flip),
- * but it does hide the rasterization time of the next frame behind the current
- * frame's copy. Cost: one extra full-screen buffer. RGB565 800x480 -> ~750 KB. */
-#define LV_LINUX_FBDEV_BUFFER_COUNT  2
+/* Keep one full-screen draw buffer on tegrafb. The fbdev driver's flush is a
+ * synchronous memcpy into one scanout buffer and calls flush_ready before it
+ * returns, so a second LVGL draw buffer cannot overlap rendering with flush.
+ * Single buffering also guarantees that an old and a new full frame cannot be
+ * selected alternately while the framebuffer is being refreshed. */
+#define LV_LINUX_FBDEV_BUFFER_COUNT  1
 #define LV_USE_TFT_ESPI         0
 #define LV_USE_EVDEV            1
 #define LV_USE_LIBINPUT         0

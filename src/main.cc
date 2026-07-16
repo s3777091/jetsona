@@ -19,7 +19,7 @@ int main(int /*argc*/, char ** /*argv*/) {
              JETSON_DISPLAY_WIDTH, JETSON_DISPLAY_HEIGHT, JETSON_DISPLAY_BACKEND);
 
     auto &app = Application::GetInstance();
-    app.Initialize();
+    if (!app.Initialize()) return EXIT_FAILURE;
     app.Run(); // never returns
     return 0;
 }

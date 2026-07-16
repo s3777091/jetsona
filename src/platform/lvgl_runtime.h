@@ -52,12 +52,15 @@ private:
     void openTouch();
     void openKeyboard();
     void openMouse();
+    bool acquireDisplayLease();
+    void releaseDisplayLease();
 
     lv_display_t *display_ = nullptr;
     lv_indev_t *pointer_ = nullptr;
     lv_indev_t *keyboard_ = nullptr;
     lv_indev_t *mouse_ = nullptr;
     lv_group_t *keypad_group_ = nullptr;
+    int display_lease_fd_ = -1;
     std::thread tick_thread_;
     std::thread handler_thread_;
     std::atomic<bool> running_{false};

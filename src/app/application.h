@@ -29,7 +29,7 @@ public:
     Application(const Application &) = delete;
     Application &operator=(const Application &) = delete;
 
-    void Initialize();
+    bool Initialize();
     void Run();
 
     DeviceState GetDeviceState() const { return state_; }

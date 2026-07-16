@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -10,6 +11,8 @@
 #include <fstream>
 #include <linux/input.h>
 #include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <vector>
 
@@ -299,6 +302,54 @@ LvglRuntime &LvglRuntime::Instance() {
 }
 
 LvglRuntime::~LvglRuntime() { Stop(); }
+
+bool LvglRuntime::acquireDisplayLease() {
+    if (display_lease_fd_ >= 0) return true;
+
+    /* FBDEV permits multiple processes to open and write /dev/fb0 at the same
+     * time. If the systemd service is still running while a developer launches
+     * another copy manually, both full-screen render loops race on the same
+     * scanout and the panel alternates between their independently configured
+     * wallpapers. An abstract Unix socket is a process-lifetime, system-wide
+     * lease: it needs no writable lock directory and the kernel removes it when
+     * the owner exits, including after a crash. DRM uses the same lease so all
+     * direct-display backends have consistent single-owner semantics. */
+    constexpr char kLeaseName[] = "jetson-fw-direct-display";
+    const int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        ESP_LOGE(TAG, "display lease socket failed: %s", strerror(errno));
+        return false;
+    }
+    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    static_assert(sizeof(kLeaseName) <= sizeof(address.sun_path),
+                  "display lease name is too long");
+    memcpy(address.sun_path + 1, kLeaseName, sizeof(kLeaseName) - 1);
+    const socklen_t address_len = static_cast<socklen_t>(
+        offsetof(sockaddr_un, sun_path) + 1 + sizeof(kLeaseName) - 1);
+    if (bind(fd, reinterpret_cast<const sockaddr *>(&address), address_len) != 0) {
+        if (errno == EADDRINUSE) {
+            ESP_LOGE(TAG,
+                     "display is already owned by another jetson_fw process; "
+                     "stop jetson-fw.service before running a manual copy");
+        } else {
+            ESP_LOGE(TAG, "display lease bind failed: %s", strerror(errno));
+        }
+        close(fd);
+        return false;
+    }
+
+    display_lease_fd_ = fd;
+    return true;
+}
+
+void LvglRuntime::releaseDisplayLease() {
+    if (display_lease_fd_ < 0) return;
+    close(display_lease_fd_);
+    display_lease_fd_ = -1;
+}
 
 lv_display_t *LvglRuntime::createDisplayDrm(int width, int height) {
     (void)width;
@@ -637,6 +688,10 @@ void LvglRuntime::openMouse() {
 }
 
 bool LvglRuntime::Init(int width, int height) {
+#if !defined(JETSON_DISPLAY_BACKEND_SDL) && !defined(JETSON_DISPLAY_BACKEND_WAYLAND)
+    if (!acquireDisplayLease()) return false;
+#endif
+
     lv_init();
 
 #if defined(JETSON_DISPLAY_BACKEND_SDL)
@@ -650,6 +705,7 @@ bool LvglRuntime::Init(int width, int height) {
 #endif
     if (!display_) {
         ESP_LOGE(TAG, "display creation failed");
+        releaseDisplayLease();
         return false;
     }
 
@@ -688,9 +744,11 @@ void LvglRuntime::StartHandler() {
 }
 
 void LvglRuntime::Stop() {
-    if (!running_.exchange(false)) return;
-    if (tick_thread_.joinable()) tick_thread_.join();
-    if (handler_thread_.joinable()) handler_thread_.join();
+    if (running_.exchange(false)) {
+        if (tick_thread_.joinable()) tick_thread_.join();
+        if (handler_thread_.joinable()) handler_thread_.join();
+    }
+    releaseDisplayLease();
 }
 
 } // namespace jetson

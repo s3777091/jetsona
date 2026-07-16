@@ -25,8 +25,13 @@ Application::~Application() {
     if (event_group_) xEventGroupDelete(event_group_);
 }
 
-void Application::Initialize() {
+bool Application::Initialize() {
     auto &board = Board::GetInstance();
+
+    if (!board.GetDisplay()) {
+        ESP_LOGE(TAG, "initialization aborted: no display owner");
+        return false;
+    }
 
     SetDeviceState(kDeviceStateStarting);
 
@@ -60,6 +65,7 @@ void Application::Initialize() {
     // Phase 1: no network/protocol. Go straight to idle.
     SetDeviceState(kDeviceStateIdle);
     ESP_LOGI(TAG, "Initialized (phase-1 UI shell)");
+    return true;
 }
 
 void Application::Run() {
