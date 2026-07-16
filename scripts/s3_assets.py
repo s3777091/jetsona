@@ -22,12 +22,12 @@ than ~15 minutes off. Instead of trusting the local clock we ask the server for
 its time (Date header) once at start and sign every request with that. The
 whole run is fast enough to stay inside the skew window.
 
-Configuration (read from environment; .env is sourced by build.sh / run.sh):
-  MINIO_ENDPOINT    e.g. https://s3.phuongdong.cloud   (required)
+Configuration (config.yaml and .env are loaded by the shell wrappers):
+  MINIO_ENDPOINT    e.g. https://s3.phuongdong.cloud   (config.yaml, required)
   MINIO_ACCESS_KEY                                  (required)
   MINIO_SECRET_KEY                                  (required)
-  MINIO_BUCKET      e.g. jetsona-assets              (default jetsona-assets)
-  MINIO_REGION      e.g. us-east-1                   (default us-east-1)
+  MINIO_BUCKET      e.g. jetsona-assets              (config.yaml)
+  MINIO_REGION      e.g. us-east-1                   (config.yaml)
   JETSON_ASSETS_DIR local assets dir                (default ./assets)
   ASSETS_S3_PREFIX   key prefix inside the bucket    (default "")
   ASSETS_VERBOSE    1 = print every skip/download    (default 1)
@@ -57,7 +57,7 @@ DEFAULT_ASSETS_DIR = "assets"
 def cfg():
     endpoint = os.environ.get("MINIO_ENDPOINT", "").rstrip("/")
     if not endpoint:
-        die("MINIO_ENDPOINT is not set. Source .env (see .env.example).")
+        die("MINIO_ENDPOINT is not set. Check config.yaml.")
     return {
         "endpoint": endpoint,
         "access_key": os.environ.get("MINIO_ACCESS_KEY", ""),
@@ -326,7 +326,7 @@ def _body_text(b):
 
 def _make_s3(c):
     if not c["access_key"] or not c["secret_key"]:
-        die("MINIO_ACCESS_KEY / MINIO_SECRET_KEY not set. Source .env.")
+        die("MINIO_ACCESS_KEY / MINIO_SECRET_KEY not set. Check .env.")
     return S3(c["endpoint"], c["access_key"], c["secret_key"], c["region"], c["bucket"])
 
 

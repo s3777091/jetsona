@@ -1,0 +1,59 @@
+OLLAMA_BASE_URL: "https://ollama.com/v1"
+OLLAMA_MODEL: "gemma4:31b"
+
+EXA_BASE_URL: "https://api.exa.ai"
+EXA_SEARCH_TYPE: "auto"
+
+RUNPOD_BASE_URL: "https://rest.runpod.io/v1"
+RUNPOD_GRAPHQL_URL: "https://api.runpod.io/graphql"
+JETSON_STUDIO_URL: ""
+
+MINIO_ENDPOINT: "https://s3.phuongdong.cloud"
+MINIO_BUCKET: "jetsona-assets"
+MINIO_REGION: "us-east-1"
+ASSETS_S3_PREFIX: ""
+ASSETS_VERBOSE: "1"
+ASSETS_FETCH_CLOUD_FONTS: "1"
+JETSON_FONT_CATALOG_OBJECT: "fonts/cloud/catalog.tsv"
+JETSON_S3_ASSET_HELPER: ""
+
+JETSON_WEATHER_LAT: "10.7769"
+JETSON_WEATHER_LON: "106.7009"
+JETSON_WEATHER_NAME: "TP.HCM"
+
+# Network and local paths.
+JETSON_VPN_EXIT_NODE: "jetsona-vpn"
+JETSON_FILES_HOME: ""
+JETSON_SETTINGS_FILE: ""
+
+# Display/input overrides. Empty device paths keep auto-detection enabled.
+JETSON_DISPLAY_BACKEND: "DRM"
+JETSON_DRM_CARD: "/dev/dri/card0"
+JETSON_FB_DEVICE: "/dev/fb0"
+JETSON_TOUCH_DEVICE: ""
+JETSON_KEYBOARD_DEVICE: ""
+JETSON_MOUSE_DEVICE: ""
+
+# Build behavior.
+JETSON_BUILD_DIR: ""
+BUILD_JOBS: "4"
+JETSON_SKIP_ASSET_FETCH: "0"
+
+# INA219 UPS/power monitor.
+INA219_BUS: "/dev/i2c-1"
+INA219_ADDR: "0x42"
+INA219_VMIN: "6.0"
+INA219_VMAX: "8.4"
+INA219_SHUNT: "0.1"
+
+# PS5 Remote Play (Chiaki).
+CHIAKI_BIN: ""
+PS_REMOTE_PLAY_HOME: "/var/lib/jetson-fw/chiaki"
+PS_REMOTE_PLAY_STATE_FILE: "/var/lib/jetson-fw/ps-remote-play.conf"
+PS_REMOTE_PLAY_AUDIO_DRIVER: "alsa"
+PS_REMOTE_PLAY_HW_DECODER: "software"
+PS_REMOTE_PLAY_RENDER_BACKEND: "vulkan"
+PS_REMOTE_PLAY_MAX_CLOCKS: "1"
+PS_REMOTE_PLAY_APPIMAGE_EXTRACT: "auto"
+PS_REMOTE_PLAY_PROBE_TIMEOUT: "5"
+PS_REMOTE_PLAY_WAKE_TIMEOUT: "25"

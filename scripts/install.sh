@@ -16,8 +16,10 @@ echo "==> Installing to /opt/jetson-fw"
 sudo mkdir -p /opt/jetson-fw
 sudo cp "$BUILD_DIR/jetson_fw" /opt/jetson-fw/
 sudo cp -r "$JETSON_DIR/assets" /opt/jetson-fw/
+sudo cp "$JETSON_DIR/config.yaml" /opt/jetson-fw/
 sudo mkdir -p /opt/jetson-fw/scripts
 sudo cp "$JETSON_DIR/scripts/s3_assets.py" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/config_loader.sh" /opt/jetson-fw/scripts/
 sudo chmod +x /opt/jetson-fw/scripts/s3_assets.py
 # Supervisor + bare-X launchers. Chromium and PS Remote Play each take the
 # panel while the framebuffer firmware is stopped; it restarts on app exit.
@@ -27,6 +29,7 @@ sudo cp "$JETSON_DIR/scripts/launch_ps_remote_play.sh" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/ps_remote_play_ctl.sh" /opt/jetson-fw/scripts/
 sudo chmod +x \
     /opt/jetson-fw/scripts/jetson_fw_run.sh \
+    /opt/jetson-fw/scripts/config_loader.sh \
     /opt/jetson-fw/scripts/launch_chromium.sh \
     /opt/jetson-fw/scripts/launch_ps_remote_play.sh \
     /opt/jetson-fw/scripts/ps_remote_play_ctl.sh

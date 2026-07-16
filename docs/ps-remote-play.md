@@ -10,12 +10,13 @@ PS5 bằng `chiaki-ng`.
 1. Trên PS5, bật `Settings > System > Remote Play > Enable Remote Play`.
 2. Nếu muốn đánh thức máy từ Rest Mode, bật cả `Stay Connected to the Internet`
    và `Enable Turning on PS5 from Network` trong `Power Saving`.
-3. Mở app drawer, chọn icon **Trò chơi**.
+3. Mở app drawer, chọn icon **Trò chơi**, nhập địa chỉ IPv4 của PS5 và chọn
+   cấu hình phát.
 4. Chọn **Đăng ký / Thiết lập**. Firmware nhường hẳn framebuffer cho Xorg và
    giao diện đăng ký chính thức của `chiaki-ng`. Trên PS5, mở
    `Remote Play > Link Device`, rồi nhập mã hiển thị vào Chiaki.
-5. Thoát Chiaki để quay lại DS-02. Mở **Trò chơi**, nhập địa chỉ IPv4 của PS5,
-   bấm **Kiểm tra**, chọn cấu hình và bấm **Chơi ngay**.
+5. Thoát Chiaki để quay lại DS-02. Mở lại **Trò chơi**, bấm **Kiểm tra** rồi
+   chọn **Chơi ngay**.
 
 Địa chỉ IPv4 của PS5 nằm tại
 `Settings > System > System Software > Console Information`. Nên đặt DHCP
@@ -49,8 +50,9 @@ Có thể chỉ định đường dẫn khác trong `/opt/jetson-fw/.env`:
 ```bash
 CHIAKI_BIN=/opt/chiaki-ng/chiaki-ng.AppImage
 PS_REMOTE_PLAY_AUDIO_DRIVER=alsa
-PS_REMOTE_PLAY_PERFORMANCE_MODE=1
 PS_REMOTE_PLAY_HW_DECODER=software
+PS_REMOTE_PLAY_RENDER_BACKEND=vulkan
+PS_REMOTE_PLAY_MAX_CLOCKS=1
 ```
 
 Các gói nền cần cho chế độ bare-X:
@@ -92,7 +94,7 @@ app Trò chơi -> dừng thread LVGL -> thoát firmware (43/44)
 ```
 
 Như vậy RAM/CPU/GPU của Chromium, desktop shell và firmware không cạnh tranh
-với phiên stream. Khi `PS_REMOTE_PLAY_PERFORMANCE_MODE=1`, launcher dùng
+với phiên stream. Khi `PS_REMOTE_PLAY_MAX_CLOCKS=1`, launcher dùng
 `jetson_clocks` theo kiểu best-effort trong thời gian chơi và khôi phục khi
 Chiaki thoát. Lệnh vẫn nằm trong power mode hiện tại; cần tản nhiệt và nguồn
 5 V ổn định.

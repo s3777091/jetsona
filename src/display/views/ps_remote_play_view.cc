@@ -655,7 +655,7 @@ void PsRemotePlayView::UpdateUi() {
     if (runtime_detail_) lv_label_set_text(runtime_detail_, runtime.c_str());
 
     if (configure_btn_label_) {
-        const char *text = !installed_ ? "Cài / Thiết lập"
+        const char *text = !installed_ ? "Cần cài Chiaki"
                            : !registered_ ? "Đăng ký PS5"
                                           : "Thiết lập lại";
         lv_label_set_text(configure_btn_label_, text);
@@ -771,16 +771,18 @@ void PsRemotePlayView::ProbeHost() {
 
 void PsRemotePlayView::SaveThenLaunch(bool configure) {
     if (busy_) return;
+    if (!installed_) {
+        SetActionStatus("Chưa cài chiaki-ng ARM64 · xem hướng dẫn cài đặt", true);
+        return;
+    }
     std::string canonical;
     if (!CanonicalIpv4(host_, canonical)) {
         SetActionStatus("Hãy nhập IPv4 hợp lệ trước khi tiếp tục", true);
         OpenHostModal();
         return;
     }
-    if (!configure && (!installed_ || !registered_)) {
-        SetActionStatus(!installed_ ? "Cần cài và thiết lập chiaki-ng trước"
-                                    : "Cần đăng ký PS5 trước khi Chơi ngay",
-                        true);
+    if (!configure && !registered_) {
+        SetActionStatus("Cần đăng ký PS5 trước khi Chơi ngay", true);
         return;
     }
 

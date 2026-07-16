@@ -227,6 +227,8 @@ add_custom_command(TARGET jetson_fw POST_BUILD
 # ----------------------------------------------------------------------------
 install(TARGETS jetson_fw RUNTIME DESTINATION /opt/jetson-fw)
 install(DIRECTORY assets DESTINATION /opt/jetson-fw)
-install(PROGRAMS scripts/s3_assets.py DESTINATION /opt/jetson-fw/scripts)
+install(FILES config.yaml DESTINATION /opt/jetson-fw)
+install(PROGRAMS scripts/s3_assets.py scripts/config_loader.sh
+        DESTINATION /opt/jetson-fw/scripts)
 install(PROGRAMS scripts/jetson-fw.service DESTINATION /etc/systemd/system OPTIONAL)
 message(STATUS "jetson_fw: backend=${JETSON_DISPLAY_BACKEND} ${JETSON_DISPLAY_WIDTH}x${JETSON_DISPLAY_HEIGHT}")

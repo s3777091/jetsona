@@ -10,8 +10,8 @@
 # only if the local file is missing or its size differs. Rebuilds after the
 # first download just re-check and touch nothing (instant, no re-download).
 #
-# Credentials come from .env (gitignored). If .env is missing the script still
-# works as long as MINIO_* are already in the environment.
+# MinIO setup comes from config.yaml; credentials come from .env (gitignored).
+# Explicit environment variables still take priority over both files.
 #
 # Offline-tolerant: if the fetch fails (no network / server down) but assets
 # are already present locally, we warn and exit 0 so a cached rebuild works
@@ -21,17 +21,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JETSON_DIR="$(dirname "$SCRIPT_DIR")"
-ASSETS_DIR="${JETSON_ASSETS_DIR:-$JETSON_DIR/assets}"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/config_loader.sh"
+jetson_load_config "${JETSON_CONFIG_FILE:-$JETSON_DIR/config.yaml}"
+jetson_load_secrets "${JETSON_ENV_FILE:-$JETSON_DIR/.env}"
 
-# Source .env if present so MINIO_* (endpoint, creds, bucket) are exported.
-# Missing .env is fine if the vars are already in the environment.
-ENV_FILE="$JETSON_DIR/.env"
-if [ -f "$ENV_FILE" ]; then
-    set -a
-    # shellcheck disable=SC1091
-    . "$ENV_FILE"
-    set +a
-fi
+ASSETS_DIR="${JETSON_ASSETS_DIR:-$JETSON_DIR/assets}"
 
 PY="${PYTHON:-}"
 # Find a working python interpreter. On the Jetson `python3` is real; on some
@@ -76,6 +71,7 @@ if [ "$AFTER" -gt 0 ]; then
 fi
 
 echo "fetch_assets.sh: asset fetch failed (rc=$RC) and no assets are cached." >&2
-echo "  Check MINIO_ENDPOINT / MINIO_ACCESS_KEY / MINIO_SECRET_KEY / MINIO_BUCKET in .env" >&2
+echo "  Check MINIO_ENDPOINT / MINIO_BUCKET in config.yaml and" >&2
+echo "  MINIO_ACCESS_KEY / MINIO_SECRET_KEY in .env" >&2
 echo "  and that the MinIO server is reachable." >&2
 exit "$RC"

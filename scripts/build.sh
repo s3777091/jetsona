@@ -7,6 +7,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JETSON_DIR="$(dirname "$SCRIPT_DIR")"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/config_loader.sh"
+jetson_load_config "${JETSON_CONFIG_FILE:-$JETSON_DIR/config.yaml}"
+
 BUILD_DIR="${JETSON_BUILD_DIR:-$JETSON_DIR/build}"
 BACKEND="${JETSON_DISPLAY_BACKEND:-DRM}"
 BUILD_JOBS="${BUILD_JOBS:-4}"

@@ -95,21 +95,19 @@ private:
     Op op_;
 };
 
-/* Web search via an external HTTP gateway (e.g. a Lightpanda-backed gateway
- * on the VM). GET {LIGHTPANDA_SEARCH_URL}?q=<query> with an optional bearer
- * token (LIGHTPANDA_SEARCH_TOKEN). Returns a compact text digest of results.
- * If LIGHTPANDA_SEARCH_URL is empty, returns "web search chua cau hinh". */
+/* Web search via the Exa API (https://api.exa.ai/search, header x-api-key =
+ * EXA_API_KEY). One call returns results WITH focused ~500-char highlights,
+ * so the model can usually answer directly. Search mode defaults to "fast"
+ * (EXA_SEARCH_TYPE overrides). Empty EXA_API_KEY -> config-error string. */
 class WebSearchTool : public Tool {
 public:
     WebSearchTool();
     std::string Execute(const std::string &arguments_json) override;
 };
 
-/* Open a URL and read the page text through the gateway's /fetch endpoint
- * (LightPanda CDP render on the VM, plain-fetch fallback) so the agent can
- * read a search result instead of answering from snippets. The endpoint is
- * derived from LIGHTPANDA_SEARCH_URL (".../search" -> ".../fetch"); set
- * LIGHTPANDA_FETCH_URL to override. Same bearer token as web_search. */
+/* Open a URL and read its text via Exa /contents (same EXA_API_KEY), for
+ * when the web_search excerpt is not enough. Returns title + up to ~4000
+ * chars of page text. */
 class WebOpenTool : public Tool {
 public:
     WebOpenTool();

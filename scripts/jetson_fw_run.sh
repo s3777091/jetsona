@@ -25,6 +25,11 @@ KIOSK=/opt/jetson-fw/scripts/launch_chromium.sh
 PS_REMOTE=/opt/jetson-fw/scripts/launch_ps_remote_play.sh
 LOG=/var/log/jetson-fw.log
 
+# shellcheck disable=SC1091
+. /opt/jetson-fw/scripts/config_loader.sh
+jetson_load_config "${JETSON_CONFIG_FILE:-/opt/jetson-fw/config.yaml}"
+jetson_load_secrets "${JETSON_ENV_FILE:-/opt/jetson-fw/.env}"
+
 # Tells the firmware a supervisor is watching: drawer apps may use their exit
 # code hand-offs. Without this, legacy Chromium launch falls back in-process.
 export JETSON_FW_SUPERVISED=1

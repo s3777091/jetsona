@@ -7,7 +7,6 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/jetson-fw
 ExecStart=/opt/jetson-fw/scripts/jetson_fw_run.sh
-EnvironmentFile=-/opt/jetson-fw/.env
 Restart=on-failure
 RestartSec=3
 # DRM/KMS needs root or the 'video'/'render' groups.

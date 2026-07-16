@@ -7,6 +7,14 @@
 #   sudo TS_AUTHKEY=tskey-auth-... bash setup-tailscale-exit-node.sh
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JETSON_DIR="$(dirname "$SCRIPT_DIR")"
+if [ -r "$SCRIPT_DIR/config_loader.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/config_loader.sh"
+    jetson_load_config "${JETSON_CONFIG_FILE:-$JETSON_DIR/config.yaml}"
+fi
+
 if [ "$(id -u)" -ne 0 ]; then
     echo "Run this script as root (sudo bash $0)." >&2
     exit 1

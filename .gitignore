@@ -56,7 +56,7 @@ jetson.tar.gz
 # --- Runtime assets (data) ---
 # Assets are NOT in git. They are fetched from MinIO (S3) at build time by
 # scripts/fetch_assets.sh -> scripts/s3_assets.py (idempotent: skips files
-# already present). See .env.example for MINIO_* config. Never commit
+# already present). See config.yaml for setup and .env.example for credentials. Never commit
 # binaries / large data into the repo.
 /assets/
 /assets/**

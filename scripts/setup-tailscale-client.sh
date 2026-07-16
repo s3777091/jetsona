@@ -7,6 +7,14 @@
 #   sudo TS_AUTHKEY=tskey-auth-... bash scripts/setup-tailscale-client.sh
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JETSON_DIR="$(dirname "$SCRIPT_DIR")"
+if [ -r "$SCRIPT_DIR/config_loader.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/config_loader.sh"
+    jetson_load_config "${JETSON_CONFIG_FILE:-$JETSON_DIR/config.yaml}"
+fi
+
 if [ "$(id -u)" -ne 0 ]; then
     echo "Run this script as root (sudo bash $0)." >&2
     exit 1
@@ -37,5 +45,5 @@ fi
 echo
 echo "Jetson Tailscale client is ready. The firmware VPN toggle will select:"
 echo "  $EXIT_NODE"
-echo "Make sure .env contains: JETSON_VPN_EXIT_NODE=$EXIT_NODE"
+echo "Make sure config.yaml contains: JETSON_VPN_EXIT_NODE: \"$EXIT_NODE\""
 echo "Do not select the exit node here; the Settings toggle owns that preference."

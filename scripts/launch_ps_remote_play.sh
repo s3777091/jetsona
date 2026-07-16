@@ -5,6 +5,13 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JETSON_DIR="$(dirname "$SCRIPT_DIR")"
+if [ -r "$SCRIPT_DIR/config_loader.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/config_loader.sh"
+    jetson_load_config "${JETSON_CONFIG_FILE:-$JETSON_DIR/config.yaml}"
+fi
+
 CTL="$SCRIPT_DIR/ps_remote_play_ctl.sh"
 if [ ! -r "$CTL" ]; then
     echo "launch_ps_remote_play: missing $CTL" >&2
@@ -59,9 +66,10 @@ if [ "$MODE" = "stream" ]; then
     fi
 
     psrp_find_registration
-    if [ -z "$PSRP_NICKNAME" ]; then
+    # Always use the exact nickname found in the active Chiaki profile. A stale
+    # optional nickname in our state file must not make direct streaming fail.
+    [ -z "$PSRP_REGISTERED_NICKNAME" ] || \
         PSRP_NICKNAME="$PSRP_REGISTERED_NICKNAME"
-    fi
     if [ "$PSRP_REGISTERED" -eq 0 ] || [ -z "$PSRP_NICKNAME" ]; then
         echo "launch_ps_remote_play: no registered PS5 was found; run setup first" >&2
         exit 2
@@ -75,6 +83,9 @@ if [ "$MODE" = "stream" ]; then
         [[ "$PSRP_CLI_OUTPUT" != *--exit-app-on-stream-exit* ]]; then
         supports_exit_flag=0
     fi
+    # Positional CLI commands do not automatically switch to current_profile.
+    # QCommandLineParser also requires every option to precede `stream`.
+    [ -z "$PSRP_PROFILE" ] || CLIENT_ARGS+=(--profile "$PSRP_PROFILE")
     [ "$supports_exit_flag" -eq 0 ] || CLIENT_ARGS+=(--exit-app-on-stream-exit)
     CLIENT_ARGS+=(--fullscreen)
     if [ -n "$PSRP_PASSCODE" ]; then

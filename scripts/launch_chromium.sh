@@ -12,6 +12,14 @@
 # default /etc/X11/xorg.conf is reused as-is.
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JETSON_DIR="$(dirname "$SCRIPT_DIR")"
+if [ -r "$SCRIPT_DIR/config_loader.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/config_loader.sh"
+    jetson_load_config "${JETSON_CONFIG_FILE:-$JETSON_DIR/config.yaml}"
+fi
+
 HOME_URL="${CHROMIUM_HOME_URL:-https://www.google.com}"
 # One-shot start URL written by the firmware right before the kiosk hand-off
 # (the exit-42 path goes through the supervisor, so the firmware's environment

@@ -22,6 +22,7 @@ PSRP_APPIMAGE_EXTRACT=0
 PSRP_CLI_OUTPUT=""
 PSRP_DEFAULT_CONFIG=""
 PSRP_ACTIVE_CONFIG=""
+PSRP_PROFILE=""
 PSRP_REGISTERED=0
 PSRP_REGISTERED_NICKNAME=""
 PSRP_REGIST_KEY=""
@@ -270,6 +271,7 @@ psrp_select_configs()
         done
     fi
     PSRP_ACTIVE_CONFIG=""
+    PSRP_PROFILE=""
 
     [ -r "$PSRP_DEFAULT_CONFIG" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
@@ -289,6 +291,7 @@ psrp_select_configs()
 
     if [ -n "$profile" ] && [ "${#profile}" -le 96 ] &&
         [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9._\ -]*$ ]]; then
+        PSRP_PROFILE="$profile"
         PSRP_ACTIVE_CONFIG="$(dirname "$PSRP_DEFAULT_CONFIG")/Chiaki-$profile.conf"
     fi
 }
@@ -304,12 +307,16 @@ psrp_decode_qsettings_text()
 
 psrp_find_registration()
 {
-    local line value config
+    local line value config first_nickname="" preferred_nickname=""
+    local list_args=()
     PSRP_REGISTERED=0
     PSRP_REGISTERED_NICKNAME=""
 
+    psrp_select_configs
+    [ -z "$PSRP_PROFILE" ] || list_args+=(--profile "$PSRP_PROFILE")
     if [ "${#PSRP_CHIAKI[@]}" -gt 0 ]; then
-        psrp_capture_cli "${PS_REMOTE_PLAY_LIST_TIMEOUT:-5}" list || true
+        psrp_capture_cli "${PS_REMOTE_PLAY_LIST_TIMEOUT:-5}" \
+            "${list_args[@]}" list || true
         while IFS= read -r line; do
             line="${line%$'\r'}"
             case "$line" in
@@ -319,15 +326,18 @@ psrp_find_registration()
                     value="${value%${value##*[![:space:]]}}"
                     if [ -n "$value" ] && psrp_valid_text "$value" 128; then
                         PSRP_REGISTERED=1
-                        PSRP_REGISTERED_NICKNAME="$value"
-                        break
+                        [ -n "$first_nickname" ] || first_nickname="$value"
+                        if [ -n "$PSRP_NICKNAME" ] && [ "$value" = "$PSRP_NICKNAME" ]; then
+                            preferred_nickname="$value"
+                            break
+                        fi
                     fi
                     ;;
             esac
         done <<< "$PSRP_CLI_OUTPUT"
+        PSRP_REGISTERED_NICKNAME="${preferred_nickname:-$first_nickname}"
     fi
 
-    psrp_select_configs
     for config in "$PSRP_ACTIVE_CONFIG" "$PSRP_DEFAULT_CONFIG"; do
         [ -r "$config" ] || continue
         while IFS= read -r line || [ -n "$line" ]; do
@@ -612,8 +622,8 @@ psrp_cmd_status()
     psrp_resolve_chiaki && installed=1
     psrp_find_registration
     registered="$PSRP_REGISTERED"
-    nickname="$PSRP_NICKNAME"
-    [ -n "$nickname" ] || nickname="$PSRP_REGISTERED_NICKNAME"
+    nickname="$PSRP_REGISTERED_NICKNAME"
+    [ -n "$nickname" ] || nickname="$PSRP_NICKNAME"
     psrp_controller_present && controller=1
     network="$(psrp_network_type)"
 

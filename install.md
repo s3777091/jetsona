@@ -87,6 +87,8 @@ ls        # phải thấy CMakeLists.txt, src/, assets/, scripts/, third_party/
 Trong folder `~/work/jetson`:
 ```bash
 chmod +x scripts/*.sh
+cp .env.example .env         # chỉ điền API key/token/credential cần dùng
+# chỉnh các URL/model/path/hardware trong config.yaml
 ./scripts/fetch_deps.sh        # cài thư viện build + clone LVGL (~5-10 phút)
 bash ./scripts/build.sh        # tự tìm đúng CMakeLists.txt rồi build (~3-5 phút)
 ```
@@ -94,7 +96,7 @@ bash ./scripts/build.sh        # tự tìm đúng CMakeLists.txt rồi build (~3
 Xong có file `~/work/jetson/build/jetson_fw`. **Paste bất kỳ lỗi compiler nào ra để sửa.**
 
 > Có thể gọi script bằng đường dẫn tuyệt đối từ bất kỳ thư mục nào, ví dụ
-> `bash ~/xiaozhi-esp32-server/scripts/build.sh`. Không chạy `cmake .` hoặc
+> `bash ~/work/jetson/scripts/build.sh`. Không chạy `cmake .` hoặc
 > `cmake ..` tại `~`, vì CMake sẽ tìm nhầm `CMakeLists.txt` trong thư mục home.
 
 ---
@@ -103,8 +105,8 @@ Xong có file `~/work/jetson/build/jetson_fw`. **Paste bất kỳ lỗi compiler
 
 **Chạy thử** (chưa cài, chỉ xem UI có lên không):
 ```bash
-cd ~/work/jetson/build
-sudo ./jetson_fw
+cd ~/work/jetson
+sudo ./run.sh
 ```
 → Màn hình HDMI hiện UI DS-02 (wallpaper + đồng hồ + dock). Touch thử nút dock. Ctrl+C để thoát.
 
@@ -136,7 +138,7 @@ Rebuild khi sửa code: build lại rồi `sudo ./scripts/install.sh` lần nữ
 3. Boot Jetson + setup (màn to + phím + mạng).
 4. Nén + copy `jetson/` sang Jetson qua USB.
 5. `fetch_deps.sh` → `cmake` → `make`.
-6. `sudo ./jetson_fw` chạy thử → `install.sh` cài kiosk.
+6. `sudo ./run.sh` chạy thử → `install.sh` cài kiosk.
 
 ---
 

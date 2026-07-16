@@ -35,27 +35,50 @@ std::string Jstring(const json &j, const char *key, const std::string &def = "")
     return def;
 }
 
-std::string UrlEncode(const std::string &s) {
-    std::string out;
-    out.reserve(s.size() * 3);
-    static const char *hex = "0123456789ABCDEF";
-    for (unsigned char c : s) {
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-            || c == '-' || c == '_' || c == '.' || c == '~') {
-            out.push_back((char)c);
-        } else {
-            out.push_back('%');
-            out.push_back(hex[c >> 4]);
-            out.push_back(hex[c & 15]);
-        }
-    }
-    return out;
-}
-
 size_t CurlWriteCb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     auto *out = static_cast<std::string *>(userdata);
     out->append(ptr, size * nmemb);
     return size * nmemb;
+}
+
+/* POST {EXA_BASE_URL}{path} with x-api-key auth. Returns "" and fills `resp`
+ * on success, otherwise an "ERROR: ..." string ready to hand to the model. */
+std::string ExaPost(const std::string &path, const json &body, std::string &resp) {
+    std::string key = StrEnv("EXA_API_KEY", "");
+    if (key.empty()) return "ERROR: chua cau hinh EXA_API_KEY trong .env";
+    std::string base_url = StrEnv("EXA_BASE_URL", "https://api.exa.ai");
+    while (!base_url.empty() && base_url.back() == '/') base_url.pop_back();
+    const std::string url = base_url + path;
+    const std::string payload = body.dump();
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return "ERROR: curl init";
+    struct curl_slist *headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    std::string auth = "x-api-key: " + key;
+    headers = curl_slist_append(headers, auth.c_str());
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    // Let libcurl negotiate gzip/brotli when available. Search responses are
+    // JSON-heavy, so compression materially reduces traffic on the Jetson.
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    CURLcode rc = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (rc != CURLE_OK) return std::string("ERROR: ") + curl_easy_strerror(rc);
+    if (http_code < 200 || http_code >= 300)
+        return "ERROR: HTTP " + std::to_string(http_code) + " " + resp.substr(0, 160);
+    return "";
 }
 } // namespace
 
@@ -276,38 +299,20 @@ std::string WebSearchTool::Execute(const std::string &args_json) {
     std::string query = Jstring(a, "query");
     if (query.empty()) return "ERROR: thieu query";
 
-    std::string base = StrEnv("LIGHTPANDA_SEARCH_URL", "");
-    if (base.empty()) return "web search chua cau hinh (LIGHTPANDA_SEARCH_URL).";
-    std::string token = StrEnv("LIGHTPANDA_SEARCH_TOKEN", "");
+    // One Exa call returns results WITH focused highlights, so the model
+    // usually answers without a second hop. "fast" keeps latency/cost low
+    // on the panel; override with EXA_SEARCH_TYPE (auto/deep/...) if needed.
+    json body;
+    body["query"] = query;
+    body["numResults"] = 5;
+    body["type"] = StrEnv("EXA_SEARCH_TYPE", "fast");
+    body["contents"]["highlights"]["maxCharacters"] = 500;
 
-    std::string url = base;
-    url += (url.find('?') == std::string::npos ? "?" : "&");
-    url += "q=" + UrlEncode(query);
-
-    CURL *curl = curl_easy_init();
-    if (!curl) return "ERROR: curl init";
     std::string resp;
-    struct curl_slist *headers = nullptr;
-    if (!token.empty()) {
-        std::string auth = "Authorization: Bearer " + token;
-        headers = curl_slist_append(headers, auth.c_str());
-    }
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 40L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) return std::string("ERROR: ") + curl_easy_strerror(rc);
-    if (http_code < 200 || http_code >= 300) return "ERROR: HTTP " + std::to_string(http_code) + " " + resp.substr(0, 160);
+    std::string fail = ExaPost("/search", body, resp);
+    if (!fail.empty()) return fail;
 
-    // Expect JSON: {"results":[{"title","url","snippet"}]}
+    // Expect JSON: {"results":[{"title","url","highlights","publishedDate"}]}
     try {
         auto j = json::parse(resp);
         auto &arr = j["results"];
@@ -316,16 +321,26 @@ std::string WebSearchTool::Execute(const std::string &args_json) {
             int n = 0;
             for (auto &r : arr) {
                 if (++n > 5) break;
-                out += std::to_string(n) + ". " + r.value("title", std::string()) +
-                       "\n   " + r.value("snippet", std::string()) +
-                       "\n   " + r.value("url", std::string()) + "\n";
+                out += std::to_string(n) + ". " + r.value("title", std::string());
+                std::string date = r.value("publishedDate", std::string());
+                if (date.size() >= 10) out += " (" + date.substr(0, 10) + ")";
+                std::string excerpt;
+                if (r.contains("highlights") && r["highlights"].is_array()) {
+                    for (const auto &highlight : r["highlights"]) {
+                        if (!highlight.is_string()) continue;
+                        if (!excerpt.empty()) excerpt += " ";
+                        excerpt += highlight.get<std::string>();
+                    }
+                }
+                // Be tolerant of API-compatible proxies returning full text.
+                if (excerpt.empty()) excerpt = r.value("text", std::string());
+                if (!excerpt.empty()) out += "\n   " + excerpt;
+                out += "\n   " + r.value("url", std::string()) + "\n";
             }
             return out;
         }
-        // Maybe a direct text field.
-        if (j.contains("text")) return j["text"].get<std::string>();
     } catch (...) {
-        // not JSON — return raw text truncated
+        // not JSON — fall through to raw text
     }
     if (resp.empty()) return "ERROR: khong co ket qua";
     return resp.substr(0, 1200);
@@ -336,7 +351,7 @@ std::string WebSearchTool::Execute(const std::string &args_json) {
 WebOpenTool::WebOpenTool()
     : Tool("web_open",
            "Mo mot URL (thuong tu ket qua web_search) va doc noi dung trang duoi dang text. "
-           "Dung khi can chi tiet thay vi chi snippet.",
+           "Dung khi can chi tiet thay vi chi doan trich.",
            R"({"type":"object","properties":{"url":{"type":"string","description":"URL http(s) can doc"}},"required":["url"]})") {}
 
 std::string WebOpenTool::Execute(const std::string &args_json) {
@@ -346,62 +361,33 @@ std::string WebOpenTool::Execute(const std::string &args_json) {
     if (page_url.rfind("http://", 0) != 0 && page_url.rfind("https://", 0) != 0)
         return "ERROR: url phai bat dau bang http(s)://";
 
-    // Same gateway as web_search; /fetch lives next to /search.
-    std::string fetch_url = StrEnv("LIGHTPANDA_FETCH_URL", "");
-    if (fetch_url.empty()) {
-        std::string base = StrEnv("LIGHTPANDA_SEARCH_URL", "");
-        if (base.empty()) return "web_open chua cau hinh (LIGHTPANDA_SEARCH_URL).";
-        const std::string suffix = "/search";
-        if (base.size() >= suffix.size() &&
-            base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0)
-            base.erase(base.size() - suffix.size());
-        while (!base.empty() && base.back() == '/') base.pop_back();
-        fetch_url = base + "/fetch";
-    }
-    std::string token = StrEnv("LIGHTPANDA_SEARCH_TOKEN", "");
+    json body;
+    body["urls"] = json::array({page_url});
+    // Bounded: the LLM context is small.
+    body["text"]["maxCharacters"] = 4000;
 
-    std::string url = fetch_url;
-    url += (url.find('?') == std::string::npos ? "?" : "&");
-    url += "url=" + UrlEncode(page_url);
-
-    CURL *curl = curl_easy_init();
-    if (!curl) return "ERROR: curl init";
     std::string resp;
-    struct curl_slist *headers = nullptr;
-    if (!token.empty()) {
-        std::string auth = "Authorization: Bearer " + token;
-        headers = curl_slist_append(headers, auth.c_str());
-    }
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
-    // The gateway may drive a browser render + fallback fetch: allow longer
-    // than web_search before giving up.
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 90L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) return std::string("ERROR: ") + curl_easy_strerror(rc);
-    if (http_code < 200 || http_code >= 300)
-        return "ERROR: HTTP " + std::to_string(http_code) + " " + resp.substr(0, 160);
+    std::string fail = ExaPost("/contents", body, resp);
+    if (!fail.empty()) return fail;
 
-    // Expect JSON: {"url","source","title","text"}
+    // Expect JSON: {"results":[{"url","title","text"}],"statuses":[...]}
     try {
         auto j = json::parse(resp);
-        std::string title = j.value("title", std::string());
-        std::string text = j.value("text", std::string());
-        if (text.empty()) return "ERROR: trang khong co noi dung doc duoc";
-        // Keep the tool reply bounded; the LLM context is small.
-        if (text.size() > 4000) text = text.substr(0, 4000) + "\n[...cat bot...]";
-        std::string out;
-        if (!title.empty()) out += "Tieu de: " + title + "\n\n";
-        out += text;
-        return out;
+        auto &arr = j["results"];
+        if (arr.is_array() && !arr.empty()) {
+            const auto &r = arr.at(0);
+            std::string title = r.value("title", std::string());
+            std::string text = r.value("text", std::string());
+            if (text.empty()) return "ERROR: trang khong co noi dung doc duoc";
+            std::string out;
+            if (!title.empty()) out += "Tieu de: " + title + "\n\n";
+            out += text;
+            return out;
+        }
+        // No result: surface Exa's per-URL status if present.
+        if (j.contains("statuses") && j["statuses"].is_array() && !j["statuses"].empty())
+            return "ERROR: khong doc duoc trang (" +
+                   j["statuses"].at(0).value("status", std::string("error")) + ")";
     } catch (...) {}
     if (resp.empty()) return "ERROR: khong co noi dung";
     return resp.substr(0, 4000);

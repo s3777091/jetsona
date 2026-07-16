@@ -1,28 +1,26 @@
 #!/bin/bash
-# Run the Jetson DS-02 firmware with config from .env (gitignored).
-# Source .env, export every KEY=VALUE, then exec the binary.
+# Run the Jetson DS-02 firmware with setup from config.yaml and secrets from
+# .env (gitignored), then exec the binary.
 # Usage: ./run.sh            (uses default backend DRM)
 #        ./run.sh --sdl       (SDL backend, for debugging without the panel)
 #
-# The firmware reads OLLAMA_* / LIGHTPANDA_* from its process environment
-# (LlmClient + WebSearchTool). .env holds them so they never enter git.
+# Explicit environment variables override config.yaml, which is useful for
+# one-off display/backend debugging.
 
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-ENV_FILE="$HERE/.env"
-if [ ! -f "$ENV_FILE" ]; then
-    echo "run.sh: $ENV_FILE not found. Copy .env.example to .env and fill it in." >&2
-    exit 1
-fi
+# shellcheck disable=SC1091
+. "$HERE/scripts/config_loader.sh"
+jetson_load_config "${JETSON_CONFIG_FILE:-$HERE/config.yaml}"
+jetson_load_secrets "${JETSON_ENV_FILE:-$HERE/.env}"
 
-# `set -a` makes every subsequent variable assignment an export, so sourcing
-# .env exports all KEY=VALUE lines into the environment.
-set -a
-. "$ENV_FILE"
-set +a
-
-BIN="$HERE/build/jetson_fw"
+BUILD_DIR="${JETSON_BUILD_DIR:-$HERE/build}"
+case "$BUILD_DIR" in
+    /*) ;;
+    *) BUILD_DIR="$HERE/$BUILD_DIR" ;;
+esac
+BIN="${JETSON_FW_BIN:-$BUILD_DIR/jetson_fw}"
 if [ ! -x "$BIN" ]; then
     echo "run.sh: $BIN not found. Build first:" >&2
     echo "  bash $HERE/scripts/build.sh" >&2
@@ -37,5 +35,7 @@ if [ "$1" = "--sdl" ]; then
     export SDL_VIDEODRIVER
 fi
 
-echo "run.sh: launching $BIN (model=${OLLAMA_MODEL:-unset}, websearch=${LIGHTPANDA_SEARCH_URL:-off})"
+WEBSEARCH=off
+[ -n "${EXA_API_KEY:-}" ] && WEBSEARCH="exa:${EXA_SEARCH_TYPE:-fast}"
+echo "run.sh: launching $BIN (model=${OLLAMA_MODEL:-unset}, websearch=$WEBSEARCH)"
 exec "$BIN" "$@"
