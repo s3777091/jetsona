@@ -531,8 +531,8 @@ void CalendarView::OpenDayModal(int day) {
     lv_label_set_text(popup_title_, "Mới");
     make_header_button(LV_SYMBOL_OK, OnAddTask, p.accent);
 
-    // Segmented control from the reference. The calendar stores both choices
-    // as reminders; the labels communicate the familiar event-creation flow.
+    // Event/reminder segmented control. Both entry kinds use the same calendar
+    // task store, but the active kind changes the editor copy and save result.
     auto *segments = lv_obj_create(popup_card_);
     lv_obj_remove_style_all(segments);
     lv_obj_set_size(segments, 300, 34);
@@ -543,22 +543,29 @@ void CalendarView::OpenDayModal(int day) {
     lv_obj_set_style_pad_column(segments, 3, 0);
     lv_obj_set_flex_flow(segments, LV_FLEX_FLOW_ROW);
     lv_obj_clear_flag(segments, LV_OBJ_FLAG_SCROLLABLE);
-    auto make_segment = [&](const char *text, bool selected) {
+    auto make_segment = [&](const char *text, lv_event_cb_t callback) {
         auto *seg = lv_obj_create(segments);
         lv_obj_remove_style_all(seg);
         lv_obj_set_height(seg, lv_pct(100));
         lv_obj_set_flex_grow(seg, 1);
         lv_obj_set_style_radius(seg, 8, 0);
-        lv_obj_set_style_bg_color(seg, Color(selected ? p.row : p.button), 0);
-        lv_obj_set_style_bg_opa(seg, selected ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(seg, Color(p.button), 0);
+        lv_obj_set_style_bg_opa(seg, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(seg, Color(p.row), LV_STATE_CHECKED);
+        lv_obj_set_style_bg_opa(seg, LV_OPA_COVER, LV_STATE_CHECKED);
+        lv_obj_add_flag(seg, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(seg, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(seg, callback, LV_EVENT_CLICKED, this);
         auto *label = lv_label_create(seg);
         lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
         lv_obj_set_style_text_color(label, Color(p.text), 0);
         lv_label_set_text(label, text);
         lv_obj_center(label);
+        return seg;
     };
-    make_segment("Sự kiện", true);
-    make_segment("Lời nhắc", false);
+    popup_event_tab_ = make_segment("Sự kiện", OnEventTab);
+    popup_reminder_tab_ = make_segment("Lời nhắc", OnReminderTab);
+    SetEntryKind(EntryKind::kEvent);
 
     // The phone reference is vertical. On this landscape panel the same fields
     // are arranged in two compact columns so no important control is clipped.
@@ -797,6 +804,8 @@ void CalendarView::CloseDayModal() {
         popup_ = nullptr;
         popup_card_ = nullptr;
         popup_title_ = nullptr;
+        popup_event_tab_ = nullptr;
+        popup_reminder_tab_ = nullptr;
         popup_list_ = nullptr;
     }
     // The TelexInput C++ objects were deleted via their OnDeleted handler; drop
@@ -811,10 +820,32 @@ void CalendarView::CloseDayModal() {
     popup_all_day_ = nullptr;
     popup_repeat_ = nullptr;
     popup_alert_ = nullptr;
+    popup_entry_kind_ = EntryKind::kEvent;
     popup_start_minutes_ = -1;
     popup_end_minutes_ = -1;
     popup_date_.clear();
     UpdateGrid();
+}
+
+void CalendarView::SetEntryKind(EntryKind kind) {
+    popup_entry_kind_ = kind;
+    const bool reminder = kind == EntryKind::kReminder;
+
+    if (popup_event_tab_) {
+        if (reminder) lv_obj_remove_state(popup_event_tab_, LV_STATE_CHECKED);
+        else lv_obj_add_state(popup_event_tab_, LV_STATE_CHECKED);
+    }
+    if (popup_reminder_tab_) {
+        if (reminder) lv_obj_add_state(popup_reminder_tab_, LV_STATE_CHECKED);
+        else lv_obj_remove_state(popup_reminder_tab_, LV_STATE_CHECKED);
+    }
+    if (popup_title_) {
+        lv_label_set_text(popup_title_, reminder ? "Lời nhắc mới" : "Sự kiện mới");
+    }
+    if (popup_input_) {
+        popup_input_->SetPlaceholder(reminder ? "Nội dung lời nhắc" : "Tiêu đề sự kiện");
+    }
+    SetStatus("");
 }
 
 void CalendarView::RefreshTimeLabels() {
@@ -1158,7 +1189,9 @@ bool CalendarView::AddTask() {
     task_dates_.insert(popup_date_);
     SaveTaskDates();
     UpdateGrid();
-    SetStatus("Đã thêm nhắc việc");
+    SetStatus(popup_entry_kind_ == EntryKind::kReminder
+                  ? "Đã thêm lời nhắc"
+                  : "Đã thêm sự kiện");
     return true;
 }
 
@@ -1226,6 +1259,16 @@ void CalendarView::OnPopupClose(lv_event_t *e) {
     LvglLockGuard lock;
     auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
     self->CloseDayModal();
+}
+void CalendarView::OnEventTab(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
+    self->SetEntryKind(EntryKind::kEvent);
+}
+void CalendarView::OnReminderTab(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<CalendarView *>(lv_event_get_user_data(e));
+    self->SetEntryKind(EntryKind::kReminder);
 }
 void CalendarView::OnAddTask(lv_event_t *e) {
     LvglLockGuard lock;

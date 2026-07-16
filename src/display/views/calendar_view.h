@@ -32,6 +32,11 @@ protected:
     void OnResize(int w, int h) override;
 
 private:
+    enum class EntryKind {
+        kEvent,
+        kReminder,
+    };
+
     struct Task {
         std::string time;   // "" or "HH:MM"
         bool done = false;
@@ -65,6 +70,9 @@ private:
     lv_obj_t *popup_ = nullptr;          // full-screen backdrop
     lv_obj_t *popup_card_ = nullptr;
     lv_obj_t *popup_title_ = nullptr;
+    lv_obj_t *popup_event_tab_ = nullptr;
+    lv_obj_t *popup_reminder_tab_ = nullptr;
+    EntryKind popup_entry_kind_ = EntryKind::kEvent;
     lv_obj_t *popup_list_ = nullptr;    // scrollable column of task rows
     TelexInput *popup_input_ = nullptr;     // event title (Telex when vi)
     TelexInput *popup_location_ = nullptr;  // optional place / video call
@@ -110,6 +118,7 @@ private:
     // ---- day modal ----
     void OpenDayModal(int day);
     void CloseDayModal();
+    void SetEntryKind(EntryKind kind);
     void OpenTimePicker(bool for_end);
     void CloseTimePicker();
     void RefreshTimeLabels();
@@ -135,6 +144,8 @@ private:
     static void OnDayDeleted(lv_event_t *e);
     static void OnPopupDismiss(lv_event_t *e);
     static void OnPopupClose(lv_event_t *e);
+    static void OnEventTab(lv_event_t *e);
+    static void OnReminderTab(lv_event_t *e);
     static void OnAddTask(lv_event_t *e);
     static void OnAllDayChanged(lv_event_t *e);
     static void OnStartTimeClicked(lv_event_t *e);

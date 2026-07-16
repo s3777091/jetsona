@@ -36,9 +36,18 @@
 #define LV_USE_DRAW_SW 1
 #if LV_USE_DRAW_SW
     #define LV_DRAW_SW_SHADOW_CACHE_SIZE 0
-    #define LV_DRAW_SW_DRAW_UNIT_CNT 1
+    /* Parallel SW rendering across CPU cores (requires LV_USE_OS, pthread
+     * above). The Nano has 4x Cortex-A57; 2 draw threads roughly halves frame
+     * render time while leaving cores free for audio/LLM worker threads. */
+    #define LV_DRAW_SW_DRAW_UNIT_CNT 2
+    /* Must stay NONE on the Nano: LVGL's NEON blend asm (lv_blend_neon.S) is
+     * 32-bit ARM (.arch armv7a) and does not assemble on aarch64. */
     #define LV_DRAW_SW_ASM LV_DRAW_SW_ASM_NONE
 #endif
+/* Draw threads rasterize TinyTTF glyphs (stb_truetype) on their own stack;
+ * LVGL's 8 KB default is tight for that. Stack is virtual memory on Linux,
+ * so 64 KB per draw thread costs nothing until actually touched. */
+#define LV_DRAW_THREAD_STACK_SIZE (64 * 1024)
 #define LV_USE_DRAW_DMA2D 0
 #define LV_USE_DRAW_PXP 0
 #define LV_USE_DRAW_VGLITE 0
