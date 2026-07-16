@@ -190,7 +190,32 @@ if(JETSON_DISPLAY_BACKEND STREQUAL "WAYLAND")
     target_link_libraries(jetson_fw PRIVATE ${WAYLAND_LIBS})
 endif()
 
+# ----------------------------------------------------------------------------
+# Runtime assets: fetch from MinIO (S3) before the build, then copy next to
+# the binary. Assets are gitignored (large binaries / data), so a fresh clone
+# pulls them from MinIO at build time. fetch_assets.sh is idempotent -- it
+# skips files already present -- so rebuilds are cheap. It is also offline-
+# tolerant: if the server is unreachable but assets are already cached it keeps
+# them and lets the build proceed. See scripts/fetch_assets.sh + scripts/s3_assets.py.
+find_program(PYTHON3_EXE NAMES python3 python)
+find_program(BASH_EXE NAMES bash)
+if(PYTHON3_EXE AND BASH_EXE)
+    add_custom_target(jetson_fetch_assets ALL
+        COMMAND "${BASH_EXE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fetch_assets.sh"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "Fetching runtime assets from MinIO (skipping files already present)"
+        VERBATIM
+        USES_TERMINAL)
+    # Run fetch before building jetson_fw, which guarantees assets/ exists
+    # before the POST_BUILD copy_directory below.
+    add_dependencies(jetson_fw jetson_fetch_assets)
+else()
+    message(WARNING "python3 or bash not found; skipping build-time asset fetch. "
+        "Run scripts/fetch_assets.sh manually before building, or assets/ will be empty.")
+endif()
+
 # Copy assets next to the binary so the default relative ASSETS_DIR works.
+# jetson_fetch_assets (above) guarantees assets/ exists before this runs.
 add_custom_command(TARGET jetson_fw POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets"

@@ -38,20 +38,137 @@ bool IsDirectory(const std::string &path) {
     return !path.empty() && ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-// ---- File-type badge -----------------------------------------------------
-// Instead of a generic white tile, each file gets a coloured rounded badge
-// with a short label keyed off the extension (.js -> yellow "JS", .py -> blue
-// "PY", .pdf -> red "PDF", ...). This is rendered with plain LVGL objects so it
-// needs no image assets and stays crisp on the dark theme. `label` is at most
-// 4 chars; `dark_text` tells the caller to use dark text on a light badge.
+std::string LowerExtension(const std::string &name) {
+    const auto dot = name.find_last_of('.');
+    if (dot == std::string::npos || dot == 0 || dot + 1 >= name.size()) return {};
+
+    std::string ext = name.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext;
+}
+
+struct ProgrammingIconRule {
+    const char *extension;
+    const char *filename;
+};
+
+// Map source-file extensions to the 74x74 PNG set in assets/icons/programming.
+// Some languages share an extension (for example MATLAB/Objective-C use .m and
+// V/Verilog use .v); use the most common choice and retain unambiguous aliases.
+const char *ProgrammingIconFor(const std::string &name) {
+    const std::string ext = LowerExtension(name);
+    if (ext.empty()) return nullptr;
+
+    static constexpr ProgrammingIconRule kRules[] = {
+        {"adb", "ada.png"}, {"ads", "ada.png"}, {"ada", "ada.png"},
+        {"asm", "assembly.png"}, {"s", "assembly.png"},
+        {"as", "assemblyscript.png"},
+        {"bash", "bash.png"},
+        {"c", "c.png"}, {"h", "c.png"},
+        {"clj", "clojure.png"}, {"cljs", "clojure.png"},
+        {"cljc", "clojure.png"}, {"edn", "clojure.png"},
+        {"cob", "cobol.png"}, {"cbl", "cobol.png"},
+        {"coffee", "coffeescript.png"}, {"cson", "coffeescript.png"},
+        {"iced", "coffeescript.png"},
+        {"lisp", "common-lisp.png"}, {"lsp", "common-lisp.png"},
+        {"cl", "common-lisp.png"},
+        {"cc", "cplusplus.png"}, {"cpp", "cplusplus.png"},
+        {"cxx", "cplusplus.png"}, {"hh", "cplusplus.png"},
+        {"hpp", "cplusplus.png"}, {"hxx", "cplusplus.png"},
+        {"ipp", "cplusplus.png"}, {"tpp", "cplusplus.png"},
+        {"cs", "csharp.png"}, {"csx", "csharp.png"},
+        {"cr", "crystal.png"},
+        {"css", "css.png"},
+        {"d", "d.png"}, {"di", "d.png"},
+        {"dart", "dart.png"},
+        {"dpr", "delphi.png"}, {"dproj", "delphi.png"},
+        {"ex", "elixir.png"}, {"exs", "elixir.png"},
+        {"elm", "elm.png"},
+        {"erl", "erlang.png"}, {"hrl", "erlang.png"},
+        {"f", "fortran.png"}, {"for", "fortran.png"},
+        {"f77", "fortran.png"}, {"f90", "fortran.png"},
+        {"f95", "fortran.png"}, {"f03", "fortran.png"},
+        {"fs", "fsharp.png"}, {"fsx", "fsharp.png"}, {"fsi", "fsharp.png"},
+        {"gd", "gdscript.png"},
+        {"go", "go.png"},
+        {"graphql", "graphql.png"}, {"gql", "graphql.png"},
+        {"groovy", "groovy.png"}, {"gvy", "groovy.png"},
+        {"gradle", "groovy.png"},
+        {"hs", "haskell.png"}, {"lhs", "haskell.png"},
+        {"hx", "haxe.png"}, {"hxml", "haxe.png"},
+        {"html", "html5.png"}, {"htm", "html5.png"},
+        {"xhtml", "html5.png"},
+        {"java", "java.png"}, {"jar", "java.png"},
+        {"js", "javascript.png"}, {"mjs", "javascript.png"},
+        {"cjs", "javascript.png"}, {"jsx", "javascript.png"},
+        {"jl", "julia.png"},
+        {"kt", "kotlin.png"}, {"kts", "kotlin.png"},
+        {"vi", "labview.png"}, {"vim", "labview.png"},
+        {"tex", "latex.png"}, {"ltx", "latex.png"},
+        {"sty", "latex.png"}, {"cls", "latex.png"},
+        {"lua", "lua.png"},
+        {"m", "matlab.png"},
+        {"nim", "nim.png"}, {"nims", "nim.png"}, {"nimble", "nim.png"},
+        {"nix", "nix.png"},
+        {"mm", "objective-c.png"},
+        {"ml", "ocaml.png"}, {"mli", "ocaml.png"},
+        {"mll", "ocaml.png"}, {"mly", "ocaml.png"},
+        {"pas", "pascal.png"}, {"pp", "pascal.png"},
+        {"pl", "perl.png"}, {"pm", "perl.png"}, {"t", "perl.png"},
+        {"php", "php.png"},
+        {"ps1", "powershell.png"}, {"psm1", "powershell.png"},
+        {"psd1", "powershell.png"},
+        {"pro", "prolog.png"}, {"prolog", "prolog.png"},
+        {"purs", "purescript.png"},
+        {"py", "python.png"}, {"pyw", "python.png"},
+        {"pyi", "python.png"}, {"pyx", "python.png"}, {"pyc", "python.png"},
+        {"qs", "qsharp.png"},
+        {"r", "r.png"},
+        {"rkt", "racket.png"}, {"rktd", "racket.png"},
+        {"rktl", "racket.png"},
+        {"re", "reason.png"}, {"rei", "reason.png"},
+        {"rb", "ruby.png"}, {"rake", "ruby.png"}, {"gemspec", "ruby.png"},
+        {"rs", "rust.png"},
+        {"sass", "sass.png"}, {"scss", "sass.png"},
+        {"scala", "scala.png"}, {"sc", "scala.png"},
+        {"scm", "scheme.png"}, {"ss", "scheme.png"},
+        {"sb", "scratch.png"}, {"sb2", "scratch.png"}, {"sb3", "scratch.png"},
+        {"sh", "shell.png"}, {"zsh", "shell.png"},
+        {"ksh", "shell.png"}, {"fish", "shell.png"},
+        {"sol", "solidity.png"},
+        {"sql", "sql.png"},
+        {"swift", "swift.png"},
+        {"tcl", "tcl.png"}, {"tk", "tcl.png"},
+        {"ts", "typescript.png"}, {"tsx", "typescript.png"},
+        {"mts", "typescript.png"}, {"cts", "typescript.png"},
+        {"v", "v.png"}, {"vsh", "v.png"},
+        {"vala", "vala.png"}, {"vapi", "vala.png"},
+        {"vb", "vbdotnet.png"}, {"vbs", "vbdotnet.png"},
+        {"vh", "verilog.png"}, {"sv", "verilog.png"}, {"svh", "verilog.png"},
+        {"vhd", "vhdl.png"}, {"vhdl", "vhdl.png"},
+        {"wasm", "webassembly.png"}, {"wat", "webassembly.png"},
+        {"wl", "wolfram.png"}, {"nb", "wolfram.png"},
+        {"xml", "xml.png"}, {"xsd", "xml.png"},
+        {"xsl", "xml.png"}, {"xslt", "xml.png"},
+        {"yml", "yaml.png"}, {"yaml", "yaml.png"},
+        {"zig", "zig.png"},
+    };
+
+    for (const auto &rule : kRules) {
+        if (ext == rule.extension) return rule.filename;
+    }
+    return nullptr;
+}
+
+constexpr char kProgrammingIconDirectory[] = "assets/icons/programming/";
+constexpr int kProgrammingIconScale = 50 * 256 / 74;
+
+// Non-programming files retain the coloured file-type badge fallback.
 struct FileBadge { uint32_t color; std::string label; };
 
 FileBadge BadgeFor(const std::string &name) {
-    auto dot = name.find_last_of('.');
-    std::string e = (dot == std::string::npos || dot == 0) ? "" : name.substr(dot + 1);
-    std::string ext;
-    ext.reserve(e.size());
-    for (unsigned char c : e) ext.push_back((char)std::tolower(c));
+    const std::string ext = LowerExtension(name);
 
     // Images.
     if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" ||
@@ -100,7 +217,7 @@ FileBadge BadgeFor(const std::string &name) {
 
     // Unknown: show the real (uppercased) extension on a neutral chip.
     std::string up;
-    for (unsigned char c : e) {
+    for (unsigned char c : ext) {
         up.push_back((char)std::toupper(c));
         if (up.size() == 4) break;
     }
@@ -167,8 +284,11 @@ DocumentsView::~DocumentsView() {
     LvglLockGuard lock;
     if (nav_timer_) { lv_timer_del(nav_timer_); nav_timer_ = nullptr; }
     if (popup_) { lv_obj_del(popup_); popup_ = nullptr; popup_card_ = nullptr; }
-    // cells_ + CellCtx are freed when the base class deletes overlay_
-    // (OnEntryDeleted runs for each cell and deletes its ctx).
+    // Delete image widgets before programming_icon_cache_ releases the PNG
+    // descriptors they reference. The base class later deletes the empty grid.
+    if (grid_) lv_obj_clean(grid_);
+    cells_.clear();
+    ctxs_.clear();
 }
 
 std::string DocumentsView::BaseName(const std::string &path) {
@@ -322,26 +442,37 @@ void DocumentsView::BuildGrid() {
             lv_obj_clear_flag(tab, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
                                                    LV_OBJ_FLAG_CLICKABLE));
         } else {
-            // File: a coloured badge keyed off the extension (.js -> yellow "JS",
-            // .py -> blue "PY", .pdf -> red "PDF", ...) so the type is recognisable
-            // at a glance, instead of a generic white tile.
-            const FileBadge fb = BadgeFor(e.name);
-            auto *tile = lv_obj_create(glyph);
-            lv_obj_remove_style_all(tile);
-            lv_obj_set_size(tile, 56, 54);
-            lv_obj_set_style_radius(tile, 8, 0);
-            lv_obj_set_style_bg_color(tile, Color(fb.color), 0);
-            lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
-            lv_obj_align(tile, LV_ALIGN_CENTER, 0, 0);
-            lv_obj_clear_flag(tile, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
-                                                    LV_OBJ_FLAG_CLICKABLE));
-            auto *ext = lv_label_create(tile);
-            // 24px icon font keeps 4-char labels (HTML/JSON/JAVA) inside the chip.
-            lv_obj_set_style_text_font(ext, &BUILTIN_ICON_FONT, 0);
-            lv_obj_set_style_text_color(ext,
-                LightBadge(fb.color) ? Color(0x222222) : lv_color_white(), 0);
-            lv_label_set_text(ext, fb.label.c_str());
-            lv_obj_center(ext);
+            // Source code uses the matching language artwork from the bundled
+            // programming icon set. If an asset is missing (or this is not a
+            // programming extension), fall back to the existing file badge.
+            const char *programming_filename = ProgrammingIconFor(e.name);
+            LvglImage *programming_icon = LoadProgrammingIcon(programming_filename);
+            if (programming_icon) {
+                auto *icon = lv_image_create(glyph);
+                lv_image_set_src(icon, programming_icon->image_dsc());
+                lv_image_set_scale(icon, kProgrammingIconScale);
+                lv_obj_center(icon);
+                lv_obj_clear_flag(icon, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                                        LV_OBJ_FLAG_CLICKABLE));
+            } else {
+                const FileBadge fb = BadgeFor(e.name);
+                auto *tile = lv_obj_create(glyph);
+                lv_obj_remove_style_all(tile);
+                lv_obj_set_size(tile, 56, 54);
+                lv_obj_set_style_radius(tile, 8, 0);
+                lv_obj_set_style_bg_color(tile, Color(fb.color), 0);
+                lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+                lv_obj_align(tile, LV_ALIGN_CENTER, 0, 0);
+                lv_obj_clear_flag(tile, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                                        LV_OBJ_FLAG_CLICKABLE));
+                auto *ext = lv_label_create(tile);
+                // 24px font keeps 4-char labels (PDF/JSON/FILE) inside the chip.
+                lv_obj_set_style_text_font(ext, &BUILTIN_ICON_FONT, 0);
+                lv_obj_set_style_text_color(ext,
+                    LightBadge(fb.color) ? Color(0x222222) : lv_color_white(), 0);
+                lv_label_set_text(ext, fb.label.c_str());
+                lv_obj_center(ext);
+            }
         }
 
         // Filename (wrap to ~2 lines, clip to the cell width).
@@ -460,6 +591,16 @@ void DocumentsView::UpdatePathLabel() {
     if (!path_label_) return;
     std::string label = (current_path_ == root_path_) ? "Home" : BaseName(current_path_);
     lv_label_set_text(path_label_, label.c_str());
+}
+
+LvglImage *DocumentsView::LoadProgrammingIcon(const char *filename) {
+    if (!filename || !*filename) return nullptr;
+
+    auto [it, inserted] = programming_icon_cache_.try_emplace(filename);
+    if (inserted) {
+        it->second = LvglImageFromFile(std::string(kProgrammingIconDirectory) + filename);
+    }
+    return it->second.get();
 }
 
 void DocumentsView::OpenPopup(size_t index) {

@@ -9,6 +9,7 @@
 #include "display/views/lock_screen_view.h"
 #include "display/views/settings_view.h"
 #include "display/views/terminal_view.h"
+#include "display/views/trash_view.h"
 #include "display/views/wifi_settings_view.h"
 #include "agent/conversation.h"
 #include "net/bluetooth_manager.h"
@@ -27,7 +28,6 @@
 #include <cstdlib>
 #include <ctime>
 #include <cstring>
-#include <fstream>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -74,10 +74,15 @@ int PngScaleToFit(const char *path, int target_px) {
 }
 
 constexpr int kSystemBarHeight = 28;
-constexpr int kDockHeight = 78;
+constexpr int kDockHeight = 74;
 constexpr int kDockBottomMargin = 6;
 constexpr int kDockButtonSize = 50;
 constexpr int kDockItemHeight = 64;
+constexpr int kDockHorizontalPadding = 10;
+constexpr int kDockVerticalPadding = 4;
+constexpr int kDockItemGap = 4;
+constexpr int kDockBorderWidth = 1;
+constexpr int kDockDividerWidth = 1;
 constexpr int kDockScaleNormal = 256;
 constexpr int kDockScaleNeighbor = 278;
 constexpr int kDockScaleFocused = 318;
@@ -229,16 +234,25 @@ void Ds02HomeDisplay::SetupUI() {
 
     ApplyDisplayPreferences();
 
-    Settings s("display", false);
+    Settings s("display", true);
     background_files_ = jetson::ui::backgrounds::ListBackgroundFiles();
     background_file_ = s.GetString("ds02_background_file", "");
     sleep_background_file_ = s.GetString("ds02_sleep_bg_file", "");
     // Fall back to the first available wallpaper if the saved one is gone
-    // (e.g. deleted via the gallery) or none was set.
-    bool bg_ok = !background_file_.empty();
+    // (e.g. moved into Trash via the gallery) or none was set.
+    bool bg_ok = false;
     for (const auto &f : background_files_)
         if (f == background_file_) { bg_ok = true; break; }
-    if (!bg_ok) background_file_ = background_files_.empty() ? "" : background_files_.front();
+    if (!bg_ok) {
+        background_file_ = background_files_.empty() ? "" : background_files_.front();
+        s.SetString("ds02_background_file", background_file_);
+    }
+    if (!sleep_background_file_.empty() &&
+        std::find(background_files_.begin(), background_files_.end(),
+                  sleep_background_file_) == background_files_.end()) {
+        sleep_background_file_.clear();
+        s.SetString("ds02_sleep_bg_file", "");
+    }
     text_color_ = (uint32_t)s.GetInt("ds02_text_color", (int32_t)0xffffff) & 0xffffff;
     ApplyBackgroundFile(background_file_);
     SetTextColor(text_color_);
@@ -307,6 +321,12 @@ void Ds02HomeDisplay::CreateStandbyObjects() {
     lv_obj_set_style_text_align(chat_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(chat_label_, "");
     lv_obj_align(chat_label_, LV_ALIGN_BOTTOM_MID, 0, -(kDockHeight + kDockBottomMargin + 80));
+
+    // "Tối ưu" system widget: live disk/RAM bars + drop-caches button. Its
+    // toast reports how much RAM was freed via the Dynamic Island.
+    optimize_widget_ = std::make_unique<OptimizeWidget>(standby_layer_);
+    optimize_widget_->SetNotifyCb(
+        [this](const char *msg) { ShowNotification(msg, 2500); });
     // No swipe gestures: the panel has no working touch, so standby state
     // changes only via the dock (finder icon toggles the app drawer).
 }
@@ -386,7 +406,6 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
 void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
     auto *ctx = static_cast<AppCtx *>(lv_event_get_user_data(e));
     auto *self = ctx->self;
-    ESP_LOGI(TAG, "drawer click: app_id=%d", ctx->id);
     // Most drawer apps are the upcoming app set with no backing view yet, so a
     // tap just announces "coming soon". The "Ảnh" tile (id 5) opens the
     // wallpaper gallery, which moved here from the dock so the dock's folder
@@ -430,27 +449,37 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
 }
 
 void Ds02HomeDisplay::CreateDockObjects() {
-    const int dock_width = Clamp(width_ - 180, 388, 520);
+    // Size the strip from its contents so both ends have exactly the same
+    // padding. A fixed centered row also avoids SPACE_EVENLY adding surplus
+    // gaps that made the dock background look too wide and slightly offset.
+    const int dock_items_width =
+        static_cast<int>(kDockItemCount) * (kDockButtonSize + 2) +
+        kDockDividerWidth +
+        static_cast<int>(kDockItemCount) * kDockItemGap;
+    const int preferred_dock_width = dock_items_width +
+        2 * (kDockHorizontalPadding + kDockBorderWidth);
+    const int dock_width = std::min(preferred_dock_width, width_ - 24);
     dock_ = lv_obj_create(root_);
     lv_obj_remove_style_all(dock_);
     lv_obj_set_size(dock_, dock_width, kDockHeight);
     lv_obj_set_style_radius(dock_, 24, 0);
     lv_obj_set_style_bg_color(dock_, Color(0x202126), 0);
     lv_obj_set_style_bg_opa(dock_, LV_OPA_80, 0);
-    lv_obj_set_style_border_width(dock_, 1, 0);
+    lv_obj_set_style_border_width(dock_, kDockBorderWidth, 0);
     lv_obj_set_style_border_color(dock_, lv_color_white(), 0);
     lv_obj_set_style_border_opa(dock_, LV_OPA_30, 0);
     lv_obj_set_style_shadow_color(dock_, lv_color_black(), 0);
     lv_obj_set_style_shadow_width(dock_, 18, 0);
     lv_obj_set_style_shadow_offset_y(dock_, 5, 0);
     lv_obj_set_style_shadow_opa(dock_, LV_OPA_40, 0);
-    lv_obj_set_style_pad_left(dock_, 8, 0);
-    lv_obj_set_style_pad_right(dock_, 8, 0);
-    lv_obj_set_style_pad_top(dock_, 6, 0);
-    lv_obj_set_style_pad_bottom(dock_, 6, 0);
-    lv_obj_set_style_pad_column(dock_, 4, 0);
+    lv_obj_set_style_pad_left(dock_, kDockHorizontalPadding, 0);
+    lv_obj_set_style_pad_right(dock_, kDockHorizontalPadding, 0);
+    lv_obj_set_style_pad_top(dock_, kDockVerticalPadding, 0);
+    lv_obj_set_style_pad_bottom(dock_, kDockVerticalPadding, 0);
+    lv_obj_set_style_pad_column(dock_, kDockItemGap, 0);
     lv_obj_set_flex_flow(dock_, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(dock_, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(dock_, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(dock_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(dock_, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
     lv_obj_align(dock_, LV_ALIGN_BOTTOM_MID, 0, -kDockBottomMargin);
@@ -460,14 +489,28 @@ void Ds02HomeDisplay::CreateDockObjects() {
         "assets/icons/dock/folder.png", "assets/icons/dock/music.png",
         "assets/icons/dock/reminders.png", "assets/icons/dock/settings.png",
         "assets/icons/dock/siri.png", "assets/icons/dock/terminal.png",
+        "assets/icons/dock/trash.png",
     };
     static const char *kFallbackIcons[kDockItemCount] = {
         FONT_AWESOME_FINDER, FONT_AWESOME_BOOK_OPEN, FONT_AWESOME_BOOK,
         FONT_AWESOME_MUSIC, FONT_AWESOME_MICROPHONE_LINES, FONT_AWESOME_GEAR,
-        FONT_AWESOME_MICROPHONE, FONT_AWESOME_TERMINAL,
+        FONT_AWESOME_MICROPHONE, FONT_AWESOME_TERMINAL, LV_SYMBOL_TRASH,
     };
 
     for (size_t i = 0; i < kDockItemCount; ++i) {
+        // Keep Trash visually separate from the default application group,
+        // matching the macOS Dock convention.
+        if (i == kDockItemCount - 1) {
+            auto *divider = lv_obj_create(dock_);
+            lv_obj_remove_style_all(divider);
+            lv_obj_set_size(divider, kDockDividerWidth, 40);
+            lv_obj_set_style_bg_color(divider, lv_color_white(), 0);
+            lv_obj_set_style_bg_opa(divider, LV_OPA_30, 0);
+            lv_obj_clear_flag(divider,
+                              (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                              LV_OBJ_FLAG_CLICKABLE));
+        }
+
         auto *item = lv_obj_create(dock_);
         lv_obj_remove_style_all(item);
         lv_obj_set_size(item, kDockButtonSize + 2, kDockItemHeight);
@@ -635,13 +678,8 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     self->SetDockActive(focused);
     BounceDockButton(target);
 
-    static const char *kDockNames[] = {
-        "finder", "calendar", "files", "wifi", "bluetooth", "settings", "chat", "terminal"
-    };
-    ESP_LOGI(TAG, "dock click: %s (index=%d)", kDockNames[focused], focused);
-
     // Dock icons (in file order): finder, calendar, folder, music, reminders,
-    // settings, siri, terminal. The finder icon toggles the app drawer
+    // settings, siri, terminal, separator, trash. The finder icon toggles the app drawer
     // open/closed (no touch swipe on this panel); the folder icon opens the
     // Documents file browser. music/reminders carry WiFi/BT; the wallpaper
     // gallery lives in the drawer's "Ảnh" tile.
@@ -659,6 +697,7 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     case 5: self->OpenSettings(); break;
     case 6: self->OpenChat(); break;
     case 7: self->OpenTerminal(); break;
+    case 8: self->OpenTrash(); break;
     default: self->AdvanceStandbyButtonState(); break;
     }
 }
@@ -714,7 +753,7 @@ void Ds02HomeDisplay::OpenBackgroundGallery() {
     gallery_view_ = std::make_shared<BackgroundGalleryView>(
         root_, width_, height_,
         [this]() {
-            // The set may have changed (deletes) while the gallery was open;
+            // The set may have changed (items moved to Trash) while the gallery was open;
             // reload the runtime list and re-apply the current wallpaper.
             ReloadBackgrounds();
             gallery_view_.reset();
@@ -834,6 +873,17 @@ void Ds02HomeDisplay::OpenTerminal() {
     terminal_view_->Start();
 }
 
+void Ds02HomeDisplay::OpenTrash() {
+    DisplayLockGuard lock(this);
+    if (trash_view_) return;
+    if (!root_) root_ = lv_screen_active();
+    trash_view_ = std::make_shared<TrashView>(
+        root_, width_, height_,
+        [this]() { trash_view_.reset(); });
+    trash_view_->SetOnChanged([this]() { ReloadBackgrounds(); });
+    trash_view_->Start();
+}
+
 void Ds02HomeDisplay::ApplyBackgroundFromFile(const std::string &file) {
     DisplayLockGuard lock(this);
     if (ApplyBackgroundFile(file)) {
@@ -853,17 +903,35 @@ void Ds02HomeDisplay::SetSleepBackground(const std::string &file) {
 void Ds02HomeDisplay::ReloadBackgrounds() {
     DisplayLockGuard lock(this);
     background_files_ = jetson::ui::backgrounds::ListBackgroundFiles();
-    // Drop cache entries whose files were deleted.
+
+    auto is_available = [this](const std::string &file) {
+        return std::find(background_files_.begin(), background_files_.end(), file) !=
+               background_files_.end();
+    };
+    const bool background_missing = !is_available(background_file_);
+    const bool sleep_background_missing =
+        !sleep_background_file_.empty() && !is_available(sleep_background_file_);
+
+    // Detach LVGL before freeing image descriptors for files moved to Trash.
+    if ((background_missing || sleep_background_missing) && wallpaper_image_obj_) {
+        lv_image_set_src(wallpaper_image_obj_, nullptr);
+    }
+
+    // Drop cache entries whose files were moved to Trash.
     for (auto it = background_image_cache_.begin(); it != background_image_cache_.end();) {
-        bool exists = false;
-        for (const auto &f : background_files_) if (f == it->first) { exists = true; break; }
-        if (!exists) it = background_image_cache_.erase(it);
+        if (!is_available(it->first)) it = background_image_cache_.erase(it);
         else ++it;
     }
-    // If the current desktop wallpaper was deleted, fall back to the first.
-    bool bg_ok = !background_file_.empty();
-    for (const auto &f : background_files_) if (f == background_file_) { bg_ok = true; break; }
-    if (!bg_ok) background_file_ = background_files_.empty() ? "" : background_files_.front();
+
+    Settings settings("display", true);
+    if (background_missing) {
+        background_file_ = background_files_.empty() ? "" : background_files_.front();
+        settings.SetString("ds02_background_file", background_file_);
+    }
+    if (sleep_background_missing) {
+        sleep_background_file_.clear();
+        settings.SetString("ds02_sleep_bg_file", "");
+    }
     ApplyWallpaperForState();
 }
 
@@ -968,21 +1036,6 @@ void Ds02HomeDisplay::OnRefreshTimer(void *arg) {
     auto *self = static_cast<Ds02HomeDisplay *>(arg);
     self->UpdateStatusBar(false);
     self->CheckIdleDim();
-
-    // Memory leak watch: log our RSS every ~5 s so we can see when it grows
-    // (calendar open? wifi scan? idle-dim swap?). Read /proc/self/status only
-    // -- no image decoding, no allocations.
-    static int tick = 0;
-    if (++tick % 5 == 0) {
-        std::ifstream f("/proc/self/status");
-        std::string line;
-        while (std::getline(f, line)) {
-            if (line.rfind("VmRSS:", 0) == 0) {
-                ESP_LOGI("Mem", "%s", line.c_str());
-                break;
-            }
-        }
-    }
 }
 
 void Ds02HomeDisplay::CheckIdleDim() {
@@ -1005,7 +1058,7 @@ void Ds02HomeDisplay::CheckIdleDim() {
 bool Ds02HomeDisplay::HasOpenOverlay() const {
     return wifi_view_ || bt_view_ || calendar_view_ || documents_view_ ||
            gallery_view_ || settings_view_ || chat_view_ || terminal_view_ ||
-           lock_screen_view_;
+           trash_view_ || lock_screen_view_;
 }
 
 void Ds02HomeDisplay::SetStatus(const char *status) {

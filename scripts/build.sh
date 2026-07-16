@@ -21,6 +21,14 @@ echo "==> Source:  $JETSON_DIR"
 echo "==> Build:   $BUILD_DIR"
 echo "==> Backend: $BACKEND"
 
+# Fetch runtime assets from MinIO (S3) before building. Idempotent: skips
+# files already present, so this is cheap after the first download. Offline-
+# tolerant (keeps cached assets if the server is unreachable). See
+# scripts/fetch_assets.sh. Skippable with JETSON_SKIP_ASSET_FETCH=1.
+if [ "${JETSON_SKIP_ASSET_FETCH:-0}" != "1" ]; then
+    bash "$SCRIPT_DIR/fetch_assets.sh"
+fi
+
 cmake -S "$JETSON_DIR" -B "$BUILD_DIR" \
     -DJETSON_DISPLAY_BACKEND="$BACKEND" "$@"
 cmake --build "$BUILD_DIR" --parallel "$BUILD_JOBS"

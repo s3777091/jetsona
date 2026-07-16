@@ -45,6 +45,18 @@ Thumbs.db
 jetson-fw.log
 ~/.jetson-fw/
 
+# --- Python (build-time asset fetcher only) ---
+__pycache__/
+*.pyc
+
 # --- Packaging ---
 *.tar.gz
 jetson.tar.gz
+
+# --- Runtime assets (data) ---
+# Assets are NOT in git. They are fetched from MinIO (S3) at build time by
+# scripts/fetch_assets.sh -> scripts/s3_assets.py (idempotent: skips files
+# already present). See .env.example for MINIO_* config. Never commit
+# binaries / large data into the repo.
+/assets/
+/assets/**

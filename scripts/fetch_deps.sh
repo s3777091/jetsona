@@ -10,6 +10,7 @@ sudo apt-get update
 # installed as a single header below (the code uses v3-only .contains()).
 sudo apt-get install -y \
     build-essential git pkg-config \
+    python3 \
     libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev \
     libsdl2-dev libsdl2-ttf-dev \
     libcurl4-openssl-dev libopus-dev libasound2-dev \

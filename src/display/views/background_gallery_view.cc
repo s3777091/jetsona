@@ -1,6 +1,7 @@
 #include "display/views/background_gallery_view.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/backgrounds.h"
+#include "display/common/trash_store.h"
 #include "fonts.h"
 #include "settings.h"
 #include "display/theme/ui_theme.h"
@@ -208,17 +209,19 @@ void BackgroundGalleryView::ClosePopup() {
     if (popup_) { lv_obj_del(popup_); popup_ = nullptr; popup_card_ = nullptr; }
 }
 
-void BackgroundGalleryView::DeleteImage(size_t index) {
+void BackgroundGalleryView::MoveImageToTrash(size_t index) {
     if (index >= files_.size()) return;
     std::string file = files_[index];
+    if (!jetson::ui::trash::MoveBackgroundToTrash(file)) {
+        SetStatus("Không thể chuyển ảnh vào Thùng rác");
+        return;
+    }
     ClosePopup();
-    std::remove(jetson::ui::backgrounds::BackgroundPath(file).c_str());
-    std::remove(jetson::ui::backgrounds::ThumbPath(file).c_str());
     if (current_file_ == file) current_file_.clear();
     if (sleep_file_ == file) sleep_file_.clear();
     if (on_changed_) on_changed_();
     RebuildGrid();
-    SetStatus("Đã xóa ảnh");
+    SetStatus("Đã chuyển ảnh vào Thùng rác");
 }
 
 void BackgroundGalleryView::OnStart() {
@@ -273,7 +276,7 @@ void BackgroundGalleryView::OnPopupSleep(lv_event_t *e) {
 void BackgroundGalleryView::OnPopupDelete(lv_event_t *e) {
     LvglLockGuard lock;
     auto *self = static_cast<BackgroundGalleryView *>(lv_event_get_user_data(e));
-    self->DeleteImage(self->popup_index_);
+    self->MoveImageToTrash(self->popup_index_);
 }
 
 void BackgroundGalleryView::OnLoadTimer(lv_timer_t *t) {

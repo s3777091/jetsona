@@ -17,10 +17,10 @@ namespace home {
  * actions:
  *   - "Đặt hình nền desktop"  -> set as the home wallpaper
  *   - "Đặt hình nền sleep screen" -> set as the sleep/dim wallpaper
- *   - "Xóa ảnh"               -> delete the file (full + thumb) from disk
+ *   - "Xóa ảnh"               -> move the file (full + thumb) to Trash
  * The wallpaper set is read from disk at runtime (backgrounds::ListBackgroundFiles),
- * so deletions take effect immediately and the app stays capped by what's on
- * disk. The view is shared_ptr-owned (see OverlayView) so the deferred load
+ * so moved items disappear immediately and can later be recovered from Trash.
+ * The view is shared_ptr-owned (see OverlayView) so the deferred load
  * timer and worker callbacks outlive the on-screen overlay. */
 class BackgroundGalleryView : public OverlayView {
 public:
@@ -69,7 +69,7 @@ private:
     void RefreshHighlights();
     void OpenPopup(size_t index);
     void ClosePopup();
-    void DeleteImage(size_t index);
+    void MoveImageToTrash(size_t index);
 
     static void OnCellClicked(lv_event_t *e);
     static void OnCellDeleted(lv_event_t *e);

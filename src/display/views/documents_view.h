@@ -1,8 +1,11 @@
 #pragma once
 
+#include "display/core/lvgl_image.h"
 #include "display/views/overlay_view.h"
 
 #include <lvgl.h>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -41,6 +44,7 @@ private:
     std::vector<Entry> entries_;
     std::vector<lv_obj_t *> cells_{};
     std::vector<CellCtx *> ctxs_{};
+    std::map<std::string, std::unique_ptr<LvglImage>> programming_icon_cache_{};
 
     lv_obj_t *toolbar_ = nullptr;
     lv_obj_t *back_btn_ = nullptr;
@@ -72,6 +76,7 @@ private:
     void GoForward();
     void UpdateNavButtons();
     void UpdatePathLabel();
+    LvglImage *LoadProgrammingIcon(const char *filename);
     void OpenPopup(size_t index);
     void ClosePopup();
 

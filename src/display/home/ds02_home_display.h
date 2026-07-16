@@ -1,6 +1,7 @@
 #pragma once
 
 #include "display/core/lcd_display.h"
+#include "display/widgets/optimize_widget.h"
 #include "display/widgets/status_bar.h"
 
 #include <array>
@@ -29,6 +30,7 @@ class DocumentsView;
 class LockScreenView;
 class SettingsView;
 class TerminalView;
+class TrashView;
 class WifiSettingsView;
 
 /* Compact DS-02 home display for the Jetson 800x480 HDMI panel.
@@ -64,6 +66,7 @@ public:
     void OpenSettings();
     void OpenChat();
     void OpenTerminal();
+    void OpenTrash();
     void OpenLockScreen();
     void SetBrightness(int pct);
     void ApplyDisplayPreferences();
@@ -72,7 +75,7 @@ public:
     void ReloadBackgrounds();
 
     /* The wallpaper set is scanned from disk at runtime (backgrounds::ListBackgroundFiles)
-     * and cached by filename; the gallery can delete files and the list updates. */
+     * and cached by filename; the gallery can move files to Trash and the list updates. */
 
 private:
     jetson::IWifiManager &wifi_;
@@ -80,7 +83,7 @@ private:
 
     enum class StandbyState { Dim, Awake, Launcher };
 
-    static constexpr size_t kDockItemCount = 8;
+    static constexpr size_t kDockItemCount = 9;
     static constexpr size_t kDrawerItemCount = 8;
 
     struct AppCtx {
@@ -129,6 +132,9 @@ private:
     // Global wifi/bt/battery/volume/clock bar on lv_layer_top(), visible on
     // every screen. Self-refreshes; home wires the click hooks.
     std::unique_ptr<StatusBar> status_bar_;
+    // "Tối ưu" pill on the standby layer: live disk/RAM usage bars plus a
+    // drop-caches button. Hides together with the standby layer.
+    std::unique_ptr<OptimizeWidget> optimize_widget_;
     bool volume_muted_ = false;
     lv_obj_t *weather_label_ = nullptr;
     lv_obj_t *chat_label_ = nullptr;
@@ -154,6 +160,7 @@ private:
     std::shared_ptr<SettingsView> settings_view_;
     std::shared_ptr<ChatView> chat_view_;
     std::shared_ptr<TerminalView> terminal_view_;
+    std::shared_ptr<TrashView> trash_view_;
     std::shared_ptr<LockScreenView> lock_screen_view_;
     std::shared_ptr<jetson::Conversation> chat_conv_;
 

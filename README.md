@@ -72,6 +72,43 @@ sudo ./build-fbdev/jetson_fw
 Không dùng chung một build directory cho nhiều backend; dùng `build`,
 `build-drm`, `build-fbdev` riêng để tránh CMake cache nhầm cấu hình.
 
+## Assets tải từ MinIO khi build
+
+Toàn bộ `assets/` (font, wallpaper, icon — ~120 file) **không nằm trong git**
+(đã `.gitignore`). Khi build, script tự tải assets từ MinIO (S3-compatible)
+nếu thiếu, và **bỏ qua file đã có sẵn** (chỉ tải file chưa có hoặc sai size).
+Vì vậy build lại sau lần đầu gần như tốn 0 giây và không tải lại.
+
+Cơ chế này gồm:
+
+```text
+.env                         MINIO_ENDPOINT / MINIO_ACCESS_KEY / MINIO_SECRET_KEY
+                             / MINIO_BUCKET / MINIO_REGION (gitignored)
+scripts/fetch_assets.sh      wrapper: nạp .env rồi gọi fetch, offline-tolerant
+scripts/s3_assets.py         S3/SigV4 client thuần stdlib (không cần mc/aws/boto3)
+                             lệnh: fetch | upload | list
+CMakeLists.txt               custom target jetson_fetch_assets chạy trước build
+scripts/build.sh             gọi fetch_assets.sh trước `cmake --build`
+```
+
+Bỏ qua bước fetch (dùng assets đã cache, không mạng) bằng:
+
+```bash
+JETSON_SKIP_ASSET_FETCH=1 bash scripts/build.sh
+```
+
+Cấu hình MinIO cho máy này / Jetson: copy `.env.example` sang `.env` và điền
+`MINIO_*`. Endpoint: `https://s3.phuongdong.cloud`
+(bucket mặc định `jetsona-assets`, region `us-east-1`). Lần đầu tải assets
+về Jetson cần mạng; các lần sau dùng cache nên build được cả khi offline.
+
+Seed lại bucket (chỉ khi thêm/sửa asset rồi đẩy lên MinIO):
+
+```bash
+python3 scripts/s3_assets.py upload   # đẩy ./assets -> bucket
+python3 scripts/s3_assets.py list     # liệt kê object trong bucket
+```
+
 ## Phần cứng và dịch vụ cần có
 
 - Jetson Nano 4GB B01.
@@ -167,8 +204,10 @@ Mọi lệnh quét đều chạy nền và có timeout. Xem terminal hoặc
 ## Thư mục chính
 
 ```text
-assets/                 font, wallpaper và icon
-scripts/build.sh        cấu hình và build
+assets/                 font, wallpaper và icon (gitignored; tải từ MinIO khi build)
+scripts/build.sh        cấu hình và build (gọi fetch_assets.sh trước)
+scripts/fetch_assets.sh tải assets từ MinIO, bỏ qua file đã có
+scripts/s3_assets.py    S3 client thuần stdlib (fetch/upload/list)
 scripts/install.sh      cài systemd service
 src/display/            giao diện LVGL
 src/net/                Wi-Fi và Bluetooth
