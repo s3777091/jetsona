@@ -2,11 +2,14 @@
 
 /* Linux Bluetooth manager backed by BlueZ (`bluetoothctl`).
  *
- * The Jetson Nano 4GB B01 has no onboard Bluetooth — a USB BT dongle must be
- * plugged in. BlueZ ships with JetPack (install `bluez` if missing) and exposes
- * bluetoothctl, which we drive non-interactively by piping a command script
- * into it. Scan blocks for several seconds (it runs `bluetoothctl scan on` under
- * `timeout`), so callers should run Scan()/PairAndConnect() off the LVGL thread.
+ * Bluetooth comes from the Intel Wireless-AC 8265 in the M.2 E-key slot (its
+ * BT half enumerates over the slot's USB lines via btusb; needs the ibt-*
+ * firmware from linux-firmware) or from a USB BT dongle. BlueZ ships with
+ * JetPack (install `bluez` if missing) and exposes bluetoothctl, which we drive
+ * non-interactively by piping a command script into it. Scan blocks for several
+ * seconds (it holds a bluetoothctl session open while discovery runs — BlueZ
+ * stops discovery as soon as the requesting client exits), so callers should
+ * run Scan()/PairAndConnect() off the LVGL thread.
  *
  * No password entry is needed from the UI: bluetoothctl's default-agent handles
  * PIN/Just-Works pairing automatically. */

@@ -77,6 +77,10 @@ bool BluetoothManager::Available() const {
 
 bool BluetoothManager::PowerOn() {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    // The AC8265's BT half is often rfkill-soft-blocked after boot, which makes
+    // `power on` fail with org.bluez.Error.Blocked. Unblock first, best-effort.
+    std::string rfkillOut;
+    RunShellCommand("timeout --signal=TERM 3s rfkill unblock bluetooth", rfkillOut);
     std::string out;
     int rc = RunShellCommand("timeout --signal=TERM 6s bluetoothctl power on", out);
     if (rc != 0) {
@@ -151,13 +155,17 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
         return devs;
     }
 
-    // Warm up the scan for a few seconds so fresh devices appear, then list.
-    std::string scanCmd = "timeout --signal=INT " + std::to_string(duration_s) +
-                          "s bluetoothctl scan on";
+    // BlueZ ties discovery to the D-Bus client that requested it: the moment
+    // that client disconnects, bluetoothd stops discovering. A one-shot
+    // `bluetoothctl scan on` exits right after printing "Discovery started",
+    // killing the scan before any device can answer. Keep a single bluetoothctl
+    // alive for the whole window by feeding its stdin through a shell sleep.
+    std::string scanCmd =
+        "{ printf 'scan on\\n'; sleep " + std::to_string(duration_s) +
+        "; printf 'scan off\\n'; } | timeout --signal=TERM " +
+        std::to_string(duration_s + 10) + "s bluetoothctl";
     std::string junk;
     RunShellCommand(scanCmd, junk);
-    std::string stopOut;
-    RunShellCommand("timeout --signal=TERM 5s bluetoothctl scan off", stopOut);
 
     std::string devicesOut;
     int listRc = RunShellCommand("timeout --signal=TERM 5s bluetoothctl devices", devicesOut);
