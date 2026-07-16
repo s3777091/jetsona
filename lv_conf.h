@@ -67,6 +67,9 @@
    OTHERS
 ====================*/
 #define LV_USE_ANIMIMG 1
+/* App-switcher thumbnails: lv_snapshot_take renders a live overlay into a
+ * draw buffer so background apps keep a preview card without staying drawn. */
+#define LV_USE_SNAPSHOT 1
 #define LV_USE_OBJX_NAME 0
 #define LV_USE_OBJ_PROPERTY 0
 #define LV_USE_OS_TASK 0

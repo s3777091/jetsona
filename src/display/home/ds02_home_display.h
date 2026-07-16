@@ -1,6 +1,7 @@
 #pragma once
 
 #include "display/core/lcd_display.h"
+#include "display/home/app_switcher.h"
 #include "display/widgets/optimize_widget.h"
 #include "display/widgets/status_bar.h"
 
@@ -28,6 +29,7 @@ class CalendarView;
 class ChatView;
 class DocumentsView;
 class LockScreenView;
+class OverlayView;
 class SettingsView;
 class TerminalView;
 class TrashView;
@@ -86,6 +88,25 @@ private:
     static constexpr size_t kDockItemCount = 9;
     static constexpr size_t kDrawerItemCount = 8;
 
+    /* ---- Multitasking ----
+     * Every OverlayView app that opens joins an LRU queue and stays alive when
+     * sent to the background (hidden, zero render cost -- LVGL skips hidden
+     * subtrees), so switching back never rebuilds or reloads the view. The
+     * queue holds at most kMaxRunningApps; opening one more closes the least
+     * recently used app. Dock dots mark the running set; the Dynamic Island
+     * click opens the card switcher. */
+    enum AppId {
+        kAppNone = 0,
+        kAppCalendar,
+        kAppDocuments,
+        kAppSettings,
+        kAppChat,
+        kAppTerminal,
+        kAppTrash,
+        kAppGallery, // drawer app: gets a temporary dock slot while running
+    };
+    static constexpr size_t kMaxRunningApps = 5;
+
     struct AppCtx {
         Ds02HomeDisplay *self;
         int id;
@@ -109,6 +130,20 @@ private:
     static void OnAppButtonClicked(lv_event_t *e);
     static void OnAppDeleted(lv_event_t *e);
     static void OnScreenOffClicked(lv_event_t *e);
+    // Multitask queue plumbing.
+    OverlayView *GetAppView(AppId id) const;
+    void NoteAppOpened(AppId id);
+    void RestoreApp(AppId id);
+    void BackgroundApp(AppId id);
+    void CloseApp(AppId id);
+    void OnAppClosed(AppId id);
+    void SnapshotApp(AppId id);
+    void FreeSnapshot(AppId id);
+    void UpdateDockDots();
+    void OpenAppSwitcher();
+    void AddGalleryDockItem();
+    void RemoveGalleryDockItem();
+    static void OnGalleryDockClicked(lv_event_t *e);
     void ToggleVolume();
     static void OnSplashOpa(void *var, int32_t v);
     static void OnSplashBar(void *var, int32_t v);
@@ -145,6 +180,14 @@ private:
     std::array<std::unique_ptr<LvglImage>, kDockItemCount> dock_icon_cache_ = {};
     int dock_active_index_ = -1;
     std::array<std::unique_ptr<LvglImage>, kDrawerItemCount> drawer_icon_cache_ = {};
+
+    // Multitask state: LRU order (front = oldest, back = most recent).
+    std::vector<AppId> task_queue_;
+    AppId foreground_app_ = kAppNone;
+    std::map<int, lv_draw_buf_t *> app_snapshots_; // switcher thumbnails
+    std::unique_ptr<AppSwitcher> app_switcher_;
+    int dock_base_width_ = 0;
+    lv_obj_t *gallery_dock_item_ = nullptr; // temp dock slot while Gallery runs
 
     std::map<std::string, std::unique_ptr<LvglImage>> background_image_cache_;
     std::vector<std::string> background_files_;
