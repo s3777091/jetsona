@@ -9,6 +9,8 @@ Usage
   python3 scripts/s3_assets.py fetch     # build-time: download missing assets
   python3 scripts/s3_assets.py upload     # one-time seed: push ./assets -> bucket
   python3 scripts/s3_assets.py list      # debug: list objects in the bucket
+  python3 scripts/s3_assets.py fetch-file fonts/cloud/Example.ttf
+                                         # runtime: fetch exactly one asset
 
 `fetch` is the "bo kiem tra" (checker): it lists every object in the bucket and
 downloads ONLY objects whose local file is missing or whose size differs from
@@ -380,6 +382,16 @@ def cmd_fetch(c):
         rel = rel.lstrip("/")
         if not rel or rel.endswith("/"):
             continue  # synthetic dir entry
+        # Cloud font binaries are intentionally on-demand. The small catalog
+        # remains part of the normal asset sync, but opening Settings > General
+        # > Fonts is what downloads an actual TTF. Set the override only when
+        # preparing a fully offline image that should contain every font.
+        if (rel.replace("\\", "/").startswith("fonts/cloud/") and
+                rel.lower().endswith(".ttf") and
+                os.environ.get("ASSETS_FETCH_CLOUD_FONTS", "0") != "1"):
+            skipped += 1
+            log("  cloud   {} (on demand)".format(rel))
+            continue
         if rel.replace("\\", "/") in trashed_paths:
             skipped += 1
             log("  trash   {}".format(rel))
@@ -396,6 +408,35 @@ def cmd_fetch(c):
         downloaded, skipped))
     if downloaded == 0 and skipped == 0:
         die("bucket is empty or prefix '{}' matched nothing.".format(prefix or "/"), code=2)
+
+
+def cmd_fetch_file(c, rel):
+    """Download one caller-selected asset below JETSON_ASSETS_DIR.
+
+    The UI passes only keys from its S3-owned font manifest. Reject absolute
+    paths and traversal here as a second boundary before constructing either
+    the remote key or local destination.
+    """
+    rel = rel.replace("\\", "/")
+    if (not rel or rel.startswith("/") or rel.endswith("/") or
+            any(part in ("", ".", "..") for part in rel.split("/"))):
+        die("fetch-file requires a safe relative object key.", code=2)
+    s3 = _make_s3(c)
+    key = (c["prefix"] + rel) if c["prefix"] else rel
+    matches = [(obj_key, size) for obj_key, size in list_objects(s3, c["bucket"], key)
+               if obj_key == key]
+    if not matches:
+        die("object '{}' was not found in bucket '{}'.".format(key, c["bucket"]), code=2)
+    _, size = matches[0]
+    dest = os.path.join(c["assets_dir"], *rel.split("/"))
+    # Catalog refreshes are tiny and should see same-size content changes;
+    # immutable font binaries can use the normal size-based cache.
+    force = rel.lower().endswith("catalog.tsv")
+    if not force and os.path.isfile(dest) and os.path.getsize(dest) == size:
+        print("==> fetch-file: cached {}".format(rel))
+        return
+    download_object(s3, c["bucket"], key, dest, size)
+    print("==> fetch-file: downloaded {} ({} bytes)".format(rel, size))
 
 
 def _iter_local_files(assets_dir):
@@ -435,9 +476,15 @@ COMMANDS = {"fetch": cmd_fetch, "upload": cmd_upload, "list": cmd_list}
 
 
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "fetch-file":
+        if len(argv) != 3:
+            die("usage: s3_assets.py fetch-file <relative-object-key>", code=2)
+        cmd_fetch_file(cfg(), argv[2])
+        return
     if len(argv) < 2 or argv[1] not in COMMANDS:
-        die("usage: s3_assets.py <fetch|upload|list>\n"
+        die("usage: s3_assets.py <fetch|fetch-file|upload|list>\n"
             "  fetch  - download missing/mismatched assets from MinIO\n"
+            "  fetch-file <key> - download exactly one on-demand asset\n"
             "  upload - seed ./assets into the MinIO bucket\n"
             "  list   - list objects in the bucket", code=2)
     COMMANDS[argv[1]](cfg())

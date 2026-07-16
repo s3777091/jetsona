@@ -1,7 +1,9 @@
 #include "display/widgets/status_bar.h"
+#include "display/common/airplane_icon.h"
 #include "display/common/lvgl_utils.h"
 #include "display/core/lvgl_image.h"
 #include "fonts.h"
+#include "net/airplane_mode.h"
 #include "settings.h"
 #include "board.h"
 
@@ -94,6 +96,9 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     if (weather_icon_image_) lv_image_set_src(weather_icon_, weather_icon_image_->image_dsc());
     lv_obj_clear_flag(weather_icon_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    airplane_icon_ = jetson::ui::CreateAirplaneIcon(right_cluster_, lv_color_white());
+    lv_obj_add_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
 
     add_icon(&wifi_label_, LV_SYMBOL_WIFI, OnWifiClick);
     add_icon(&bt_label_, LV_SYMBOL_BLUETOOTH, OnBtClick);
@@ -303,6 +308,27 @@ void StatusBar::Refresh() {
     RefreshClock();
     RefreshBattery();
     RefreshLang();
+    RefreshConnectivity();
+}
+
+void StatusBar::RefreshConnectivity() {
+    const bool airplane = jetson::IsAirplaneModeEnabled();
+    if (airplane_state_read_ && airplane == cached_airplane_mode_) return;
+    airplane_state_read_ = true;
+    cached_airplane_mode_ = airplane;
+
+    if (airplane_icon_) {
+        if (airplane) lv_obj_clear_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (wifi_label_) {
+        if (airplane) lv_obj_add_flag(wifi_label_, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_clear_flag(wifi_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (bt_label_) {
+        if (airplane) lv_obj_add_flag(bt_label_, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_clear_flag(bt_label_, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void StatusBar::RefreshClock() {
@@ -310,8 +336,13 @@ void StatusBar::RefreshClock() {
     struct tm t = *std::localtime(&now);
     if (t.tm_year < (2025 - 1900)) return; // time not set yet
     bool h24 = Settings("display").GetBool("clock_24h", true);
+    const std::string region = Settings("system").GetString("region", "VN");
+    const char *date = (region == "US") ? "%m/%d" :
+                       (region == "JP" || region == "CN") ? "%Y/%m/%d" : "%d/%m";
+    std::string format = h24 ? "%H:%M  " : "%I:%M  ";
+    format += date;
     char ts[32];
-    std::strftime(ts, sizeof(ts), h24 ? "%H:%M  %d/%m" : "%I:%M  %d/%m", &t);
+    std::strftime(ts, sizeof(ts), format.c_str(), &t);
     std::string s(ts);
     if (s != cached_datetime_ && datetime_label_) {
         lv_label_set_text(datetime_label_, s.c_str());

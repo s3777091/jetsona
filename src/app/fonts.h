@@ -2,6 +2,7 @@
 #define JETSON_APP_FONTS_H
 
 #include <lvgl.h>
+#include <string>
 
 namespace jetson {
 extern lv_font_t *g_builtin_text_font;
@@ -19,6 +20,17 @@ void InitBuiltinFonts(const char *assets_dir);
 void ApplyBuiltinTypography(int size_px, bool bold);
 int BuiltinTextSize();
 bool BuiltinTextBold();
+
+/* Switch the live application font to a TTF already present on disk. The
+ * paths and display name are persisted, so a font downloaded from the
+ * firmware's own S3 bucket remains selected after reboot. No network access
+ * happens here; the settings UI owns the explicit download step. */
+bool ApplyBuiltinFontFamily(const std::string &display_name,
+                            const std::string &regular_path,
+                            const std::string &bold_path = "");
+const std::string &BuiltinFontName();
+const std::string &BuiltinFontRegularPath();
+const std::string &BuiltinAssetsDir();
 } // namespace jetson
 
 /* The DS-02 UI references &BUILTIN_TEXT_FONT / &BUILTIN_ICON_FONT as

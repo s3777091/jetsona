@@ -7,6 +7,7 @@
 #include "display/views/chat_view.h"
 #include "display/views/documents_view.h"
 #include "display/views/lock_screen_view.h"
+#include "display/views/reminders_view.h"
 #include "display/views/settings_view.h"
 #include "display/views/terminal_view.h"
 #include "display/views/trash_view.h"
@@ -16,6 +17,7 @@
 #include "net/wifi_manager.h"
 #include "board.h"
 #include "fonts.h"
+#include "lvgl_runtime.h"
 #include "settings.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -346,13 +348,17 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
     // ---- App drawer grid (the DS-02 launcher content) ----
     struct AppDef { const char *icon; const char *label; int id; };
     static const AppDef kApps[kDrawerItemCount] = {
-        {"assets/icons/drawer/agent.png",      "Agent",      0},
+        {"assets/icons/drawer/agent.png",       "Agent",      0},
+        {"assets/icons/drawer/calculator.png",  "Máy tính",   8},
         {"assets/icons/drawer/chromium.png",    "Chromium",   1},
-        {"assets/icons/drawer/git.png",         "Git",        2},
+        {"assets/icons/drawer/game.png",        "Trò chơi",   9},
+        {"assets/icons/drawer/github.png",      "GitHub",     2},
         {"assets/icons/drawer/minion.png",      "Minion",     3},
         {"assets/icons/drawer/nightowl.png",    "NightOwl",   4},
         {"assets/icons/drawer/photos.png",      "Ảnh",        5},
-        {"assets/icons/drawer/teamspeak.png",   "TeamSpeak",  6},
+        {"assets/icons/drawer/pods.png",        "Pods",      10},
+        {"assets/icons/drawer/record.png",      "Ghi âm",    11},
+        {"assets/icons/drawer/tailscale.png",   "Tailscale", 12},
         {"assets/icons/drawer/translate.png",   "Dịch",       7},
     };
     constexpr int kCols = 4;
@@ -374,28 +380,36 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
     for (size_t i = 0; i < kDrawerItemCount; ++i) {
         auto *btn = lv_obj_create(app_grid_);
         lv_obj_remove_style_all(btn);
-        lv_obj_set_size(btn, cellW, 84);
+        lv_obj_set_size(btn, cellW, 96);
         // No "glass" tile behind the icon -- transparent, just a tap target.
         lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(btn, 4, 0);
 
         drawer_icon_cache_[i] = LvglImageFromFile(kApps[i].icon);
         if (drawer_icon_cache_[i]) {
             auto *icon = lv_image_create(btn);
             lv_image_set_src(icon, drawer_icon_cache_[i]->image_dsc());
             lv_image_set_scale(icon, (uint16_t)PngScaleToFit(kApps[i].icon, 60)); // icon only, bigger
-            lv_obj_center(icon);
             lv_obj_clear_flag(icon, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
         } else {
             auto *fallback = lv_label_create(btn);
             lv_obj_set_style_text_font(fallback, &BUILTIN_ICON_FONT, 0);
             lv_obj_set_style_text_color(fallback, Color(p.text), 0);
             lv_label_set_text(fallback, LV_SYMBOL_IMAGE);
-            lv_obj_center(fallback);
         }
+
+        auto *label = lv_label_create(btn);
+        lv_obj_set_width(label, cellW);
+        lv_obj_set_style_text_font(label, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(p.text), 0);
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+        lv_label_set_text(label, kApps[i].label);
+        lv_obj_clear_flag(label, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
         auto *ctx = new AppCtx{this, kApps[i].id};
         lv_obj_add_event_cb(btn, OnAppButtonClicked, LV_EVENT_CLICKED, ctx);
@@ -411,6 +425,7 @@ void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
     // wallpaper gallery, which moved here from the dock so the dock's folder
     // icon can open the drawer itself.
     switch (ctx->id) {
+    case 1: self->OpenChromium(); break;        // drawer "Chromium" -> Xorg kiosk
     case 5: self->OpenBackgroundGallery(); break;
     default: self->ShowNotification("Sắp ra mắt", 1500); break;
     }
@@ -686,7 +701,9 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     // Dock icons (in file order): finder, calendar, folder, music, reminders,
     // settings, siri, terminal, separator, trash. The finder icon toggles the app drawer
     // open/closed (no touch swipe on this panel); the folder icon opens the
-    // Documents file browser. music/reminders carry WiFi/BT; the wallpaper
+    // Documents file browser. Music carries WiFi while Reminders opens its own
+    // persistent task list; Bluetooth remains available from the status bar
+    // and Settings. The wallpaper
     // gallery lives in the drawer's "Ảnh" tile.
     switch (focused) {
     case 0: // finder -> toggle app drawer
@@ -698,7 +715,7 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     case 1: self->OpenCalendar(); break;
     case 2: self->OpenDocuments(); break;
     case 3: self->OpenWifiSettings(); break;
-    case 4: self->OpenBluetoothSettings(); break;
+    case 4: self->OpenReminders(); break;
     case 5: self->OpenSettings(); break;
     case 6: self->OpenChat(); break;
     case 7: self->OpenTerminal(); break;
@@ -755,6 +772,18 @@ void Ds02HomeDisplay::OpenDocuments() {
     NoteAppOpened(kAppDocuments);
 }
 
+void Ds02HomeDisplay::OpenReminders() {
+    DisplayLockGuard lock(this);
+    if (reminders_view_) { RestoreApp(kAppReminders); return; }
+    if (!root_) root_ = lv_screen_active();
+    reminders_view_ = std::make_shared<RemindersView>(
+        root_, width_, height_,
+        [this]() { reminders_view_.reset(); OnAppClosed(kAppReminders); });
+    reminders_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppReminders); });
+    reminders_view_->Start();
+    NoteAppOpened(kAppReminders);
+}
+
 void Ds02HomeDisplay::OpenBackgroundGallery() {
     DisplayLockGuard lock(this);
     if (gallery_view_) { RestoreApp(kAppGallery); return; }
@@ -796,6 +825,8 @@ void Ds02HomeDisplay::OpenSettings() {
             // its own icon, so nothing to touch here.
         });
     settings_view_->SetLockRequest([this]() { OpenLockScreen(); });
+    settings_view_->SetNotificationApplier(
+        [this](const char *message) { ShowNotification(message, 2800); });
     settings_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppSettings); });
     settings_view_->Start();
     NoteAppOpened(kAppSettings);
@@ -891,6 +922,27 @@ void Ds02HomeDisplay::OpenTerminal() {
     NoteAppOpened(kAppTerminal);
 }
 
+void Ds02HomeDisplay::OpenChromium() {
+    /* Hand the panel to a Chromium kiosk. We can't run a browser inside the
+     * firmware (it owns /dev/fb0 via FBDEV with no display server), so the
+     * deal is: stop the LVGL render threads (no more writes to the framebuffer),
+     * then exit the process with code 42. The jetson-fw supervisor
+     * (scripts/jetson_fw_run.sh) sees 42, runs scripts/launch_chromium.sh to
+     * start Xorg + chromium --kiosk on the HDMI panel, and restarts this
+     * firmware once the browser closes -- re-acquiring /dev/fb0 fresh.
+     *
+     * Stop() joins the LVGL tick + handler threads, so it must NOT run on the
+     * LVGL handler thread (we're inside an event callback here). Sleep briefly
+     * so the click feedback paints, then stop + exit from a detached thread. */
+    ShowNotification("Đang mở Chromium...", 1200);
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        jetson::LvglRuntime::Instance().Stop();  // release /dev/fb0 writes
+        sync();
+        _exit(42);  // 42 -> supervisor launches Chromium kiosk, then restarts us
+    }).detach();
+}
+
 void Ds02HomeDisplay::OpenTrash() {
     DisplayLockGuard lock(this);
     if (trash_view_) { RestoreApp(kAppTrash); return; }
@@ -914,6 +966,7 @@ OverlayView *Ds02HomeDisplay::GetAppView(AppId id) const {
     switch (id) {
     case kAppCalendar:  return calendar_view_.get();
     case kAppDocuments: return documents_view_.get();
+    case kAppReminders: return reminders_view_.get();
     case kAppSettings:  return settings_view_.get();
     case kAppChat:      return chat_view_.get();
     case kAppTerminal:  return terminal_view_.get();
@@ -1004,7 +1057,7 @@ void Ds02HomeDisplay::UpdateDockDots() {
         return std::find(task_queue_.begin(), task_queue_.end(), id) != task_queue_.end();
     };
     static constexpr struct { int dock_index; AppId app; } kDockApps[] = {
-        {1, kAppCalendar}, {2, kAppDocuments}, {5, kAppSettings},
+        {1, kAppCalendar}, {2, kAppDocuments}, {4, kAppReminders}, {5, kAppSettings},
         {6, kAppChat},     {7, kAppTerminal},  {8, kAppTrash},
     };
     for (const auto &m : kDockApps) {
@@ -1030,11 +1083,12 @@ void Ds02HomeDisplay::OpenAppSwitcher() {
         switch (id) {
         case kAppCalendar:  *path = "assets/icons/dock/calendar.png"; return dock_icon_cache_[1].get();
         case kAppDocuments: *path = "assets/icons/dock/folder.png";   return dock_icon_cache_[2].get();
+        case kAppReminders: *path = "assets/icons/dock/reminders.png"; return dock_icon_cache_[4].get();
         case kAppSettings:  *path = "assets/icons/dock/settings.png"; return dock_icon_cache_[5].get();
         case kAppChat:      *path = "assets/icons/dock/siri.png";     return dock_icon_cache_[6].get();
         case kAppTerminal:  *path = "assets/icons/dock/terminal.png"; return dock_icon_cache_[7].get();
         case kAppTrash:     *path = "assets/icons/dock/trash.png";    return dock_icon_cache_[8].get();
-        case kAppGallery:   *path = "assets/icons/drawer/photos.png"; return drawer_icon_cache_[5].get();
+        case kAppGallery:   *path = "assets/icons/drawer/photos.png"; return drawer_icon_cache_[kGalleryDrawerIndex].get();
         default:            *path = nullptr; return nullptr;
         }
     };
@@ -1087,9 +1141,9 @@ void Ds02HomeDisplay::AddGalleryDockItem() {
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(btn, OnGalleryDockClicked, LV_EVENT_CLICKED, this);
 
-    if (drawer_icon_cache_[5]) { // "Ảnh" drawer tile icon
+    if (drawer_icon_cache_[kGalleryDrawerIndex]) { // "Ảnh" drawer tile icon
         auto *icon = lv_image_create(btn);
-        lv_image_set_src(icon, drawer_icon_cache_[5]->image_dsc());
+        lv_image_set_src(icon, drawer_icon_cache_[kGalleryDrawerIndex]->image_dsc());
         lv_image_set_scale(icon, (uint16_t)PngScaleToFit("assets/icons/drawer/photos.png", 41));
         lv_obj_center(icon);
         lv_obj_clear_flag(icon, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));

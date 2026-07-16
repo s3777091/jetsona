@@ -36,10 +36,11 @@
 #define LV_USE_DRAW_SW 1
 #if LV_USE_DRAW_SW
     #define LV_DRAW_SW_SHADOW_CACHE_SIZE 0
-    /* Parallel SW rendering across CPU cores (requires LV_USE_OS, pthread
-     * above). The Nano has 4x Cortex-A57; 2 draw threads roughly halves frame
-     * render time while leaving cores free for audio/LLM worker threads. */
-    #define LV_DRAW_SW_DRAW_UNIT_CNT 2
+    /* MUST stay 1: TinyTTF (lv_tiny_ttf.c) rasterizes glyphs into a shared
+     * cache with no locking, so >1 draw unit makes parallel text draws race —
+     * glyphs come out missing/corrupted all over the UI (seen on-device with
+     * 2 units). Revisit only if the text font moves to pre-rendered bitmaps. */
+    #define LV_DRAW_SW_DRAW_UNIT_CNT 1
     /* Must stay NONE on the Nano: LVGL's NEON blend asm (lv_blend_neon.S) is
      * 32-bit ARM (.arch armv7a) and does not assemble on aarch64. */
     #define LV_DRAW_SW_ASM LV_DRAW_SW_ASM_NONE

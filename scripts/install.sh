@@ -16,6 +16,18 @@ echo "==> Installing to /opt/jetson-fw"
 sudo mkdir -p /opt/jetson-fw
 sudo cp "$BUILD_DIR/jetson_fw" /opt/jetson-fw/
 sudo cp -r "$JETSON_DIR/assets" /opt/jetson-fw/
+sudo mkdir -p /opt/jetson-fw/scripts
+sudo cp "$JETSON_DIR/scripts/s3_assets.py" /opt/jetson-fw/scripts/
+sudo chmod +x /opt/jetson-fw/scripts/s3_assets.py
+# Supervisor + Chromium kiosk launcher (drawer "Chromium" tile hands the panel
+# to Xorg + chromium --kiosk; supervisor restarts the firmware when it exits).
+sudo cp "$JETSON_DIR/scripts/jetson_fw_run.sh" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/launch_chromium.sh" /opt/jetson-fw/scripts/
+sudo chmod +x /opt/jetson-fw/scripts/jetson_fw_run.sh /opt/jetson-fw/scripts/launch_chromium.sh
+if [ -f "$JETSON_DIR/.env" ]; then
+    sudo cp "$JETSON_DIR/.env" /opt/jetson-fw/.env
+    sudo chmod 600 /opt/jetson-fw/.env
+fi
 sudo cp "$JETSON_DIR/scripts/jetson-fw.service" /etc/systemd/system/
 
 # Cooling fan helper (NOT auto-enabled — requires MOSFET rewiring first).

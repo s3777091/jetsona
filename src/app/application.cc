@@ -2,8 +2,12 @@
 #include "board.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "net/airplane_mode.h"
+#include "net/bluetooth_manager.h"
+#include "net/wifi_manager.h"
 
 #include <chrono>
+#include <thread>
 
 #define TAG "App"
 
@@ -31,6 +35,16 @@ void Application::Initialize() {
         display->SetupUI();
         display->SetStatus("Ready");
     }
+
+    // Radio state can be reset by the kernel during a reboot. Re-apply a
+    // persisted airplane mode off the UI thread so startup remains responsive.
+    std::thread([]() {
+        auto result = jetson::EnforcePersistedAirplaneMode(
+            jetson::WifiManager::Instance(), jetson::BluetoothManager::Instance());
+        if (!result.success)
+            ESP_LOGE(TAG, "could not fully enforce persisted airplane mode: %s",
+                     result.error.c_str());
+    }).detach();
 
     // 1s clock tick -> status bar refresh.
     esp_timer_create_args_t args = {

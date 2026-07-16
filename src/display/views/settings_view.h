@@ -13,14 +13,14 @@
 
 namespace home {
 
-/* macOS System Settings-style hub: a sidebar of categories + a detail pane
- * that rebuilds on selection. Categories: Display
+/* Firmware settings hub: a compact category rail + an iPhone-inspired detail
+ * pane that rebuilds on selection. Categories: Display
  * (brightness 20..100 via a software scrim), Sound (volume, UI-only), WiFi
  * (radio toggle + scan + per-network info/login/forget modal), Bluetooth
- * (power toggle + scan + per-device connect/disconnect/forget modal), Keyboard
- * (vi/en with a live Telex IME demo field), Date & Time (timezone via
- * timedatectl + 12h/24h), Power & Security (sleep timeout, lock screen, set
- * PIN, reboot, shutdown), About (device + storage + memory).
+ * (power toggle + scan + per-device connect/disconnect/forget modal), and one
+ * General category. General owns the Keyboard, Language & Region, Date & Time,
+ * Fonts, Power & Lock, and About sub-pages instead of exposing those as six
+ * unrelated top-level categories.
  *
  * Connectivity actions depend on IWifiManager/IBluetoothManager rather than
  * concrete singletons, while common LVGL locking and signal indicators are
@@ -38,6 +38,9 @@ public:
     }
     void SetVolumeApplier(std::function<void(int, bool)> cb) { volume_cb_ = std::move(cb); }
     void SetLockRequest(std::function<void()> cb) { lock_cb_ = std::move(cb); }
+    void SetNotificationApplier(std::function<void(const char *)> cb) {
+        notification_cb_ = std::move(cb);
+    }
 
 protected:
     void OnStart() override;
@@ -49,23 +52,53 @@ private:
     jetson::IWifiManager &wifi_;
     jetson::IBluetoothManager &bluetooth_;
 
-    enum class Cat {
-        Display, Sound, Wifi, Bluetooth, Keyboard, DateTime, Power, About
-    };
+    enum class Cat { Display, Sound, Wifi, Bluetooth, General };
 
     enum class DisplayPage { Main, TextSize, NightShift, AutoLock, AlwaysOn };
+    enum class GeneralPage {
+        Main,
+        Keyboard,
+        LanguageRegion,
+        LanguagePicker,
+        RegionPicker,
+        Calendar,
+        DateTime,
+        Fonts,
+        SystemFonts,
+        MyFonts,
+        CloudFonts,
+        Power,
+        LockTimeout,
+        About,
+    };
 
     struct SideCtx { SettingsView *self; Cat cat; };
     struct WifiRowCtx { SettingsView *self; jetson::WifiNetwork network; };
     struct BtRowCtx { SettingsView *self; std::string addr; };
     struct OptCtx { SettingsView *self; std::string value; }; // timezone / sleep option
+    struct FontCtx {
+        SettingsView *self;
+        std::string name;
+        std::string regular_path;
+        std::string bold_path;
+        std::string regular_object;
+        std::string bold_object;
+    };
 
     // Layout.
     lv_obj_t *sidebar_ = nullptr;
     lv_obj_t *detail_ = nullptr;
     Cat current_ = Cat::Display;
     DisplayPage display_page_ = DisplayPage::Main;
+    GeneralPage general_page_ = GeneralPage::Main;
     std::vector<lv_obj_t *> side_rows_;
+
+    // Global airplane-mode row at the top of the sidebar.
+    lv_obj_t *airplane_row_ = nullptr;
+    lv_obj_t *airplane_icon_bg_ = nullptr;
+    lv_obj_t *airplane_switch_ = nullptr;
+    bool airplane_enabled_ = false;
+    std::atomic<bool> airplane_busy_{false};
 
     // WiFi pane.
     lv_obj_t *wifi_switch_ = nullptr;
@@ -97,6 +130,12 @@ private:
     lv_obj_t *vol_slider_ = nullptr;
     lv_obj_t *mute_switch_ = nullptr;
 
+    // General / cloud-font pane state.
+    lv_obj_t *font_status_label_ = nullptr;
+    std::atomic<bool> font_busy_{false};
+    bool font_catalog_requested_ = false;
+    std::string font_status_;
+
     // Modal (built on overlay_).
     lv_obj_t *popup_ = nullptr;
     lv_obj_t *popup_card_ = nullptr;
@@ -115,9 +154,12 @@ private:
     std::function<void()> display_preferences_cb_;
     std::function<void(int, bool)> volume_cb_;  // (volume, muted)
     std::function<void()> lock_cb_;
+    std::function<void(const char *)> notification_cb_;
 
     // ---- layout / panes ----
     void BuildShell();
+    void AddAirplaneRow();
+    void AirplaneRefreshUi();
     void AddSidebarRow(Cat cat, const char *glyph, const char *label);
     void HighlightSide(Cat cat);
     void ShowCategory(Cat c);
@@ -145,10 +187,30 @@ private:
     void BuildSound();
     void BuildWifi();
     void BuildBluetooth();
-    void BuildKeyboard();
-    void BuildDateTime();
-    void BuildPower();
-    void BuildAbout();
+    void BuildGeneral();
+    void BuildGeneralMain();
+    void BuildGeneralKeyboard();
+    void BuildLanguageRegion();
+    void BuildLanguagePicker();
+    void BuildRegionPicker();
+    void BuildCalendarPicker();
+    void BuildGeneralDateTime();
+    void BuildFonts();
+    void BuildLocalFonts(bool personal);
+    void BuildCloudFonts();
+    void BuildGeneralPower();
+    void BuildGeneralLockTimeout();
+    void BuildGeneralAbout();
+    void GeneralPageHeader(const char *title);
+    void MakeOptionRow(lv_obj_t *card, const char *title, const char *sub,
+                       bool selected, lv_event_cb_t cb, const std::string &value);
+    void MakeFontRow(lv_obj_t *card, const std::string &name,
+                     const std::string &regular_path, const std::string &bold_path,
+                     const std::string &regular_object = "",
+                     const std::string &bold_object = "");
+    void SetFontStatus(const std::string &text);
+    void RefreshCloudFontCatalog();
+    void DownloadAndApplyFont(const FontCtx &font);
 
     // ---- WiFi ----
     void WifiRefreshSwitch();
@@ -182,6 +244,7 @@ private:
     static void OnWifiRowDeleted(lv_event_t *e);
     static void OnBtRowDeleted(lv_event_t *e);
     static void OnOptDeleted(lv_event_t *e);
+    static void OnFontDeleted(lv_event_t *e);
 
     static void OnBrightChanged(lv_event_t *e);
     static void OnDisplayBack(lv_event_t *e);
@@ -201,6 +264,7 @@ private:
     static void OnAlwaysOnNotificationsToggle(lv_event_t *e);
     static void OnVolChanged(lv_event_t *e);
     static void OnMuteToggle(lv_event_t *e);
+    static void OnAirplaneSwitch(lv_event_t *e);
 
     static void OnWifiSwitch(lv_event_t *e);
     static void OnWifiRescan(lv_event_t *e);
@@ -212,9 +276,29 @@ private:
 
     static void OnLangVi(lv_event_t *e);
     static void OnLangEn(lv_event_t *e);
+    static void OnGeneralBack(lv_event_t *e);
+    static void OnOpenGeneralKeyboard(lv_event_t *e);
+    static void OnOpenLanguageRegion(lv_event_t *e);
+    static void OnOpenLanguagePicker(lv_event_t *e);
+    static void OnOpenRegionPicker(lv_event_t *e);
+    static void OnOpenCalendarPicker(lv_event_t *e);
+    static void OnOpenGeneralDateTime(lv_event_t *e);
+    static void OnOpenFonts(lv_event_t *e);
+    static void OnOpenSystemFonts(lv_event_t *e);
+    static void OnOpenMyFonts(lv_event_t *e);
+    static void OnOpenCloudFonts(lv_event_t *e);
+    static void OnOpenGeneralPower(lv_event_t *e);
+    static void OnOpenGeneralAbout(lv_event_t *e);
+    static void OnLanguageSelected(lv_event_t *e);
+    static void OnRegionSelected(lv_event_t *e);
+    static void OnCalendarSelected(lv_event_t *e);
     static void On24hToggle(lv_event_t *e);
+    static void OnAutoTimeToggle(lv_event_t *e);
     static void OnTzSelected(lv_event_t *e);
     static void OnSleepSelected(lv_event_t *e);
+    static void OnOpenGeneralLockTimeout(lv_event_t *e);
+    static void OnFontSelected(lv_event_t *e);
+    static void OnRefreshFontCatalog(lv_event_t *e);
 
     static void OnLockNow(lv_event_t *e);
     static void OnSetPin(lv_event_t *e);

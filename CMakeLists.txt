@@ -166,6 +166,7 @@ target_compile_definitions(jetson_fw PRIVATE
     JETSON_DISPLAY_WIDTH=${JETSON_DISPLAY_WIDTH}
     JETSON_DISPLAY_HEIGHT=${JETSON_DISPLAY_HEIGHT}
     JETSON_ASSETS_DIR="${JETSON_ASSETS_DIR}"
+    JETSON_FW_VERSION="${PROJECT_VERSION}"
     BOARD_NAME="jetson-nano")
 
 target_link_libraries(jetson_fw PRIVATE
@@ -226,5 +227,6 @@ add_custom_command(TARGET jetson_fw POST_BUILD
 # ----------------------------------------------------------------------------
 install(TARGETS jetson_fw RUNTIME DESTINATION /opt/jetson-fw)
 install(DIRECTORY assets DESTINATION /opt/jetson-fw)
+install(PROGRAMS scripts/s3_assets.py DESTINATION /opt/jetson-fw/scripts)
 install(PROGRAMS scripts/jetson-fw.service DESTINATION /etc/systemd/system OPTIONAL)
 message(STATUS "jetson_fw: backend=${JETSON_DISPLAY_BACKEND} ${JETSON_DISPLAY_WIDTH}x${JETSON_DISPLAY_HEIGHT}")

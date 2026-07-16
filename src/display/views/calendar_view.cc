@@ -23,17 +23,35 @@ namespace {
 using jetson::ui::Color;
 using jetson::ui::LvglLockGuard;
 
-const char *kWeekdays[7] = {"T2", "T3", "T4", "T5", "T6", "T7", "CN"};
+const char *kWeekdaysVi[7] = {"T2", "T3", "T4", "T5", "T6", "T7", "CN"};
+const char *kWeekdaysEn[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
 
 // Vietnamese weekday names for the day-modal title (tm_wday: 0=Sun).
 const char *kVnWeekday[7] = {
     "Chủ nhật", "Thứ hai", "Thứ ba", "Thứ tư",
     "Thứ năm", "Thứ sáu", "Thứ bảy",
 };
+const char *kEnWeekday[7] = {
+    "Sunday", "Monday", "Tuesday", "Wednesday",
+    "Thursday", "Friday", "Saturday",
+};
+
+bool IsFirmwareVietnamese() {
+    const std::string language = Settings("system", false).GetString("language", "vi-VN");
+    return language.rfind("vi", 0) == 0;
+}
 
 bool IsKbdVi() {
     Settings s("input", false);
     return s.GetString("kbd_lang", "en") == "vi";
+}
+
+std::string DisplayCalendarYear(int year) {
+    const std::string calendar = Settings("system", false).GetString("calendar", "gregorian");
+    if (calendar == "buddhist") return std::to_string(year + 543);
+    if (calendar == "japanese" && year >= 2019)
+        return "R" + std::to_string(year - 2018);
+    return std::to_string(year);
 }
 
 void SetSheetTranslateY(void *obj, int32_t value) {
@@ -59,10 +77,13 @@ int CalendarView::DaysInMonth(int y, int m) {
 }
 
 const char *CalendarView::MonthName(int m) {
-    static const char *names[] = {
+    static const char *vi[] = {
         "Tháng 1", "Tháng 2", "Tháng 3", "Tháng 4", "Tháng 5", "Tháng 6",
         "Tháng 7", "Tháng 8", "Tháng 9", "Tháng 10", "Tháng 11", "Tháng 12"};
-    return names[m % 12];
+    static const char *en[] = {
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"};
+    return IsFirmwareVietnamese() ? vi[m % 12] : en[m % 12];
 }
 
 std::string CalendarView::Key(int y, int m, int d) {
@@ -85,8 +106,11 @@ std::string CalendarView::FormatDateTitle(int y, int m, int d) {
     tm.tm_hour = 12;
     std::mktime(&tm);
     char buf[48];
-    std::snprintf(buf, sizeof(buf), "%s, %d/%d/%d",
-                  kVnWeekday[tm.tm_wday], d, m + 1, y);
+    const std::string display_year = DisplayCalendarYear(y);
+    std::snprintf(buf, sizeof(buf), "%s, %d/%d/%s",
+                  IsFirmwareVietnamese() ? kVnWeekday[tm.tm_wday]
+                                          : kEnWeekday[tm.tm_wday],
+                  d, m + 1, display_year.c_str());
     return buf;
 }
 
@@ -283,7 +307,7 @@ void CalendarView::BuildBody() {
         lv_obj_set_style_text_font(l, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(l, Color(p.sub_text), 0);
         lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_text(l, kWeekdays[i]);
+        lv_label_set_text(l, IsFirmwareVietnamese() ? kWeekdaysVi[i] : kWeekdaysEn[i]);
     }
 
     // Day grid: 7 cols x 6 rows via flex-wrap.
@@ -362,7 +386,8 @@ void CalendarView::UpdateGrid() {
     const auto &p = jetson::UiTheme::Instance().Palette();
     if (month_label_) {
         char buf[32];
-        std::snprintf(buf, sizeof(buf), "%s %d", MonthName(month_), year_);
+        const std::string display_year = DisplayCalendarYear(year_);
+        std::snprintf(buf, sizeof(buf), "%s %s", MonthName(month_), display_year.c_str());
         lv_label_set_text(month_label_, buf);
     }
     int firstWday = 0; // 0=Sun

@@ -109,6 +109,27 @@ python3 scripts/s3_assets.py upload   # đẩy ./assets -> bucket
 python3 scripts/s3_assets.py list     # liệt kê object trong bucket
 ```
 
+### Font tải theo nhu cầu trong Cài đặt chung
+
+`Cài đặt chung > Phông chữ > Phông chữ khác` đọc manifest
+`fonts/cloud/catalog.tsv` từ chính bucket MinIO ở trên. Mỗi dòng là ba cột
+phân cách bằng tab:
+
+```text
+Tên hiển thị<TAB>Font-Regular.ttf<TAB>Font-Bold.ttf
+```
+
+Có mẫu tại `docs/font-catalog.example.tsv`. Đặt manifest và các file `.ttf`
+trong `assets/fonts/cloud/`, rồi chạy `python3 scripts/s3_assets.py upload`.
+Build bình thường chỉ tải manifest; file font cloud được tải riêng khi người
+dùng chạm vào font đó. Firmware không tìm hoặc tải font từ nguồn Internet khác.
+
+Có thể kiểm tra thủ công đúng luồng tải một file bằng:
+
+```bash
+python3 scripts/s3_assets.py fetch-file fonts/cloud/Font-Regular.ttf
+```
+
 ## Phần cứng và dịch vụ cần có
 
 - Jetson Nano 4GB B01.

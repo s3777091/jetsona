@@ -1,10 +1,12 @@
 #include "display/views/settings_view.h"
+#include "display/common/airplane_icon.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/signal_bars.h"
 #include "display/core/lvgl_image.h"
 #include "fonts.h"
 #include "display/theme/ui_theme.h"
 #include "lvgl_runtime.h"
+#include "net/airplane_mode.h"
 #include "platform/shell_command.h"
 #include "settings.h"
 #include "esp_log.h"
@@ -16,16 +18,22 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fstream>
+#include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
 #include <unistd.h>
 #include <vector>
 
+#include <pwd.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/sysinfo.h>
+#include <sys/utsname.h>
 
 #define TAG "SettingsView"
 
@@ -63,13 +71,270 @@ const char *SleepLabel(int seconds) {
         if (option.seconds == seconds) return option.label;
     return "Không";
 }
-const char *kTimezones[] = {
-    "Asia/Ho_Chi_Minh", "Asia/Bangkok", "Asia/Tokyo", "Asia/Shanghai",
-    "Asia/Singapore", "Asia/Hong_Kong", "Asia/Kolkata", "Asia/Dubai",
-    "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Moscow",
-    "America/New_York", "America/Chicago", "America/Los_Angeles",
-    "America/Sao_Paulo", "Australia/Sydney", "UTC",
+struct TimezoneOpt { const char *id; const char *label; };
+const TimezoneOpt kTimezones[] = {
+    {"Asia/Ho_Chi_Minh", "Hà Nội / TP. Hồ Chí Minh"},
+    {"Asia/Bangkok", "Bangkok"}, {"Asia/Tokyo", "Tokyo"},
+    {"Asia/Shanghai", "Thượng Hải"}, {"Asia/Singapore", "Singapore"},
+    {"Asia/Hong_Kong", "Hồng Kông"}, {"Asia/Kolkata", "Kolkata"},
+    {"Asia/Dubai", "Dubai"}, {"Europe/London", "London"},
+    {"Europe/Paris", "Paris"}, {"Europe/Berlin", "Berlin"},
+    {"Europe/Moscow", "Moscow"}, {"America/New_York", "New York"},
+    {"America/Chicago", "Chicago"}, {"America/Los_Angeles", "Los Angeles"},
+    {"America/Sao_Paulo", "São Paulo"}, {"Australia/Sydney", "Sydney"},
+    {"UTC", "UTC"},
 };
+
+const char *TimezoneLabel(const std::string &id) {
+    for (const auto &option : kTimezones) if (id == option.id) return option.label;
+    return id.c_str();
+}
+
+struct LanguageOpt {
+    const char *code;
+    const char *title;
+    const char *subtitle;
+    const char *input_lang;
+};
+
+const LanguageOpt kLanguages[] = {
+    {"vi-VN", "Tiếng Việt", "Việt Nam", "vi"},
+    {"en-GB", "English (UK)", "Tiếng Anh (Vương quốc Anh)", "en"},
+    {"en-AU", "English (Australia)", "Tiếng Anh (Úc)", "en"},
+    {"en-IN", "English (India)", "Tiếng Anh (Ấn Độ)", "en"},
+    {"zh-TW", "繁體中文", "Tiếng Trung (Phồn thể)", "en"},
+    {"zh-HK", "繁體中文 (香港)", "Tiếng Trung (Hồng Kông)", "en"},
+    {"ja-JP", "日本語", "Tiếng Nhật", "en"},
+    {"es-ES", "Español", "Tiếng Tây Ban Nha", "en"},
+    {"es-US", "Español (EE. UU.)", "Tiếng Tây Ban Nha (Mỹ)", "en"},
+    {"es-419", "Español (Latinoamérica)", "Tiếng Tây Ban Nha (Châu Mỹ La-tinh)", "en"},
+    {"fr-FR", "Français", "Tiếng Pháp", "en"},
+};
+
+struct RegionOpt { const char *code; const char *name; };
+const RegionOpt kRegions[] = {
+    {"VN", "Việt Nam"}, {"AU", "Úc"}, {"CN", "Trung Quốc"},
+    {"HK", "Hồng Kông"}, {"IN", "Ấn Độ"}, {"JP", "Nhật Bản"},
+    {"SG", "Singapore"}, {"ES", "Tây Ban Nha"}, {"FR", "Pháp"},
+    {"UZ", "Uzbekistan"}, {"VU", "Vanuatu"}, {"VE", "Venezuela"},
+    {"GB", "Vương quốc Anh"}, {"US", "Hoa Kỳ"},
+    {"WF", "Wallis và Futuna"}, {"YE", "Yemen"},
+    {"ZM", "Zambia"}, {"ZW", "Zimbabwe"},
+};
+
+struct CalendarOpt { const char *code; const char *name; };
+const CalendarOpt kCalendars[] = {
+    {"gregorian", "Lịch Gregory"},
+    {"japanese", "Lịch Nhật Bản"},
+    {"buddhist", "Lịch Phật giáo"},
+};
+
+struct CloudFontEntry {
+    std::string name;
+    std::string regular_object;
+    std::string bold_object;
+};
+
+struct LocalFontFamily {
+    std::string name;
+    std::string regular_path;
+    std::string bold_path;
+};
+
+bool FileExistsLocal(const std::string &path) {
+    struct stat st{};
+    return !path.empty() && ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+std::string JoinPath(const std::string &left, const std::string &right) {
+    if (left.empty()) return right;
+    if (right.empty()) return left;
+    if (left.back() == '/') return left + right;
+    return left + "/" + right;
+}
+
+std::string HomeDir() {
+    const char *home = std::getenv("HOME");
+    if (home && home[0]) return home;
+    struct passwd *pw = getpwuid(getuid());
+    return pw && pw->pw_dir ? pw->pw_dir : "/root";
+}
+
+bool HasTtfExtension(const std::string &name) {
+    if (name.size() < 4) return false;
+    std::string ext = name.substr(name.size() - 4);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    return ext == ".ttf";
+}
+
+std::string FontStemFromPath(const std::string &path) {
+    size_t slash = path.find_last_of("/\\");
+    std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+    if (HasTtfExtension(name)) name.resize(name.size() - 4);
+    for (char &c : name) if (c == '_' || c == '-') c = ' ';
+    return name;
+}
+
+std::string LowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    return value;
+}
+
+std::string HumanizeFontName(const std::string &value) {
+    std::string result;
+    result.reserve(value.size() + 4);
+    for (size_t i = 0; i < value.size(); ++i) {
+        const unsigned char current = (unsigned char)value[i];
+        const unsigned char previous = i ? (unsigned char)value[i - 1] : 0;
+        if (i && value[i - 1] != ' ' &&
+            ((std::isupper(current) && std::islower(previous)) ||
+             (std::isdigit(current) && !std::isdigit(previous)))) {
+            result.push_back(' ');
+        }
+        result.push_back(value[i]);
+    }
+    return result;
+}
+
+void CollectTtfFiles(const std::string &dir, bool skip_cloud,
+                     std::vector<std::string> *files) {
+    DIR *handle = ::opendir(dir.c_str());
+    if (!handle) return;
+    while (dirent *entry = ::readdir(handle)) {
+        const std::string name = entry->d_name;
+        if (name == "." || name == "..") continue;
+        const std::string path = JoinPath(dir, name);
+        struct stat st{};
+        if (::stat(path.c_str(), &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            if (!skip_cloud || LowerAscii(name) != "cloud")
+                CollectTtfFiles(path, skip_cloud, files);
+        } else if (S_ISREG(st.st_mode) && HasTtfExtension(name)) {
+            files->push_back(path);
+        }
+    }
+    ::closedir(handle);
+}
+
+std::vector<LocalFontFamily> ListFontFamilies(const std::string &dir,
+                                              bool skip_cloud) {
+    std::vector<std::string> files;
+    CollectTtfFiles(dir, skip_cloud, &files);
+    std::sort(files.begin(), files.end());
+
+    std::map<std::string, LocalFontFamily> grouped;
+    for (const auto &path : files) {
+        std::string name = FontStemFromPath(path);
+        std::string lower = LowerAscii(name);
+        bool bold = false;
+        constexpr const char *kRegularSuffix = " regular";
+        constexpr const char *kBoldSuffix = " bold";
+        if (lower.size() > std::strlen(kRegularSuffix) &&
+            lower.compare(lower.size() - std::strlen(kRegularSuffix),
+                          std::strlen(kRegularSuffix), kRegularSuffix) == 0) {
+            name.resize(name.size() - std::strlen(kRegularSuffix));
+        } else if (lower.size() > std::strlen(kBoldSuffix) &&
+                   lower.compare(lower.size() - std::strlen(kBoldSuffix),
+                                 std::strlen(kBoldSuffix), kBoldSuffix) == 0) {
+            name.resize(name.size() - std::strlen(kBoldSuffix));
+            bold = true;
+        }
+        name = HumanizeFontName(name);
+
+        const std::string key = LowerAscii(name);
+        auto &family = grouped[key];
+        if (family.name.empty()) family.name = name;
+        if (bold) {
+            if (family.bold_path.empty()) family.bold_path = path;
+        } else if (family.regular_path.empty()) {
+            family.regular_path = path;
+        }
+    }
+
+    std::vector<LocalFontFamily> families;
+    families.reserve(grouped.size());
+    for (auto &item : grouped) {
+        auto &family = item.second;
+        if (family.regular_path.empty()) {
+            family.regular_path = family.bold_path;
+            family.bold_path.clear();
+        }
+        if (!family.regular_path.empty()) families.push_back(std::move(family));
+    }
+    return families;
+}
+
+bool SafeAssetObject(const std::string &object) {
+    return !object.empty() && object.front() != '/' && object.find('\\') == std::string::npos &&
+           object.find("..") == std::string::npos;
+}
+
+std::string CloudCatalogObject() {
+    const char *configured = std::getenv("JETSON_FONT_CATALOG_OBJECT");
+    std::string object = configured && configured[0]
+                             ? configured : "fonts/cloud/catalog.tsv";
+    return SafeAssetObject(object) ? object : "fonts/cloud/catalog.tsv";
+}
+
+std::string CloudObjectForFile(const std::string &file) {
+    if (!SafeAssetObject(file)) return "";
+    if (file.rfind("fonts/", 0) == 0) return file;
+    return "fonts/cloud/" + file;
+}
+
+void TrimAscii(std::string &value) {
+    while (!value.empty() && std::isspace((unsigned char)value.back())) value.pop_back();
+    size_t first = 0;
+    while (first < value.size() && std::isspace((unsigned char)value[first])) ++first;
+    if (first) value.erase(0, first);
+}
+
+std::vector<CloudFontEntry> ReadCloudFontCatalog(const std::string &path) {
+    std::vector<CloudFontEntry> fonts;
+    std::ifstream input(path);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream row(line);
+        std::string name, regular, bold;
+        if (!std::getline(row, name, '\t') || !std::getline(row, regular, '\t')) continue;
+        std::getline(row, bold, '\t');
+        TrimAscii(name);
+        TrimAscii(regular);
+        TrimAscii(bold);
+        regular = CloudObjectForFile(regular);
+        bold = bold.empty() ? "" : CloudObjectForFile(bold);
+        if (name.empty() || regular.empty() || !HasTtfExtension(regular) ||
+            (!bold.empty() && !HasTtfExtension(bold))) continue;
+        fonts.push_back({name, regular, bold});
+    }
+    return fonts;
+}
+
+jetson::platform::ShellCommandResult FetchAssetObject(const std::string &object) {
+    if (!SafeAssetObject(object)) return {-1, "Tên object S3 không hợp lệ"};
+    const char *configured = std::getenv("JETSON_S3_ASSET_HELPER");
+    std::vector<std::string> helpers;
+    if (configured && configured[0]) helpers.emplace_back(configured);
+    helpers.emplace_back("scripts/s3_assets.py");
+    helpers.emplace_back("/opt/jetson-fw/scripts/s3_assets.py");
+
+    std::string helper;
+    for (const auto &candidate : helpers) {
+        if (FileExistsLocal(candidate)) { helper = candidate; break; }
+    }
+    if (helper.empty()) return {-1, "Không tìm thấy scripts/s3_assets.py"};
+
+    std::string command = "JETSON_ASSETS_DIR=" +
+                          jetson::platform::QuoteShellArgument(jetson::BuiltinAssetsDir()) +
+                          " python3 " + jetson::platform::QuoteShellArgument(helper) +
+                          " fetch-file " + jetson::platform::QuoteShellArgument(object);
+    auto result = jetson::platform::RunShellCommand(command);
+    jetson::platform::TrimTrailingWhitespace(result.output);
+    return result;
+}
 
 std::string CurrentTimezone() {
     // Keep category switching non-blocking: do not shell out to timedatectl
@@ -120,7 +385,8 @@ SettingsView::SettingsView(lv_obj_t *parent, int width, int height,
                            jetson::IBluetoothManager &bluetooth,
                            ClosedCb on_closed)
     : OverlayView(parent, width, height, u8"Cài đặt", std::move(on_closed)),
-      wifi_(wifi), bluetooth_(bluetooth) {
+      wifi_(wifi), bluetooth_(bluetooth),
+      airplane_enabled_(jetson::IsAirplaneModeEnabled()) {
     // The settings cog already identifies this window. Keep the title string
     // internally (logs/minimize label) but do not spend header space repeating
     // "Cài đặt" on the device.
@@ -131,7 +397,8 @@ SettingsView::SettingsView(lv_obj_t *parent, int width, int height,
 void SettingsView::BuildShell() {
     const auto &p = jetson::UiTheme::Instance().Palette();
 
-    // body_: two columns (sidebar + detail).
+    // The 800x480 panel is landscape, so retain a narrow category rail while
+    // making the detail pane behave like one iPhone Settings navigation stack.
     lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(body_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_START);
@@ -144,8 +411,8 @@ void SettingsView::BuildShell() {
     // ---- Sidebar ----
     sidebar_ = lv_obj_create(body_);
     lv_obj_remove_style_all(sidebar_);
-    lv_obj_set_size(sidebar_, 196, body_h);
-    lv_obj_set_style_bg_color(sidebar_, Color(p.row), 0);
+    lv_obj_set_size(sidebar_, 170, body_h);
+    lv_obj_set_style_bg_color(sidebar_, Color(p.bg), 0);
     lv_obj_set_style_bg_opa(sidebar_, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(sidebar_, 12, 0);
     lv_obj_set_style_pad_all(sidebar_, 6, 0);
@@ -157,16 +424,15 @@ void SettingsView::BuildShell() {
     lv_obj_set_scroll_dir(sidebar_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(sidebar_, LV_SCROLLBAR_MODE_ACTIVE);
 
+    AddAirplaneRow();
+
     struct Entry { Cat cat; const char *glyph; const char *label; };
     const Entry cats[] = {
         {Cat::Display, LV_SYMBOL_EYE_OPEN, "Màn hình"},
         {Cat::Sound, LV_SYMBOL_VOLUME_MAX, "Âm thanh"},
         {Cat::Wifi, LV_SYMBOL_WIFI, "WiFi"},
         {Cat::Bluetooth, LV_SYMBOL_BLUETOOTH, "Bluetooth"},
-        {Cat::Keyboard, LV_SYMBOL_KEYBOARD, "Bàn phím"},
-        {Cat::DateTime, LV_SYMBOL_BELL, "Ngày giờ"},
-        {Cat::Power, LV_SYMBOL_POWER, "Nguồn & Khóa"},
-        {Cat::About, LV_SYMBOL_LIST, "Giới thiệu"},
+        {Cat::General, LV_SYMBOL_SETTINGS, "Cài đặt chung"},
     };
     for (const auto &e : cats) AddSidebarRow(e.cat, e.glyph, e.label);
 
@@ -175,7 +441,7 @@ void SettingsView::BuildShell() {
     lv_obj_remove_style_all(detail_);
     lv_obj_set_flex_grow(detail_, 1);
     lv_obj_set_height(detail_, body_h);
-    lv_obj_set_style_bg_color(detail_, Color(p.row), 0);
+    lv_obj_set_style_bg_color(detail_, Color(p.bg), 0);
     lv_obj_set_style_bg_opa(detail_, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(detail_, 12, 0);
     lv_obj_set_style_pad_all(detail_, 10, 0);
@@ -189,6 +455,68 @@ void SettingsView::BuildShell() {
     lv_obj_set_scrollbar_mode(detail_, LV_SCROLLBAR_MODE_ACTIVE);
 
     ShowCategory(Cat::Display);
+}
+
+void SettingsView::AddAirplaneRow() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    airplane_row_ = lv_obj_create(sidebar_);
+    lv_obj_remove_style_all(airplane_row_);
+    lv_obj_set_width(airplane_row_, lv_pct(100));
+    lv_obj_set_height(airplane_row_, 48);
+    lv_obj_set_style_radius(airplane_row_, 10, 0);
+    lv_obj_set_style_bg_color(airplane_row_, Color(p.row), 0);
+    lv_obj_set_style_bg_opa(airplane_row_, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(airplane_row_, 5, 0);
+    lv_obj_set_style_pad_right(airplane_row_, 5, 0);
+    lv_obj_set_style_pad_column(airplane_row_, 6, 0);
+    lv_obj_set_flex_flow(airplane_row_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(airplane_row_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(airplane_row_, LV_OBJ_FLAG_SCROLLABLE);
+
+    airplane_icon_bg_ = lv_obj_create(airplane_row_);
+    lv_obj_remove_style_all(airplane_icon_bg_);
+    lv_obj_set_size(airplane_icon_bg_, 30, 30);
+    lv_obj_set_style_radius(airplane_icon_bg_, 8, 0);
+    lv_obj_set_style_bg_opa(airplane_icon_bg_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(airplane_icon_bg_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    auto *plane = jetson::ui::CreateAirplaneIcon(airplane_icon_bg_, lv_color_white());
+    lv_obj_center(plane);
+
+    auto *label = lv_label_create(airplane_row_);
+    lv_obj_set_width(label, 1);
+    lv_obj_set_flex_grow(label, 1);
+    lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(label, Color(p.text), 0);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+    lv_label_set_text(label, "Chế độ\nmáy bay");
+
+    airplane_switch_ = MakeSwitch(airplane_row_, airplane_enabled_, OnAirplaneSwitch);
+    lv_obj_set_size(airplane_switch_, 42, 24);
+    AirplaneRefreshUi();
+}
+
+void SettingsView::AirplaneRefreshUi() {
+    if (airplane_switch_) {
+        if (airplane_enabled_) lv_obj_add_state(airplane_switch_, LV_STATE_CHECKED);
+        else lv_obj_clear_state(airplane_switch_, LV_STATE_CHECKED);
+        if (airplane_busy_.load()) lv_obj_add_state(airplane_switch_, LV_STATE_DISABLED);
+        else lv_obj_clear_state(airplane_switch_, LV_STATE_DISABLED);
+    }
+    if (airplane_icon_bg_) {
+        lv_obj_set_style_bg_color(airplane_icon_bg_,
+                                  Color(airplane_enabled_ ? 0xff9f0a : 0x8e8e93), 0);
+    }
+    if (wifi_switch_) {
+        if (airplane_enabled_) lv_obj_add_state(wifi_switch_, LV_STATE_DISABLED);
+        else lv_obj_clear_state(wifi_switch_, LV_STATE_DISABLED);
+    }
+    if (bt_switch_) {
+        if (airplane_enabled_) lv_obj_add_state(bt_switch_, LV_STATE_DISABLED);
+        else lv_obj_clear_state(bt_switch_, LV_STATE_DISABLED);
+    }
 }
 
 void SettingsView::AddSidebarRow(Cat cat, const char *glyph, const char *label) {
@@ -214,7 +542,7 @@ void SettingsView::AddSidebarRow(Cat cat, const char *glyph, const char *label) 
     lv_label_set_text(ic, glyph);
 
     auto *lbl = lv_label_create(row);
-    lv_obj_set_style_text_font(lbl, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_font(lbl, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(lbl, Color(p.text), 0);
     lv_label_set_text(lbl, label);
 
@@ -247,17 +575,17 @@ void SettingsView::ShowCategory(Cat c) {
         case Cat::Sound: BuildSound(); break;
         case Cat::Wifi: BuildWifi(); break;
         case Cat::Bluetooth: BuildBluetooth(); break;
-        case Cat::Keyboard: BuildKeyboard(); break;
-        case Cat::DateTime: BuildDateTime(); break;
-        case Cat::Power: BuildPower(); break;
-        case Cat::About: BuildAbout(); break;
+        case Cat::General: BuildGeneral(); break;
     }
     HighlightSide(c);
 }
 
 void SettingsView::ClearDetail() {
-    if (detail_) lv_obj_clean(detail_);
+    // TelexInput deletes its C++ wrapper from the LV_EVENT_DELETE callback.
+    // Delete its root first, then clean the remainder of the pane.
+    if (kbd_demo_ && kbd_demo_->obj()) lv_obj_delete(kbd_demo_->obj());
     kbd_demo_ = nullptr;
+    if (detail_) lv_obj_clean(detail_);
     lang_vi_btn_ = nullptr;
     lang_en_btn_ = nullptr;
     wifi_switch_ = nullptr;
@@ -271,6 +599,7 @@ void SettingsView::ClearDetail() {
     night_warmth_slider_ = nullptr;
     vol_slider_ = nullptr;
     mute_switch_ = nullptr;
+    font_status_label_ = nullptr;
     // Any open modal belongs to overlay_, not detail_; leave it.
 }
 
@@ -290,7 +619,7 @@ lv_obj_t *SettingsView::MakeRow(const char *title, const char *sub) {
     lv_obj_set_width(row, lv_pct(100));
     lv_obj_set_height(row, sub ? 64 : 52);
     lv_obj_set_style_radius(row, 12, 0);
-    lv_obj_set_style_bg_color(row, Color(p.bg), 0);
+    lv_obj_set_style_bg_color(row, Color(p.row), 0);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_left(row, 14, 0);
     lv_obj_set_style_pad_right(row, 14, 0);
@@ -386,7 +715,7 @@ lv_obj_t *SettingsView::DisplayCard() {
     lv_obj_set_width(card, lv_pct(100));
     lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_radius(card, 14, 0);
-    lv_obj_set_style_bg_color(card, Color(p.bg), 0);
+    lv_obj_set_style_bg_color(card, Color(p.row), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_style_border_color(card, Color(p.border), 0);
@@ -741,9 +1070,10 @@ void SettingsView::BuildWifi() {
     SectionTitle("WiFi");
     // Toggling the switch on enables the radio and automatically rescans, so a
     // separate "Quét lại" button is unnecessary.
-    auto *top = MakeRow("Bật WiFi", nullptr);
+    auto *top = MakeRow("Bật WiFi", airplane_enabled_ ? "Đang tắt bởi chế độ máy bay" : nullptr);
     wifi_switch_ = MakeSwitch(top, false, OnWifiSwitch);
     WifiRefreshSwitch();
+    AirplaneRefreshUi();
 
     // Network list.
     wifi_list_ = lv_obj_create(detail_);
@@ -758,15 +1088,22 @@ void SettingsView::BuildWifi() {
     lv_obj_set_scroll_dir(wifi_list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(wifi_list_, LV_SCROLLBAR_MODE_ACTIVE);
 
-    if (!wifi_scanned_) WifiRescan();
+    if (airplane_enabled_) {
+        wifi_enabled_ = false;
+        wifi_scanned_ = true;
+        wifi_nets_.clear();
+        WifiRenderList();
+    } else if (!wifi_scanned_) WifiRescan();
     else WifiRenderList();
 }
 
 void SettingsView::BuildBluetooth() {
     SectionTitle("Bluetooth");
-    auto *top = MakeRow("Bật Bluetooth", nullptr);
+    auto *top = MakeRow("Bật Bluetooth",
+                        airplane_enabled_ ? "Đang tắt bởi chế độ máy bay" : nullptr);
     bt_switch_ = MakeSwitch(top, false, OnBtSwitch);
     BtRefreshSwitch();
+    AirplaneRefreshUi();
 
     auto *btns = lv_obj_create(detail_);
     lv_obj_remove_style_all(btns);
@@ -775,7 +1112,8 @@ void SettingsView::BuildBluetooth() {
     lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(btns, 8, 0);
     lv_obj_clear_flag(btns, LV_OBJ_FLAG_SCROLLABLE);
-    MakeButton(btns, "Quét lại", 0x2b6fd6, OnBtRescan);
+    auto *rescan = MakeButton(btns, "Quét lại", 0x2b6fd6, OnBtRescan);
+    if (airplane_enabled_) lv_obj_add_state(rescan, LV_STATE_DISABLED);
 
     bt_list_ = lv_obj_create(detail_);
     lv_obj_remove_style_all(bt_list_);
@@ -789,135 +1127,434 @@ void SettingsView::BuildBluetooth() {
     lv_obj_set_scroll_dir(bt_list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(bt_list_, LV_SCROLLBAR_MODE_ACTIVE);
 
-    if (!bt_scanned_) BtRescan();
+    if (airplane_enabled_) {
+        bt_powered_ = false;
+        bt_scanned_ = true;
+        bt_devs_.clear();
+        BtRenderList();
+    } else if (!bt_scanned_) BtRescan();
     else BtRenderList();
 }
 
-void SettingsView::BuildKeyboard() {
-    SectionTitle("Bàn phím");
-    std::string lang = Settings("input", true).GetString("kbd_lang", "en");
-    auto *row = MakeRow("Ngôn ngữ gõ", lang == "vi" ? "Tiếng Việt (Telex)" : "English");
-    auto *btns = lv_obj_create(row);
-    lv_obj_remove_style_all(btns);
-    lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(btns, 6, 0);
-    lv_obj_clear_flag(btns, LV_OBJ_FLAG_SCROLLABLE);
-    lang_vi_btn_ = MakeButton(btns, "VI", lang == "vi" ? 0x2b6fd6 : 0x3a3a3a, OnLangVi);
-    lang_en_btn_ = MakeButton(btns, "EN", lang == "en" ? 0x2b6fd6 : 0x3a3a3a, OnLangEn);
-
-    auto *demoRow = MakeRow("Thử gõ tiếng Việt", nullptr);
-    (void)demoRow;
-    kbd_demo_ = new TelexInput(detail_, lv_pct(100), 44);
-    kbd_demo_->SetTelex(lang == "vi");
-    kbd_demo_->SetPlaceholder("as -> á, aw -> ă, dd -> đ ...");
-}
-
-void SettingsView::BuildDateTime() {
-    SectionTitle("Ngày giờ");
-
-    bool h24 = Settings("display", true).GetBool("clock_24h", true);
-    auto *row = MakeRow("Định dạng 24h", h24 ? "24 giờ" : "12 giờ");
-    MakeSwitch(row, h24, On24hToggle);
-
-    SectionTitle("Múi giờ");
-    std::string cur = CurrentTimezone();
-    for (const char *tz : kTimezones) {
-        const auto &p = jetson::UiTheme::Instance().Palette();
-        auto *opt = lv_obj_create(detail_);
-        lv_obj_remove_style_all(opt);
-        lv_obj_set_width(opt, lv_pct(100));
-        lv_obj_set_height(opt, 40);
-        lv_obj_set_style_radius(opt, 10, 0);
-        bool sel = (cur == tz);
-        lv_obj_set_style_bg_color(opt, sel ? Color(p.accent) : Color(p.bg), 0);
-        lv_obj_set_style_bg_opa(opt, sel ? LV_OPA_30 : LV_OPA_COVER, 0);
-        lv_obj_set_style_pad_left(opt, 12, 0);
-        lv_obj_clear_flag(opt, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(opt, LV_OBJ_FLAG_CLICKABLE);
-        auto *l = lv_label_create(opt);
-        lv_obj_set_style_text_font(l, &BUILTIN_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(l, Color(p.text), 0);
-        lv_label_set_text(l, tz);
-        auto *ctx = new OptCtx{this, tz};
-        lv_obj_add_event_cb(opt, OnTzSelected, LV_EVENT_CLICKED, ctx);
-        lv_obj_add_event_cb(opt, OnOptDeleted, LV_EVENT_DELETE, ctx);
-    }
-}
-
-void SettingsView::BuildPower() {
-    SectionTitle("Nguồn & Khóa");
-
-    // Lock + PIN.
-    MakeButton(MakeRow("Khóa màn hình ngay", nullptr), "Khóa", 0x2b6fd6, OnLockNow);
-    MakeButton(MakeRow("Đặt / xóa PIN khóa", nullptr), "Đặt PIN", 0x3a3a3a, OnSetPin);
-
-    // Power actions.
-    MakeButton(MakeRow("Khởi động lại thiết bị", nullptr), "Khởi động lại", 0xb03a3a, OnReboot);
-    MakeButton(MakeRow("Tắt thiết bị", nullptr), "Tắt máy", 0xb03a3a, OnShutdown);
-}
-
-void SettingsView::BuildAbout() {
-    SectionTitle("Giới thiệu");
+void SettingsView::GeneralPageHeader(const char *title) {
     const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *header = lv_obj_create(detail_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 42);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
 
-    char buf[256];
-    std::snprintf(buf, sizeof(buf),
-                  "Thiết bị: %s\nMàn hình: %dx%d\nFirmware: jetson-fw 0.1",
-                  BOARD_NAME, width_, height_);
-    auto *a = lv_label_create(detail_);
-    lv_obj_set_style_text_font(a, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(a, Color(p.text), 0);
-    lv_obj_set_width(a, lv_pct(100));
-    lv_label_set_long_mode(a, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(a, buf);
+    auto *back = lv_obj_create(header);
+    lv_obj_remove_style_all(back);
+    lv_obj_set_size(back, 36, 36);
+    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(back, Color(p.button), 0);
+    lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_add_event_cb(back, OnGeneralBack, LV_EVENT_CLICKED, this);
+    auto *arrow = lv_label_create(back);
+    lv_obj_set_style_text_font(arrow, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(arrow, Color(p.text), 0);
+    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
+    lv_obj_center(arrow);
 
-    // Storage (statvfs on "/").
-    struct statvfs st;
-    std::string storage = "Lưu trữ: —";
-    if (statvfs("/", &st) == 0) {
-        unsigned long long total = (unsigned long long)st.f_blocks * st.f_frsize;
-        unsigned long long freeb = (unsigned long long)st.f_bavail * st.f_frsize;
-        unsigned long long used = (total > freeb) ? (total - freeb) : 0;
-        storage = "Lưu trữ: " + FormatBytes(used) + " / " + FormatBytes(total) +
-                 " (" + FormatBytes(freeb) + " trống)";
+    auto *label = lv_label_create(header);
+    lv_obj_set_style_text_font(label, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(label, Color(p.text), 0);
+    lv_label_set_text(label, title);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+}
+
+void SettingsView::MakeOptionRow(lv_obj_t *card, const char *title, const char *sub,
+                                 bool selected, lv_event_cb_t cb,
+                                 const std::string &value) {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *row = DisplayRow(card, title, sub, sub ? 58 : 48);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    auto *ctx = new OptCtx{this, value};
+    lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, ctx);
+    lv_obj_add_event_cb(row, OnOptDeleted, LV_EVENT_DELETE, ctx);
+    if (selected) {
+        auto *check = lv_label_create(row);
+        lv_obj_set_style_text_font(check, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(check, Color(p.accent), 0);
+        lv_label_set_text(check, LV_SYMBOL_OK);
     }
-    auto *s = lv_label_create(detail_);
-    lv_obj_set_style_text_font(s, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(s, Color(p.sub_text), 0);
-    lv_obj_set_width(s, lv_pct(100));
-    lv_label_set_long_mode(s, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(s, storage.c_str());
+}
 
-    // Memory. sysinfo()'s freeram excludes buffer/cache, so on Linux it reports a
-    // tiny "free" number that looks wrong (e.g. 150 MB on a 4 GB board with ~3 GB
-    // actually usable). /proc/meminfo's MemAvailable is the real figure the kernel
-    // considers reclaimable, so read that instead. Values are in kB.
-    std::string mem = "RAM: —";
-    unsigned long long mem_total_kb = 0, mem_avail_kb = 0;
-    {
-        std::ifstream mf("/proc/meminfo");
-        std::string line;
-        while (std::getline(mf, line)) {
-            if (line.rfind("MemTotal:", 0) == 0)
-                mem_total_kb = std::strtoull(line.c_str() + 9, nullptr, 10);
-            else if (line.rfind("MemAvailable:", 0) == 0)
-                mem_avail_kb = std::strtoull(line.c_str() + 13, nullptr, 10);
-            if (mem_total_kb && mem_avail_kb) break;
+void SettingsView::MakeFontRow(lv_obj_t *card, const std::string &name,
+                               const std::string &regular_path,
+                               const std::string &bold_path,
+                               const std::string &regular_object,
+                               const std::string &bold_object) {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    const bool installed = FileExistsLocal(regular_path);
+    const bool selected = installed && regular_path == jetson::BuiltinFontRegularPath();
+    auto *row = DisplayRow(card, name.c_str(), installed ? "Đã tải về" : "Trên S3", 54);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    auto *state = lv_label_create(row);
+    lv_obj_set_style_text_font(state, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(state, Color(p.accent), 0);
+    lv_label_set_text(state, selected ? LV_SYMBOL_OK
+                                     : (installed ? LV_SYMBOL_RIGHT : LV_SYMBOL_DOWNLOAD));
+
+    auto *ctx = new FontCtx{this, name, regular_path, bold_path,
+                            regular_object, bold_object};
+    lv_obj_add_event_cb(row, OnFontSelected, LV_EVENT_CLICKED, ctx);
+    lv_obj_add_event_cb(row, OnFontDeleted, LV_EVENT_DELETE, ctx);
+}
+
+void SettingsView::BuildGeneral() {
+    switch (general_page_) {
+        case GeneralPage::Main: BuildGeneralMain(); break;
+        case GeneralPage::Keyboard: BuildGeneralKeyboard(); break;
+        case GeneralPage::LanguageRegion: BuildLanguageRegion(); break;
+        case GeneralPage::LanguagePicker: BuildLanguagePicker(); break;
+        case GeneralPage::RegionPicker: BuildRegionPicker(); break;
+        case GeneralPage::Calendar: BuildCalendarPicker(); break;
+        case GeneralPage::DateTime: BuildGeneralDateTime(); break;
+        case GeneralPage::Fonts: BuildFonts(); break;
+        case GeneralPage::SystemFonts: BuildLocalFonts(false); break;
+        case GeneralPage::MyFonts: BuildLocalFonts(true); break;
+        case GeneralPage::CloudFonts: BuildCloudFonts(); break;
+        case GeneralPage::Power: BuildGeneralPower(); break;
+        case GeneralPage::LockTimeout: BuildGeneralLockTimeout(); break;
+        case GeneralPage::About: BuildGeneralAbout(); break;
+    }
+}
+
+void SettingsView::BuildGeneralMain() {
+    DisplayPageHeader("Cài đặt chung", false);
+    auto *core = DisplayCard();
+    MakeDisplayNavigationRow(core, "Bàn phím",
+        Settings("input", false).GetString("kbd_lang", "en") == "vi" ? "Tiếng Việt" : "English",
+        OnOpenGeneralKeyboard);
+    DisplayDivider(core);
+    MakeDisplayNavigationRow(core, "Ngôn ngữ & Vùng", nullptr, OnOpenLanguageRegion);
+    DisplayDivider(core);
+    MakeDisplayNavigationRow(core, "Ngày & Giờ",
+        Settings("display", false).GetBool("clock_24h", true) ? "24 giờ" : "12 giờ",
+        OnOpenGeneralDateTime);
+    DisplayDivider(core);
+    MakeDisplayNavigationRow(core, "Phông chữ", jetson::BuiltinFontName().c_str(), OnOpenFonts);
+
+    auto *device = DisplayCard();
+    MakeDisplayNavigationRow(device, "Nguồn & Khóa", nullptr, OnOpenGeneralPower);
+    DisplayDivider(device);
+    MakeDisplayNavigationRow(device, "Giới thiệu", BOARD_NAME, OnOpenGeneralAbout);
+    DisplayCaption("Các mục trên thay đổi trực tiếp cấu hình của firmware và được lưu sau khi khởi động lại.");
+}
+
+void SettingsView::BuildGeneralKeyboard() {
+    GeneralPageHeader("Bàn phím");
+    const std::string lang = Settings("input", false).GetString("kbd_lang", "en");
+    auto *card = DisplayCard();
+    auto *row = DisplayRow(card, "Ngôn ngữ gõ",
+                           lang == "vi" ? "Tiếng Việt (Telex)" : "English", 58);
+    auto *buttons = lv_obj_create(row);
+    lv_obj_remove_style_all(buttons);
+    lv_obj_set_size(buttons, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(buttons, 6, 0);
+    lv_obj_clear_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
+    lang_vi_btn_ = MakeButton(buttons, "VI", lang == "vi" ? 0x2b6fd6 : 0x55565a, OnLangVi);
+    lang_en_btn_ = MakeButton(buttons, "EN", lang == "en" ? 0x2b6fd6 : 0x55565a, OnLangEn);
+
+    DisplayCaption("Thử bàn phím đang chọn");
+    kbd_demo_ = new TelexInput(detail_, lv_pct(100), 48);
+    kbd_demo_->SetTelex(lang == "vi");
+    kbd_demo_->SetPlaceholder(lang == "vi" ? "as → á, aw → ă, dd → đ" : "Type to test the keyboard");
+}
+
+void SettingsView::BuildLanguageRegion() {
+    GeneralPageHeader("Ngôn ngữ & Vùng");
+    Settings system("system", false);
+    const std::string language = system.GetString("language", "vi-VN");
+    const std::string region = system.GetString("region", "VN");
+    const std::string calendar = system.GetString("calendar", "gregorian");
+    const char *language_name = "Tiếng Việt";
+    const char *region_name = "Việt Nam";
+    const char *calendar_name = "Lịch Gregory";
+    for (const auto &option : kLanguages) if (language == option.code) language_name = option.title;
+    for (const auto &option : kRegions) if (region == option.code) region_name = option.name;
+    for (const auto &option : kCalendars) if (calendar == option.code) calendar_name = option.name;
+
+    auto *card = DisplayCard();
+    MakeDisplayNavigationRow(card, "Ngôn ngữ", language_name, OnOpenLanguagePicker);
+    DisplayDivider(card);
+    MakeDisplayNavigationRow(card, "Vùng", region_name, OnOpenRegionPicker);
+    DisplayDivider(card);
+    MakeDisplayNavigationRow(card, "Lịch", calendar_name, OnOpenCalendarPicker);
+    DisplayCaption("Ngôn ngữ gõ và định dạng ngày được áp dụng ngay; vùng và loại lịch được lưu dùng chung cho firmware.");
+}
+
+void SettingsView::BuildLanguagePicker() {
+    GeneralPageHeader("Chọn ngôn ngữ");
+    const std::string selected = Settings("system", false).GetString("language", "vi-VN");
+    auto *card = DisplayCard();
+    for (size_t i = 0; i < sizeof(kLanguages) / sizeof(kLanguages[0]); ++i) {
+        const auto &option = kLanguages[i];
+        MakeOptionRow(card, option.title, option.subtitle, selected == option.code,
+                      OnLanguageSelected, option.code);
+        if (i + 1 < sizeof(kLanguages) / sizeof(kLanguages[0])) DisplayDivider(card);
+    }
+}
+
+void SettingsView::BuildRegionPicker() {
+    GeneralPageHeader("Chọn vùng");
+    const std::string selected = Settings("system", false).GetString("region", "VN");
+    auto *card = DisplayCard();
+    for (size_t i = 0; i < sizeof(kRegions) / sizeof(kRegions[0]); ++i) {
+        const auto &option = kRegions[i];
+        MakeOptionRow(card, option.name, nullptr, selected == option.code,
+                      OnRegionSelected, option.code);
+        if (i + 1 < sizeof(kRegions) / sizeof(kRegions[0])) DisplayDivider(card);
+    }
+}
+
+void SettingsView::BuildCalendarPicker() {
+    GeneralPageHeader("Lịch");
+    const std::string selected = Settings("system", false).GetString("calendar", "gregorian");
+    auto *card = DisplayCard();
+    for (size_t i = 0; i < sizeof(kCalendars) / sizeof(kCalendars[0]); ++i) {
+        const auto &option = kCalendars[i];
+        MakeOptionRow(card, option.name, nullptr, selected == option.code,
+                      OnCalendarSelected, option.code);
+        if (i + 1 < sizeof(kCalendars) / sizeof(kCalendars[0])) DisplayDivider(card);
+    }
+}
+
+void SettingsView::BuildGeneralDateTime() {
+    GeneralPageHeader("Ngày & Giờ");
+    Settings system("system", false);
+    const bool h24 = Settings("display", false).GetBool("clock_24h", true);
+    const bool automatic = system.GetBool("auto_time", true);
+    auto *format = DisplayCard();
+    auto *h24_row = DisplayRow(format, "Thời gian 24 giờ", h24 ? "24 giờ" : "12 giờ", 54);
+    MakeSwitch(h24_row, h24, On24hToggle);
+    DisplayDivider(format);
+    auto *auto_row = DisplayRow(format, "Đặt tự động", "Đồng bộ thời gian qua mạng", 58);
+    MakeSwitch(auto_row, automatic, OnAutoTimeToggle);
+
+    DisplayCaption("Múi giờ");
+    const std::string current = CurrentTimezone();
+    auto *zones = DisplayCard();
+    if (automatic) {
+        auto *row = DisplayRow(zones, "Múi giờ hiện tại", TimezoneLabel(current), 58);
+        lv_obj_set_style_opa(row, LV_OPA_60, 0);
+    } else {
+        for (size_t i = 0; i < sizeof(kTimezones) / sizeof(kTimezones[0]); ++i) {
+            MakeOptionRow(zones, kTimezones[i].label, kTimezones[i].id,
+                          current == kTimezones[i].id,
+                          OnTzSelected, kTimezones[i].id);
+            if (i + 1 < sizeof(kTimezones) / sizeof(kTimezones[0])) DisplayDivider(zones);
         }
     }
-    if (mem_total_kb > 0) {
-        unsigned long long total = mem_total_kb * 1024ULL;
-        unsigned long long avail = mem_avail_kb * 1024ULL;
-        unsigned long long used = (total > avail) ? (total - avail) : 0;
-        mem = "RAM: " + FormatBytes(used) + " / " + FormatBytes(total) +
-              " (" + FormatBytes(avail) + " trống)";
+}
+
+void SettingsView::BuildFonts() {
+    GeneralPageHeader("Phông chữ");
+    auto *local = DisplayCard();
+    MakeDisplayNavigationRow(local, "Phông chữ hệ thống", jetson::BuiltinFontName().c_str(),
+                             OnOpenSystemFonts);
+    DisplayDivider(local);
+    MakeDisplayNavigationRow(local, "Phông chữ của tôi", nullptr, OnOpenMyFonts);
+    DisplayCaption("Xem các phông chữ có sẵn trên thiết bị và các phông chữ bạn đã chép vào thư mục cá nhân.");
+
+    auto *cloud = DisplayCard();
+    MakeDisplayNavigationRow(cloud, "Phông chữ khác", "S3 / MinIO", OnOpenCloudFonts);
+    DisplayCaption("Firmware chỉ tải phông chữ trong danh mục S3 do bạn quản lý; không truy cập nguồn font bên ngoài.");
+}
+
+void SettingsView::BuildLocalFonts(bool personal) {
+    GeneralPageHeader(personal ? "Phông chữ của tôi" : "Phông chữ hệ thống");
+    std::string directory = personal ? JoinPath(HomeDir(), ".jetson-fw/fonts")
+                                     : JoinPath(jetson::BuiltinAssetsDir(), "fonts");
+    if (personal) {
+        const std::string root = JoinPath(HomeDir(), ".jetson-fw");
+        ::mkdir(root.c_str(), 0775);
+        ::mkdir(directory.c_str(), 0775);
     }
-    auto *m = lv_label_create(detail_);
-    lv_obj_set_style_text_font(m, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(m, Color(p.sub_text), 0);
-    lv_obj_set_width(m, lv_pct(100));
-    lv_label_set_long_mode(m, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(m, mem.c_str());
+    const auto fonts = ListFontFamilies(directory, !personal);
+    if (fonts.empty()) {
+        DisplayCaption(personal ? "Chưa có phông chữ. Chép file .ttf vào ~/.jetson-fw/fonts rồi mở lại trang này."
+                                : "Không tìm thấy phông chữ hệ thống trong assets/fonts.");
+        return;
+    }
+    auto *card = DisplayCard();
+    for (size_t i = 0; i < fonts.size(); ++i) {
+        MakeFontRow(card, fonts[i].name, fonts[i].regular_path, fonts[i].bold_path);
+        if (i + 1 < fonts.size()) DisplayDivider(card);
+    }
+}
+
+void SettingsView::SetFontStatus(const std::string &text) {
+    font_status_ = text;
+    if (font_status_label_) lv_label_set_text(font_status_label_, font_status_.c_str());
+}
+
+void SettingsView::BuildCloudFonts() {
+    GeneralPageHeader("Phông chữ khác");
+    auto *action = DisplayCard();
+    auto *row = DisplayRow(action, "Danh mục S3", "fonts/cloud/catalog.tsv", 58);
+    auto *refresh = MakeButton(row, font_busy_.load() ? "Đang tải" : "Làm mới", 0x2b6fd6,
+                               OnRefreshFontCatalog);
+    if (font_busy_.load()) lv_obj_add_state(refresh, LV_STATE_DISABLED);
+
+    font_status_label_ = lv_label_create(detail_);
+    lv_obj_set_width(font_status_label_, lv_pct(100));
+    lv_obj_set_style_text_font(font_status_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(font_status_label_,
+                                Color(jetson::UiTheme::Instance().Palette().sub_text), 0);
+    lv_label_set_long_mode(font_status_label_, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(font_status_label_, font_status_.c_str());
+
+    const std::string catalog_path = JoinPath(jetson::BuiltinAssetsDir(), CloudCatalogObject());
+    const auto fonts = ReadCloudFontCatalog(catalog_path);
+    if (fonts.empty()) {
+        DisplayCaption("Chưa có danh mục font hợp lệ trên thiết bị. Manifest dùng mỗi dòng: Tên<TAB>regular.ttf<TAB>bold.ttf.");
+        if (!font_catalog_requested_ && !font_busy_.load()) {
+            font_catalog_requested_ = true;
+            RefreshCloudFontCatalog();
+        }
+        return;
+    }
+
+    auto *card = DisplayCard();
+    for (size_t i = 0; i < fonts.size(); ++i) {
+        const auto &font = fonts[i];
+        const std::string regular_path = JoinPath(jetson::BuiltinAssetsDir(), font.regular_object);
+        const std::string bold_path = font.bold_object.empty()
+                                          ? "" : JoinPath(jetson::BuiltinAssetsDir(), font.bold_object);
+        MakeFontRow(card, font.name, regular_path, bold_path,
+                    font.regular_object, font.bold_object);
+        if (i + 1 < fonts.size()) DisplayDivider(card);
+    }
+}
+
+void SettingsView::RefreshCloudFontCatalog() {
+    if (font_busy_.exchange(true)) return;
+    SetFontStatus("Đang tải danh mục phông chữ từ S3...");
+    std::thread([self = Self()]() {
+        auto result = FetchAssetObject(CloudCatalogObject());
+        LvLockGuard lock;
+        if (!self) return;
+        self->font_busy_ = false;
+        self->SetFontStatus(result.Ok() ? "Đã cập nhật danh mục phông chữ."
+                                        : "Không tải được danh mục: " + result.output);
+        if (self->current_ == Cat::General && self->general_page_ == GeneralPage::CloudFonts)
+            self->ShowCategory(Cat::General);
+    }).detach();
+}
+
+void SettingsView::DownloadAndApplyFont(const FontCtx &font) {
+    if (font_busy_.exchange(true)) return;
+    SetFontStatus("Đang tải " + font.name + " từ S3...");
+    std::thread([self = Self(), font]() {
+        auto regular = FetchAssetObject(font.regular_object);
+        jetson::platform::ShellCommandResult bold{0, ""};
+        if (regular.Ok() && !font.bold_object.empty()) bold = FetchAssetObject(font.bold_object);
+        const bool downloaded = regular.Ok() && bold.Ok();
+        LvLockGuard lock;
+        if (!self) return;
+        self->font_busy_ = false;
+        if (downloaded && jetson::ApplyBuiltinFontFamily(font.name, font.regular_path,
+                                                         font.bold_path)) {
+            self->SetFontStatus("Đã tải và áp dụng " + font.name + ".");
+        } else {
+            const std::string error = !regular.Ok() ? regular.output : bold.output;
+            self->SetFontStatus("Không tải được " + font.name + ": " + error);
+        }
+        if (self->current_ == Cat::General && self->general_page_ == GeneralPage::CloudFonts)
+            self->ShowCategory(Cat::General);
+    }).detach();
+}
+
+void SettingsView::BuildGeneralPower() {
+    GeneralPageHeader("Nguồn & Khóa");
+    const int sleep = Settings("display", false).GetInt("sleep_timeout", 0);
+    auto *lock = DisplayCard();
+    MakeDisplayNavigationRow(lock, "Tự động khóa", SleepLabel(sleep), OnOpenGeneralLockTimeout);
+    DisplayDivider(lock);
+    auto *now = DisplayRow(lock, "Khóa màn hình ngay", nullptr, 52);
+    MakeButton(now, "Khóa", 0x2b6fd6, OnLockNow);
+    DisplayDivider(lock);
+    const bool has_pin = !Settings("system", false).GetString("pin", "").empty();
+    auto *pin = DisplayRow(lock, "Mã PIN khóa", has_pin ? "Đã đặt" : "Chưa đặt", 58);
+    MakeButton(pin, has_pin ? "Thay đổi" : "Đặt PIN", 0x55565a, OnSetPin);
+
+    auto *power = DisplayCard();
+    auto *reboot = DisplayRow(power, "Khởi động lại thiết bị", nullptr, 52);
+    MakeButton(reboot, "Khởi động lại", 0xb03a3a, OnReboot);
+    DisplayDivider(power);
+    auto *shutdown = DisplayRow(power, "Tắt thiết bị", nullptr, 52);
+    MakeButton(shutdown, "Tắt máy", 0xb03a3a, OnShutdown);
+}
+
+void SettingsView::BuildGeneralLockTimeout() {
+    GeneralPageHeader("Tự động khóa");
+    const int selected = Settings("display", false).GetInt("sleep_timeout", 0);
+    auto *card = DisplayCard();
+    for (size_t i = 0; i < sizeof(kSleepOpts) / sizeof(kSleepOpts[0]); ++i) {
+        MakeOptionRow(card, kSleepOpts[i].label, nullptr, selected == kSleepOpts[i].seconds,
+                      OnSleepSelected, std::to_string(kSleepOpts[i].seconds));
+        if (i + 1 < sizeof(kSleepOpts) / sizeof(kSleepOpts[0])) DisplayDivider(card);
+    }
+}
+
+void SettingsView::BuildGeneralAbout() {
+    GeneralPageHeader("Giới thiệu");
+    char hostname[128]{};
+    ::gethostname(hostname, sizeof(hostname) - 1);
+    struct utsname kernel{};
+    ::uname(&kernel);
+
+    auto *device = DisplayCard();
+    DisplayRow(device, "Tên thiết bị", hostname[0] ? hostname : BOARD_NAME, 58);
+    DisplayDivider(device);
+    DisplayRow(device, "Phần cứng", BOARD_NAME, 58);
+    DisplayDivider(device);
+    char screen[32];
+    std::snprintf(screen, sizeof(screen), "%d × %d", width_, height_);
+    DisplayRow(device, "Màn hình", screen, 58);
+    DisplayDivider(device);
+#ifdef JETSON_FW_VERSION
+    DisplayRow(device, "Firmware", "jetson-fw " JETSON_FW_VERSION, 58);
+#else
+    DisplayRow(device, "Firmware", "jetson-fw 0.1.0", 58);
+#endif
+    DisplayDivider(device);
+    DisplayRow(device, "Linux", kernel.release[0] ? kernel.release : "—", 58);
+
+    struct statvfs st{};
+    std::string storage = "—";
+    if (statvfs("/", &st) == 0) {
+        const unsigned long long total = (unsigned long long)st.f_blocks * st.f_frsize;
+        const unsigned long long freeb = (unsigned long long)st.f_bavail * st.f_frsize;
+        storage = FormatBytes(total > freeb ? total - freeb : 0) + " / " + FormatBytes(total) +
+                  " • trống " + FormatBytes(freeb);
+    }
+
+    std::string memory = "—";
+    unsigned long long total_kb = 0, available_kb = 0;
+    std::ifstream meminfo("/proc/meminfo");
+    std::string line;
+    while (std::getline(meminfo, line)) {
+        if (line.rfind("MemTotal:", 0) == 0)
+            total_kb = std::strtoull(line.c_str() + 9, nullptr, 10);
+        else if (line.rfind("MemAvailable:", 0) == 0)
+            available_kb = std::strtoull(line.c_str() + 13, nullptr, 10);
+    }
+    if (total_kb) {
+        const unsigned long long total = total_kb * 1024ULL;
+        const unsigned long long available = available_kb * 1024ULL;
+        memory = FormatBytes(total > available ? total - available : 0) + " / " +
+                 FormatBytes(total) + " • trống " + FormatBytes(available);
+    }
+    auto *capacity = DisplayCard();
+    DisplayRow(capacity, "Lưu trữ", storage.c_str(), 58);
+    DisplayDivider(capacity);
+    DisplayRow(capacity, "RAM", memory.c_str(), 58);
 }
 
 // =========================================================================
@@ -932,6 +1569,15 @@ void SettingsView::WifiRefreshSwitch() {
 
 void SettingsView::WifiRescan() {
     if (!wifi_list_) return;
+    if (airplane_enabled_ || jetson::IsAirplaneModeEnabled()) {
+        wifi_enabled_ = false;
+        wifi_scanned_ = true;
+        wifi_nets_.clear();
+        WifiRefreshSwitch();
+        WifiRenderList();
+        SetStatus("WiFi bị tắt bởi chế độ máy bay");
+        return;
+    }
     if (wifi_busy_.exchange(true)) return;
     SetStatus("Đang quét WiFi...");
     ESP_LOGI(TAG, "WiFi scan requested from Settings");
@@ -972,7 +1618,9 @@ void SettingsView::WifiRenderList() {
         auto *e = lv_label_create(wifi_list_);
         lv_obj_set_style_text_font(e, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(e, Color(p.sub_text), 0);
-        lv_label_set_text(e, "Không có mạng. Bật/tắt WiFi để quét lại.");
+        lv_label_set_text(e, airplane_enabled_
+                                ? "Chế độ máy bay đang bật."
+                                : "Không có mạng. Bật/tắt WiFi để quét lại.");
         return;
     }
     for (const auto &n : wifi_nets_) WifiCreateRow(n);
@@ -1449,6 +2097,15 @@ void SettingsView::BtRefreshSwitch() {
 
 void SettingsView::BtRescan() {
     if (!bt_list_) return;
+    if (airplane_enabled_ || jetson::IsAirplaneModeEnabled()) {
+        bt_powered_ = false;
+        bt_scanned_ = true;
+        bt_devs_.clear();
+        BtRefreshSwitch();
+        BtRenderList();
+        SetStatus("Bluetooth bị tắt bởi chế độ máy bay");
+        return;
+    }
     if (bt_busy_.exchange(true)) return;
     SetStatus("Đang quét Bluetooth...");
     ESP_LOGI(TAG, "Bluetooth scan requested from Settings");
@@ -1484,7 +2141,9 @@ void SettingsView::BtRenderList() {
         auto *e = lv_label_create(bt_list_);
         lv_obj_set_style_text_font(e, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(e, Color(p.sub_text), 0);
-        lv_label_set_text(e, "Không có thiết bị. Bấm \"Quét lại\".");
+        lv_label_set_text(e, airplane_enabled_
+                                ? "Chế độ máy bay đang bật."
+                                : "Không có thiết bị. Bấm \"Quét lại\".");
         return;
     }
     for (const auto &d : bt_devs_) BtCreateRow(d);
@@ -1788,6 +2447,7 @@ void SettingsView::OnSideClicked(lv_event_t *e) {
     auto *ctx = static_cast<SideCtx *>(lv_event_get_user_data(e));
     if (ctx) {
         if (ctx->cat == Cat::Display) ctx->self->display_page_ = DisplayPage::Main;
+        if (ctx->cat == Cat::General) ctx->self->general_page_ = GeneralPage::Main;
         ctx->self->ShowCategory(ctx->cat);
     }
 }
@@ -1802,6 +2462,9 @@ void SettingsView::OnBtRowDeleted(lv_event_t *e) {
 }
 void SettingsView::OnOptDeleted(lv_event_t *e) {
     delete static_cast<OptCtx *>(lv_event_get_user_data(e));
+}
+void SettingsView::OnFontDeleted(lv_event_t *e) {
+    delete static_cast<FontCtx *>(lv_event_get_user_data(e));
 }
 
 void SettingsView::OnBrightChanged(lv_event_t *e) {
@@ -1966,9 +2629,71 @@ void SettingsView::OnMuteToggle(lv_event_t *e) {
     self->SetStatus(audible ? "Bật tiếng" : "Tắt tiếng");
 }
 
+void SettingsView::OnAirplaneSwitch(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (!self || !self->airplane_switch_) return;
+    const bool enabled = lv_obj_has_state(self->airplane_switch_, LV_STATE_CHECKED);
+
+    if (self->airplane_busy_.exchange(true)) {
+        self->AirplaneRefreshUi();
+        return;
+    }
+    if (self->wifi_busy_.load() || self->bt_busy_.load()) {
+        self->airplane_busy_ = false;
+        self->AirplaneRefreshUi();
+        const char *message = "Vui lòng đợi thao tác WiFi/Bluetooth hoàn tất";
+        self->SetStatus(message);
+        if (self->notification_cb_) self->notification_cb_(message);
+        return;
+    }
+
+    self->AirplaneRefreshUi();
+    self->SetStatus(enabled ? "Đang bật chế độ máy bay..."
+                            : "Đang tắt chế độ máy bay...");
+    std::thread([self = self->Self(), enabled]() {
+        auto result = jetson::SetAirplaneMode(enabled, self->wifi_, self->bluetooth_);
+
+        LvLockGuard lock;
+        self->airplane_busy_ = false;
+        self->airplane_enabled_ = result.enabled;
+        self->wifi_enabled_ = result.wifi_enabled;
+        self->bt_powered_ = result.bluetooth_powered;
+        self->wifi_nets_.clear();
+        self->bt_devs_.clear();
+        self->wifi_scanned_ = result.enabled;
+        self->bt_scanned_ = result.enabled;
+        self->AirplaneRefreshUi();
+
+        if (self->current_ == Cat::Wifi || self->current_ == Cat::Bluetooth)
+            self->ShowCategory(self->current_);
+
+        std::string message;
+        if (enabled && result.success) {
+            message = "Đã bật chế độ máy bay — WiFi và Bluetooth đã tắt";
+        } else if (enabled) {
+            message = "Không thể bật: một radio vẫn đang hoạt động";
+        } else if (result.success) {
+            message = "Đã tắt chế độ máy bay";
+        } else {
+            message = "Đã tắt chế độ máy bay, nhưng chưa khôi phục đủ radio";
+        }
+        self->SetStatus(result.error.empty()
+                            ? message.c_str()
+                            : (message + ": " + result.error).c_str());
+        if (self->notification_cb_) self->notification_cb_(message.c_str());
+    }).detach();
+}
+
 void SettingsView::OnWifiSwitch(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (self->airplane_enabled_ || self->airplane_busy_.load() ||
+        jetson::IsAirplaneModeEnabled()) {
+        self->WifiRefreshSwitch();
+        self->SetStatus("Tắt chế độ máy bay trước khi bật WiFi");
+        return;
+    }
     bool on = lv_obj_has_state(self->wifi_switch_, LV_STATE_CHECKED);
     if (self->wifi_busy_.exchange(true)) {
         self->WifiRefreshSwitch();
@@ -2031,6 +2756,12 @@ void SettingsView::OnWifiInfoClicked(lv_event_t *e) {
 void SettingsView::OnBtSwitch(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (self->airplane_enabled_ || self->airplane_busy_.load() ||
+        jetson::IsAirplaneModeEnabled()) {
+        self->BtRefreshSwitch();
+        self->SetStatus("Tắt chế độ máy bay trước khi bật Bluetooth");
+        return;
+    }
     bool on = lv_obj_has_state(self->bt_switch_, LV_STATE_CHECKED);
     if (self->bt_busy_.exchange(true)) {
         self->BtRefreshSwitch();
@@ -2075,13 +2806,94 @@ void SettingsView::OnLangVi(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     Settings("input", true).SetString("kbd_lang", "vi");
-    self->ShowCategory(Cat::Keyboard);
+    self->ShowCategory(Cat::General);
 }
 void SettingsView::OnLangEn(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     Settings("input", true).SetString("kbd_lang", "en");
-    self->ShowCategory(Cat::Keyboard);
+    self->ShowCategory(Cat::General);
+}
+
+void SettingsView::OnGeneralBack(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    switch (self->general_page_) {
+        case GeneralPage::LanguagePicker:
+        case GeneralPage::RegionPicker:
+        case GeneralPage::Calendar:
+            self->general_page_ = GeneralPage::LanguageRegion;
+            break;
+        case GeneralPage::SystemFonts:
+        case GeneralPage::MyFonts:
+        case GeneralPage::CloudFonts:
+            self->general_page_ = GeneralPage::Fonts;
+            break;
+        case GeneralPage::LockTimeout:
+            self->general_page_ = GeneralPage::Power;
+            break;
+        default:
+            self->general_page_ = GeneralPage::Main;
+            break;
+    }
+    self->ShowCategory(Cat::General);
+}
+
+#define GENERAL_NAV_HANDLER(name, page)                                      \
+    void SettingsView::name(lv_event_t *e) {                                \
+        LvLockGuard lock;                                                     \
+        auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));  \
+        self->general_page_ = GeneralPage::page;                              \
+        self->ShowCategory(Cat::General);                                     \
+    }
+
+GENERAL_NAV_HANDLER(OnOpenGeneralKeyboard, Keyboard)
+GENERAL_NAV_HANDLER(OnOpenLanguageRegion, LanguageRegion)
+GENERAL_NAV_HANDLER(OnOpenLanguagePicker, LanguagePicker)
+GENERAL_NAV_HANDLER(OnOpenRegionPicker, RegionPicker)
+GENERAL_NAV_HANDLER(OnOpenCalendarPicker, Calendar)
+GENERAL_NAV_HANDLER(OnOpenGeneralDateTime, DateTime)
+GENERAL_NAV_HANDLER(OnOpenFonts, Fonts)
+GENERAL_NAV_HANDLER(OnOpenSystemFonts, SystemFonts)
+GENERAL_NAV_HANDLER(OnOpenMyFonts, MyFonts)
+GENERAL_NAV_HANDLER(OnOpenCloudFonts, CloudFonts)
+GENERAL_NAV_HANDLER(OnOpenGeneralPower, Power)
+GENERAL_NAV_HANDLER(OnOpenGeneralLockTimeout, LockTimeout)
+GENERAL_NAV_HANDLER(OnOpenGeneralAbout, About)
+
+#undef GENERAL_NAV_HANDLER
+
+void SettingsView::OnLanguageSelected(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *ctx = static_cast<OptCtx *>(lv_event_get_user_data(e));
+    if (!ctx) return;
+    Settings("system", true).SetString("language", ctx->value);
+    for (const auto &option : kLanguages) {
+        if (ctx->value == option.code) {
+            Settings("input", true).SetString("kbd_lang", option.input_lang);
+            break;
+        }
+    }
+    ctx->self->general_page_ = GeneralPage::LanguageRegion;
+    ctx->self->ShowCategory(Cat::General);
+}
+
+void SettingsView::OnRegionSelected(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *ctx = static_cast<OptCtx *>(lv_event_get_user_data(e));
+    if (!ctx) return;
+    Settings("system", true).SetString("region", ctx->value);
+    ctx->self->general_page_ = GeneralPage::LanguageRegion;
+    ctx->self->ShowCategory(Cat::General);
+}
+
+void SettingsView::OnCalendarSelected(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *ctx = static_cast<OptCtx *>(lv_event_get_user_data(e));
+    if (!ctx) return;
+    Settings("system", true).SetString("calendar", ctx->value);
+    ctx->self->general_page_ = GeneralPage::LanguageRegion;
+    ctx->self->ShowCategory(Cat::General);
 }
 
 void SettingsView::On24hToggle(lv_event_t *e) {
@@ -2090,7 +2902,25 @@ void SettingsView::On24hToggle(lv_event_t *e) {
     bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
     Settings("display", true).SetBool("clock_24h", on);
     self->SetStatus(on ? "Định dạng 24h" : "Định dạng 12h");
-    self->ShowCategory(Cat::DateTime);
+    self->ShowCategory(Cat::General);
+}
+
+void SettingsView::OnAutoTimeToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    Settings("system", true).SetBool("auto_time", on);
+    self->SetStatus(on ? "Đang bật đồng bộ thời gian mạng..."
+                       : "Đã tắt đồng bộ thời gian mạng");
+    self->ShowCategory(Cat::General);
+    std::thread([self = self->Self(), on]() {
+        auto result = jetson::platform::RunShellCommand(
+            std::string("timedatectl set-ntp ") + (on ? "true" : "false"));
+        LvLockGuard lock;
+        if (self) self->SetStatus(result.Ok() ? (on ? "Đã bật đồng bộ thời gian mạng"
+                                                    : "Đã tắt đồng bộ thời gian mạng")
+                                                : "Không thể thay đổi đồng bộ thời gian");
+    }).detach();
 }
 
 void SettingsView::OnTzSelected(lv_event_t *e) {
@@ -2105,7 +2935,7 @@ void SettingsView::OnTzSelected(lv_event_t *e) {
         LvLockGuard lock;
         if (self) {
             self->SetStatus(("Múi giờ: " + tz).c_str());
-            self->ShowCategory(Cat::DateTime);
+            self->ShowCategory(Cat::General);
         }
     }).detach();
 }
@@ -2123,8 +2953,31 @@ void SettingsView::OnSleepSelected(lv_event_t *e) {
         ctx->self->display_page_ == DisplayPage::AutoLock) {
         ctx->self->ShowCategory(Cat::Display);
     } else {
-        ctx->self->ShowCategory(Cat::Power);
+        ctx->self->general_page_ = GeneralPage::Power;
+        ctx->self->ShowCategory(Cat::General);
     }
+}
+
+void SettingsView::OnFontSelected(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *ctx = static_cast<FontCtx *>(lv_event_get_user_data(e));
+    if (!ctx || ctx->self->font_busy_.load()) return;
+    const FontCtx font = *ctx;
+    if (FileExistsLocal(font.regular_path)) {
+        if (jetson::ApplyBuiltinFontFamily(font.name, font.regular_path, font.bold_path)) {
+            font.self->SetFontStatus("Đã áp dụng " + font.name + ".");
+            font.self->ShowCategory(Cat::General);
+        }
+        return;
+    }
+    if (!font.regular_object.empty()) font.self->DownloadAndApplyFont(font);
+}
+
+void SettingsView::OnRefreshFontCatalog(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    self->RefreshCloudFontCatalog();
+    self->ShowCategory(Cat::General);
 }
 
 void SettingsView::OnLockNow(lv_event_t *e) {
@@ -2237,6 +3090,8 @@ void SettingsView::OnPinSave(lv_event_t *e) {
     Settings("system", true).SetString("pin", a);
     self->SetStatus("Đã lưu PIN");
     self->CloseModal();
+    if (self->current_ == Cat::General && self->general_page_ == GeneralPage::Power)
+        self->ShowCategory(Cat::General);
 }
 
 void SettingsView::OnPinClear(lv_event_t *e) {
@@ -2245,6 +3100,8 @@ void SettingsView::OnPinClear(lv_event_t *e) {
     Settings("system", true).SetString("pin", "");
     self->SetStatus("Đã xóa PIN");
     self->CloseModal();
+    if (self->current_ == Cat::General && self->general_page_ == GeneralPage::Power)
+        self->ShowCategory(Cat::General);
 }
 
 } // namespace home

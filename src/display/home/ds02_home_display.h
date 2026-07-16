@@ -30,6 +30,7 @@ class ChatView;
 class DocumentsView;
 class LockScreenView;
 class OverlayView;
+class RemindersView;
 class SettingsView;
 class TerminalView;
 class TrashView;
@@ -38,7 +39,7 @@ class WifiSettingsView;
 /* Compact DS-02 home display for the Jetson 800x480 HDMI panel.
  * Reproduces the DS-02 standby (wallpaper + clock + system bar + dock) and
  * app drawer (swipe-up grid of app icons) with touch interaction. The dock
- * carries the backed apps (calendar / gallery / settings / wifi / bt / chat /
+ * carries the backed apps (calendar / documents / reminders / settings / chat /
  * terminal); the drawer is the upcoming app set. */
 class Ds02HomeDisplay : public SpiLcdDisplay {
 public:
@@ -64,11 +65,18 @@ public:
     void OpenBluetoothSettings();
     void OpenCalendar();
     void OpenDocuments();
+    void OpenReminders();
     void OpenBackgroundGallery();
     void OpenSettings();
     void OpenChat();
     void OpenTerminal();
     void OpenTrash();
+    /* Hand the HDMI panel to a Chromium kiosk: stops the FBDEV render loop and
+     * exits the process with code 42 so the jetson-fw supervisor runs
+     * launch_chromium.sh (Xorg + chromium --kiosk on /dev/fb0), then restarts
+     * this firmware when the browser closes. Not an OverlayView app -- the
+     * whole UI is suspended while the kiosk owns the panel. */
+    void OpenChromium();
     void OpenLockScreen();
     void SetBrightness(int pct);
     void ApplyDisplayPreferences();
@@ -86,7 +94,8 @@ private:
     enum class StandbyState { Dim, Awake, Launcher };
 
     static constexpr size_t kDockItemCount = 9;
-    static constexpr size_t kDrawerItemCount = 8;
+    static constexpr size_t kDrawerItemCount = 12;
+    static constexpr size_t kGalleryDrawerIndex = 7;
 
     /* ---- Multitasking ----
      * Every OverlayView app that opens joins an LRU queue and stays alive when
@@ -99,6 +108,7 @@ private:
         kAppNone = 0,
         kAppCalendar,
         kAppDocuments,
+        kAppReminders,
         kAppSettings,
         kAppChat,
         kAppTerminal,
@@ -199,6 +209,7 @@ private:
     std::shared_ptr<BluetoothSettingsView> bt_view_;
     std::shared_ptr<CalendarView> calendar_view_;
     std::shared_ptr<DocumentsView> documents_view_;
+    std::shared_ptr<RemindersView> reminders_view_;
     std::shared_ptr<BackgroundGalleryView> gallery_view_;
     std::shared_ptr<SettingsView> settings_view_;
     std::shared_ptr<ChatView> chat_view_;

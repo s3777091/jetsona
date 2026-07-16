@@ -1,4 +1,5 @@
 #include "wifi_manager.h"
+#include "net/airplane_mode.h"
 #include "esp_log.h"
 #include "platform/shell_command.h"
 
@@ -153,6 +154,11 @@ bool WifiManager::IsEnabled() const {
 
 bool WifiManager::Enable(bool on) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (on && IsAirplaneModeEnabled()) {
+        last_error_ = "Chế độ máy bay đang bật";
+        ESP_LOGW(TAG, "radio on rejected while airplane mode is enabled");
+        return false;
+    }
     std::string out;
     int rc = RunShellCommand(on ? "nmcli -w 8 radio wifi on" : "nmcli -w 8 radio wifi off", out);
     if (rc != 0) {
@@ -186,6 +192,11 @@ std::vector<WifiNetwork> WifiManager::Scan() {
     const auto started = std::chrono::steady_clock::now();
     std::vector<WifiNetwork> nets;
     ESP_LOGI(TAG, "scan started");
+    if (IsAirplaneModeEnabled()) {
+        last_error_ = "Chế độ máy bay đang bật";
+        ESP_LOGW(TAG, "scan rejected while airplane mode is enabled");
+        return nets;
+    }
     if (!Available()) {
         ESP_LOGE(TAG, "scan stopped: %s", last_error_.c_str());
         return nets;
@@ -372,6 +383,11 @@ WifiDetails WifiManager::Details(const std::string &ssid) {
 
 bool WifiManager::Connect(const std::string &ssid, const std::string &password) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (IsAirplaneModeEnabled()) {
+        last_error_ = "Chế độ máy bay đang bật";
+        ESP_LOGW(TAG, "connection rejected while airplane mode is enabled");
+        return false;
+    }
     if (!Available()) return false;
     const SavedProfiles profiles = loadSavedWifiProfiles();
     auto saved = profiles.find(ssid);
