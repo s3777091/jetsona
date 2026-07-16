@@ -45,14 +45,14 @@ chiaki-ng trong PATH
 chiaki trong PATH
 ```
 
-Có thể chỉ định đường dẫn khác trong `/opt/jetson-fw/.env`:
+Các thiết lập không nhạy cảm nằm trong `/opt/jetson-fw/config.yaml`:
 
-```bash
-CHIAKI_BIN=/opt/chiaki-ng/chiaki-ng.AppImage
-PS_REMOTE_PLAY_AUDIO_DRIVER=alsa
-PS_REMOTE_PLAY_HW_DECODER=software
-PS_REMOTE_PLAY_RENDER_BACKEND=vulkan
-PS_REMOTE_PLAY_MAX_CLOCKS=1
+```yaml
+CHIAKI_BIN: "/opt/chiaki-ng/chiaki-ng.AppImage"
+PS_REMOTE_PLAY_AUDIO_DRIVER: "alsa"
+PS_REMOTE_PLAY_HW_DECODER: "software"
+PS_REMOTE_PLAY_RENDER_BACKEND: "vulkan"
+PS_REMOTE_PLAY_MAX_CLOCKS: "1"
 ```
 
 Các gói nền cần cho chế độ bare-X:

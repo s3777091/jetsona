@@ -4,6 +4,18 @@
 # one implementation. State files are data, never shell code.
 set -u
 
+# Keep standalone diagnostics (`ps_remote_play_ctl.sh status`) consistent with
+# the service. When sourced by launch_ps_remote_play.sh the shared loader is
+# already present, so this block deliberately avoids loading config twice.
+PSRP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PSRP_JETSON_DIR="$(dirname "$PSRP_SCRIPT_DIR")"
+if ! declare -F jetson_load_config >/dev/null 2>&1 &&
+    [ -r "$PSRP_SCRIPT_DIR/config_loader.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$PSRP_SCRIPT_DIR/config_loader.sh"
+    jetson_load_config "${JETSON_CONFIG_FILE:-$PSRP_JETSON_DIR/config.yaml}"
+fi
+
 PSRP_HOME="${PS_REMOTE_PLAY_HOME:-/var/lib/jetson-fw/chiaki}"
 PSRP_STATE_FILE="${PS_REMOTE_PLAY_STATE_FILE:-/var/lib/jetson-fw/ps-remote-play.conf}"
 PSRP_XDG_CONFIG_HOME="${PS_REMOTE_PLAY_XDG_CONFIG_HOME:-$PSRP_HOME/.config}"
