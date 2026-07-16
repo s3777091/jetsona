@@ -21,6 +21,11 @@ if [ ! -s "$STUDIO_ICON" ]; then
     exit 1
 fi
 
+# The service executes /opt/jetson-fw/jetson_fw directly. Stop it before
+# replacing that binary; otherwise Linux can reject cp with ETXTBSY ("Text
+# file busy"). This is harmless on the first install when the unit is absent.
+sudo systemctl stop jetson-fw 2>/dev/null || true
+
 echo "==> Installing to /opt/jetson-fw"
 sudo mkdir -p /opt/jetson-fw
 sudo cp "$BUILD_DIR/jetson_fw" /opt/jetson-fw/
