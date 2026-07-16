@@ -1071,7 +1071,9 @@ void Ds02HomeDisplay::LaunchPsRemotePlay(bool configure) {
             launcher = "scripts/launch_ps_remote_play.sh";
         const char *mode = configure ? "configure" : "stream";
         const std::string command = std::string("bash '") + launcher + "' " + mode;
-        ::system(command.c_str());
+        const int launch_result = ::system(command.c_str());
+        if (launch_result != 0)
+            ESP_LOGW(TAG, "PS Remote Play launcher exited with status %d", launch_result);
         ::execl("/proc/self/exe", "jetson_fw", (char *)nullptr);
         _exit(1);
     }).detach();
@@ -1150,7 +1152,9 @@ void Ds02HomeDisplay::OpenChromium(const std::string &url) {
             _exit(42);  // 42 -> supervisor launches the kiosk, then restarts us
         const char *kiosk = "/opt/jetson-fw/scripts/launch_chromium.sh";
         if (::access(kiosk, R_OK) != 0) kiosk = "scripts/launch_chromium.sh";
-        ::system((std::string("bash ") + kiosk).c_str());
+        const int launch_result = ::system((std::string("bash ") + kiosk).c_str());
+        if (launch_result != 0)
+            ESP_LOGW(TAG, "Chromium launcher exited with status %d", launch_result);
         ::execl("/proc/self/exe", "jetson_fw", (char *)nullptr);
         _exit(1);  // execl failed; nothing left to render with
     }).detach();
