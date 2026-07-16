@@ -44,16 +44,17 @@ constexpr uint8_t kRegPower  = 0x03;
 constexpr uint8_t kRegCurrent = 0x04;
 constexpr uint8_t kRegCal    = 0x05;
 
-// Config: BRNG=0 (16V), PG=01 (±40mV), BADC=12-bit, SADC=12-bit / 532µs,
-// MODE=0x07 (continuous shunt+bus). This is the datasheet reset default 0x399F,
-// written explicitly so a stale register from a prior driver run is overwritten.
-constexpr uint16_t kConfig = 0x399F;
+// Config matching Waveshare's UPS-Power-Module demo (set_calibration_32V_2A):
+// BRNG=1 (32V), PG=11 (±320mV — the 0.1Ω shunt drops >40mV above 0.4A, so the
+// narrower gains would clip the current reading), BADC/SADC=12-bit 32-sample
+// averaging, MODE=0x07 (continuous shunt+bus).
+constexpr uint16_t kConfig = 0x3EEF;
 } // namespace
 
 Ina219::Ina219() {
     bus_path_ = EnvOr("INA219_BUS", "/dev/i2c-1");
-    addr_     = ParseAddr(EnvOr("INA219_ADDR", "0x43"));
-    vmin_     = EnvFloatOr("INA219_VMIN", 6.6f);
+    addr_     = ParseAddr(EnvOr("INA219_ADDR", "0x42"));
+    vmin_     = EnvFloatOr("INA219_VMIN", 6.0f);
     vmax_     = EnvFloatOr("INA219_VMAX", 8.4f);
     shunt_    = EnvFloatOr("INA219_SHUNT", 0.1f);
 }
@@ -111,9 +112,10 @@ bool Ina219::Init() {
     }
 
     // Calibration for current readout. cal = trunc(0.04096 / (shunt * I_lsb)).
-    // Pick I_lsb so ~5 A stays in the 15-bit signed range: I_lsb = 5.0 / 32768.
+    // I_lsb = 100 µA/step like the Waveshare demo → cal = 4096 with the 0.1Ω
+    // shunt, full-scale ±3.27A (module maxes out at 2.5A).
     if (shunt_ > 0.0f) {
-        current_lsb_ = 5.0f / 32768.0f;                 // ~152.6 µA / step
+        current_lsb_ = 100e-6f;
         uint16_t cal = (uint16_t)(0.04096f / (shunt_ * current_lsb_));
         WriteReg16(kRegCal, cal);                       // best-effort; current is optional
     }

@@ -49,7 +49,7 @@ const char *Board::GetNetworkStateIcon() {
 }
 
 bool Board::GetBatteryLevel(int &level, bool &charging, bool &discharging) {
-    /* Reads the Waveshare UPS Module (B) battery via the INA219 on I2C.
+    /* Reads the Waveshare UPS Power Module battery via the INA219 on I2C.
      * Lazy singleton so the I2C fd lives as long as the Board. If the read
      * fails (no /dev/i2c, wrong address, UPS disconnected) fall back to a full
      * battery so the status-bar icon stays sensible instead of going blank. */

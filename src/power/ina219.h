@@ -1,22 +1,26 @@
 #ifndef JETSON_POWER_INA219_H
 #define JETSON_POWER_INA219_H
 
-/* Battery monitor for the Waveshare UPS Power Module (B) on the Jetson Nano.
+/* Battery monitor for the Waveshare UPS Power Module on the Jetson Nano
+ * (https://www.waveshare.com/wiki/UPS_Power_Module).
  *
- * The module exposes an INA219 current/voltage monitor over I2C (pogo pins →
- * /dev/i2c-1). We read it directly with a raw /dev/i2c-N ioctl (I2C_SLAVE +
- * register read/write) — no extra library, matching the POSIX fd+ioctl style
- * already used in src/app/system_info.cc.
+ * The module exposes an INA219 current/voltage monitor over I2C (6-pin cable →
+ * /dev/i2c-1 @ 0x42, per Waveshare's UPS-Power-Module demo code). We read it
+ * directly with a raw /dev/i2c-N ioctl (I2C_SLAVE + register read/write) — no
+ * extra library, matching the POSIX fd+ioctl style already used in
+ * src/app/system_info.cc.
  *
  * State of charge is derived from the INA219 bus-voltage register (the battery
- * pack voltage; the module is a 2S 18650 pack, 8.4 V full / ~6.6 V empty).
- * Charging/discharging come from the calibrated current register's sign.
+ * pack voltage; 2S2P 18650 pack). Waveshare's demo maps it linearly:
+ * percent = (V − 6.0) / 2.4 × 100, i.e. 8.4 V full / 6.0 V empty.
+ * Charging/discharging come from the calibrated current register's sign
+ * (positive = batteries charging, negative = batteries powering the Jetson).
  *
  * Everything is env-configurable so a wrong I2C bus/address or a different cell
  * chemistry is a runtime fix, not a rebuild:
  *   INA219_BUS   "/dev/i2c-1"   I2C character device path
- *   INA219_ADDR  "0x43"         7-bit I2C address (hex) of the INA219
- *   INA219_VMIN  "6.6"          pack voltage mapped to 0 %
+ *   INA219_ADDR  "0x42"         7-bit I2C address (hex) of the INA219
+ *   INA219_VMIN  "6.0"          pack voltage mapped to 0 %
  *   INA219_VMAX  "8.4"          pack voltage mapped to 100 %
  *   INA219_SHUNT "0.1"          shunt resistor value (ohm) for current cal
  *
@@ -50,8 +54,8 @@ private:
 
     int         fd_ = -1;
     std::string bus_path_;
-    uint8_t     addr_ = 0x43;
-    float       vmin_ = 6.6f;
+    uint8_t     addr_ = 0x42;
+    float       vmin_ = 6.0f;
     float       vmax_ = 8.4f;
     float       shunt_ = 0.1f;
     // current_lsb in amperes per ADC step, set during Init() from shunt_.
