@@ -37,6 +37,16 @@ public:
     // Optional right-header button (e.g. a toggle). Pass a symbol + callback.
     void SetRightButton(const char *icon_symbol, RightCb cb);
 
+    /* Multitasking: the yellow (-) and green (+) lights both send the app to
+     * the background instead of drawing a restore pill over the dock. The home
+     * screen wires this to its task queue (snapshot + hide + dock dot). */
+    void SetBackgroundRequest(std::function<void()> cb) { background_request_ = std::move(cb); }
+    // Hide/show the whole overlay without destroying it (kept alive in the
+    // multitask queue, so restoring never rebuilds the view).
+    void SetHidden(bool hidden);
+    lv_obj_t *overlay_obj() const { return overlay_; }
+    const std::string &title() const { return title_; }
+
 protected:
     // The global StatusBar occupies y=0..41 on the top layer. Keeping the app
     // controls in the lower part of this header prevents the traffic lights and
@@ -55,9 +65,7 @@ protected:
     lv_obj_t *status_label_ = nullptr;
     lv_obj_t *body_ = nullptr;        // subclass fills this (below header+status)
     lv_obj_t *right_btn_ = nullptr;
-    lv_obj_t *restore_btn_ = nullptr; // floating pill shown while minimized
     std::string title_;
-    bool zoomed_ = false;
 
     virtual void OnStart() {}
     // Called after the overlay is resized by the green zoom button so subclasses
@@ -66,19 +74,17 @@ protected:
 
 private:
     void BuildShell(const char *title);
-    void Minimize();
-    void Restore();
-    void ToggleZoom();
+    void ToBackground();
 
     static void OnCloseBtn(lv_event_t *e);
     static void OnMinBtn(lv_event_t *e);
     static void OnZoomBtn(lv_event_t *e);
-    static void OnRestore(lv_event_t *e);
     static void OnRight(lv_event_t *e);
     static void OnCloseTimer(lv_timer_t *t);
 
     ClosedCb on_closed_;
     RightCb right_cb_;
+    std::function<void()> background_request_;
     std::atomic<bool> closed_{false};
 };
 

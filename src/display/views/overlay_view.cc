@@ -24,7 +24,6 @@ OverlayView::OverlayView(lv_obj_t *parent, int width, int height, const char *ti
 OverlayView::~OverlayView() {
     closed_ = true;
     LvglLockGuard lock;
-    if (restore_btn_) { lv_obj_del(restore_btn_); restore_btn_ = nullptr; }
     if (overlay_) { lv_obj_del(overlay_); overlay_ = nullptr; }
 }
 
@@ -154,75 +153,33 @@ void OverlayView::OnCloseBtn(lv_event_t *e) {
 void OverlayView::OnMinBtn(lv_event_t *e) {
     LvglLockGuard lock;
     auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
-    self->Minimize();
+    self->ToBackground();
 }
 
 void OverlayView::OnZoomBtn(lv_event_t *e) {
     LvglLockGuard lock;
     auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
-    self->ToggleZoom();
+    self->ToBackground();
 }
 
-void OverlayView::OnRestore(lv_event_t *e) {
-    LvglLockGuard lock;
-    auto *self = static_cast<OverlayView *>(lv_event_get_user_data(e));
-    self->Restore();
+/* Both (-) and (+) park the app in the multitask queue: the home screen
+ * snapshots + hides the overlay and lights the running dot under the dock
+ * icon. The old floating restore pill (which sat on top of the dock) is gone;
+ * the app comes back via its dock icon or the app switcher. */
+void OverlayView::ToBackground() {
+    if (background_request_) { background_request_(); return; }
+    // Not wired into the task queue (shouldn't happen) -> behave like close.
+    RequestClose();
 }
 
-void OverlayView::Minimize() {
-    if (!overlay_ || restore_btn_) return; // already minimized / no overlay
-    lv_obj_add_flag(overlay_, LV_OBJ_FLAG_HIDDEN);
-    const auto &p = jetson::UiTheme::Instance().Palette();
-    restore_btn_ = lv_obj_create(parent_);
-    lv_obj_remove_style_all(restore_btn_);
-    lv_obj_set_size(restore_btn_, 140, 36);
-    lv_obj_set_style_radius(restore_btn_, 18, 0);
-    lv_obj_set_style_bg_color(restore_btn_, Color(p.accent), 0);
-    lv_obj_set_style_bg_opa(restore_btn_, LV_OPA_COVER, 0);
-    lv_obj_add_flag(restore_btn_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(restore_btn_, LV_ALIGN_BOTTOM_MID, 0, -8);
-    auto *lbl = lv_label_create(restore_btn_);
-    lv_obj_set_style_text_font(lbl, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
-    lv_label_set_text(lbl, title_.c_str());
-    lv_obj_center(lbl);
-    lv_obj_add_event_cb(restore_btn_, OnRestore, LV_EVENT_CLICKED, this);
-}
-
-void OverlayView::Restore() {
-    if (!restore_btn_) return;
-    lv_obj_del(restore_btn_);
-    restore_btn_ = nullptr;
-    if (overlay_) lv_obj_clear_flag(overlay_, LV_OBJ_FLAG_HIDDEN);
-}
-
-void OverlayView::ToggleZoom() {
+void OverlayView::SetHidden(bool hidden) {
     if (!overlay_) return;
-    const auto &p = jetson::UiTheme::Instance().Palette();
-    zoomed_ = !zoomed_;
-    int w, h;
-    if (zoomed_) {
-        w = width_ * 96 / 100;   // 768
-        h = height_ * 90 / 100;  // 432
-        lv_obj_set_pos(overlay_, (width_ - w) / 2, (height_ - h) / 2);
-        lv_obj_set_style_radius(overlay_, 16, 0);
-        lv_obj_set_style_border_width(overlay_, 1, 0);
-        lv_obj_set_style_border_color(overlay_, Color(p.row), 0);
-        lv_obj_set_style_shadow_width(overlay_, 24, 0);
-        lv_obj_set_style_clip_corner(overlay_, true, 0);
+    if (hidden) {
+        lv_obj_add_flag(overlay_, LV_OBJ_FLAG_HIDDEN);
     } else {
-        w = width_;
-        h = height_;
-        lv_obj_set_pos(overlay_, 0, 0);
-        lv_obj_set_style_radius(overlay_, 0, 0);
-        lv_obj_set_style_border_width(overlay_, 0, 0);
-        lv_obj_set_style_shadow_width(overlay_, 0, 0);
-        lv_obj_set_style_clip_corner(overlay_, false, 0);
+        lv_obj_clear_flag(overlay_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(overlay_);
     }
-    lv_obj_set_size(overlay_, w, h);
-    lv_obj_set_width(header_, w);
-    lv_obj_set_size(body_, w, h - kHeaderHeight);
-    OnResize(w, h - kHeaderHeight);
 }
 
 void OverlayView::OnRight(lv_event_t *e) {

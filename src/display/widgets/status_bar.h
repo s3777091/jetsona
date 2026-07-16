@@ -36,6 +36,12 @@ public:
     void SetLockAction(Action cb) { lock_action_ = std::move(cb); }
     void SetRebootAction(Action cb) { reboot_action_ = std::move(cb); }
     void SetShutdownAction(Action cb) { shutdown_action_ = std::move(cb); }
+    // Clicking the resting island toggles the app switcher (multitasking).
+    void SetIslandAction(Action cb) { island_action_ = std::move(cb); }
+
+    // Island center point in screen coords -- the app switcher blooms from here.
+    int IslandCenterX() const;
+    int IslandCenterY() const;
 
     void Hide();
     void Show();
@@ -87,6 +93,7 @@ private:
     std::string cached_lang_;
 
     Action wifi_action_, bt_action_, lock_action_, reboot_action_, shutdown_action_;
+    Action island_action_;
 
     void Refresh();
     void RefreshClock();
@@ -109,6 +116,7 @@ private:
     static void OnPowerMenuTimer(lv_timer_t *t);
     static void OnWifiClick(lv_event_t *e);
     static void OnBtClick(lv_event_t *e);
+    static void OnIslandClick(lv_event_t *e);
     static void OnPowerClick(lv_event_t *e);
     static void OnPowerLock(lv_event_t *e);
     static void OnPowerReboot(lv_event_t *e);

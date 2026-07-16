@@ -165,6 +165,12 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_set_style_shadow_width(pill_, 12, 0);
     lv_obj_set_style_shadow_opa(pill_, LV_OPA_30, 0);
     lv_obj_clear_flag(pill_, LV_OBJ_FLAG_SCROLLABLE);
+    // A click on the resting island opens the app switcher (like the iPhone
+    // app-switcher gesture). The island keeps working as the notification
+    // surface; a click while expanded simply toggles the switcher too.
+    lv_obj_add_flag(pill_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(pill_, 6);
+    lv_obj_add_event_cb(pill_, OnIslandClick, LV_EVENT_CLICKED, this);
 
     // Expanded content is already laid out inside the pill, but kept hidden
     // until the pill has started to bloom. This avoids a separate toast panel.
@@ -562,6 +568,28 @@ void StatusBar::OnWifiClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
     if (self->wifi_action_) self->wifi_action_();
+}
+
+void StatusBar::OnIslandClick(lv_event_t *e) {
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    LvglLockGuard lock;
+    if (self->island_action_) self->island_action_();
+}
+
+int StatusBar::IslandCenterX() const {
+    if (!pill_) return 0;
+    lv_obj_update_layout(pill_);
+    lv_area_t a;
+    lv_obj_get_coords(pill_, &a);
+    return (a.x1 + a.x2) / 2;
+}
+
+int StatusBar::IslandCenterY() const {
+    if (!pill_) return 0;
+    lv_obj_update_layout(pill_);
+    lv_area_t a;
+    lv_obj_get_coords(pill_, &a);
+    return (a.y1 + a.y2) / 2;
 }
 
 void StatusBar::OnBtClick(lv_event_t *e) {

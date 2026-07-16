@@ -434,6 +434,9 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
     status_bar_->SetShutdownAction([]() {
         std::thread([]() { sync(); int r = std::system("poweroff"); (void)r; }).detach();
     });
+    // Clicking the resting island blooms the multitask switcher out of it
+    // (and a second click while open collapses it back in).
+    status_bar_->SetIslandAction([this]() { OpenAppSwitcher(); });
 
     // Reuse the base class status/notification labels (created on the screen by
     // LvglDisplay) for the device-state status line.
@@ -459,6 +462,7 @@ void Ds02HomeDisplay::CreateDockObjects() {
     const int preferred_dock_width = dock_items_width +
         2 * (kDockHorizontalPadding + kDockBorderWidth);
     const int dock_width = std::min(preferred_dock_width, width_ - 24);
+    dock_base_width_ = dock_width; // widened while Gallery holds its temp slot
     dock_ = lv_obj_create(root_);
     lv_obj_remove_style_all(dock_);
     lv_obj_set_size(dock_, dock_width, kDockHeight);
@@ -675,7 +679,8 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     }
     if (code != LV_EVENT_CLICKED) return;
 
-    self->SetDockActive(focused);
+    // The dot under a dock icon now marks "running / in the multitask queue"
+    // (see UpdateDockDots), not the last-clicked item.
     BounceDockButton(target);
 
     // Dock icons (in file order): finder, calendar, folder, music, reminders,
@@ -728,27 +733,31 @@ void Ds02HomeDisplay::OpenBluetoothSettings() {
 
 void Ds02HomeDisplay::OpenCalendar() {
     DisplayLockGuard lock(this);
-    if (calendar_view_) return;
+    if (calendar_view_) { RestoreApp(kAppCalendar); return; }
     if (!root_) root_ = lv_screen_active();
     calendar_view_ = std::make_shared<CalendarView>(
         root_, width_, height_,
-        [this]() { calendar_view_.reset(); });
+        [this]() { calendar_view_.reset(); OnAppClosed(kAppCalendar); });
+    calendar_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppCalendar); });
     calendar_view_->Start();
+    NoteAppOpened(kAppCalendar);
 }
 
 void Ds02HomeDisplay::OpenDocuments() {
     DisplayLockGuard lock(this);
-    if (documents_view_) return;
+    if (documents_view_) { RestoreApp(kAppDocuments); return; }
     if (!root_) root_ = lv_screen_active();
     documents_view_ = std::make_shared<DocumentsView>(
         root_, width_, height_,
-        [this]() { documents_view_.reset(); });
+        [this]() { documents_view_.reset(); OnAppClosed(kAppDocuments); });
+    documents_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppDocuments); });
     documents_view_->Start();
+    NoteAppOpened(kAppDocuments);
 }
 
 void Ds02HomeDisplay::OpenBackgroundGallery() {
     DisplayLockGuard lock(this);
-    if (gallery_view_) return;
+    if (gallery_view_) { RestoreApp(kAppGallery); return; }
     if (!root_) root_ = lv_screen_active();
     gallery_view_ = std::make_shared<BackgroundGalleryView>(
         root_, width_, height_,
@@ -757,20 +766,23 @@ void Ds02HomeDisplay::OpenBackgroundGallery() {
             // reload the runtime list and re-apply the current wallpaper.
             ReloadBackgrounds();
             gallery_view_.reset();
+            OnAppClosed(kAppGallery);
         });
     gallery_view_->SetOnSelect([this](const std::string &file) { ApplyBackgroundFromFile(file); });
     gallery_view_->SetOnSleep([this](const std::string &file) { SetSleepBackground(file); });
     gallery_view_->SetOnChanged([this]() { ReloadBackgrounds(); });
+    gallery_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppGallery); });
     gallery_view_->Start();
+    NoteAppOpened(kAppGallery);
 }
 
 void Ds02HomeDisplay::OpenSettings() {
     DisplayLockGuard lock(this);
-    if (settings_view_) return;
+    if (settings_view_) { RestoreApp(kAppSettings); return; }
     if (!root_) root_ = lv_screen_active();
     settings_view_ = std::make_shared<SettingsView>(
         root_, width_, height_, wifi_, bluetooth_,
-        [this]() { settings_view_.reset(); });
+        [this]() { settings_view_.reset(); OnAppClosed(kAppSettings); });
     // Wire the hub's controls back into the home UI: brightness dims the
     // whole panel via the scrim, volume toggles the menu-bar icon, and the
     // lock request raises the full-screen PIN lock.
@@ -784,7 +796,9 @@ void Ds02HomeDisplay::OpenSettings() {
             // its own icon, so nothing to touch here.
         });
     settings_view_->SetLockRequest([this]() { OpenLockScreen(); });
+    settings_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppSettings); });
     settings_view_->Start();
+    NoteAppOpened(kAppSettings);
 }
 
 void Ds02HomeDisplay::SetBrightness(int pct) {
@@ -851,7 +865,7 @@ void Ds02HomeDisplay::OpenLockScreen() {
 
 void Ds02HomeDisplay::OpenChat() {
     DisplayLockGuard lock(this);
-    if (chat_view_) return;
+    if (chat_view_) { RestoreApp(kAppChat); return; }
     if (!root_) root_ = lv_screen_active();
     if (!chat_conv_) {
         chat_conv_ = std::make_shared<jetson::Conversation>();
@@ -859,29 +873,257 @@ void Ds02HomeDisplay::OpenChat() {
     }
     chat_view_ = std::make_shared<ChatView>(
         root_, width_, height_, chat_conv_,
-        [this]() { chat_view_.reset(); });
+        [this]() { chat_view_.reset(); OnAppClosed(kAppChat); });
+    chat_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppChat); });
     chat_view_->Start();
+    NoteAppOpened(kAppChat);
 }
 
 void Ds02HomeDisplay::OpenTerminal() {
     DisplayLockGuard lock(this);
-    if (terminal_view_) return;
+    if (terminal_view_) { RestoreApp(kAppTerminal); return; }
     if (!root_) root_ = lv_screen_active();
     terminal_view_ = std::make_shared<TerminalView>(
         root_, width_, height_,
-        [this]() { terminal_view_.reset(); });
+        [this]() { terminal_view_.reset(); OnAppClosed(kAppTerminal); });
+    terminal_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppTerminal); });
     terminal_view_->Start();
+    NoteAppOpened(kAppTerminal);
 }
 
 void Ds02HomeDisplay::OpenTrash() {
     DisplayLockGuard lock(this);
-    if (trash_view_) return;
+    if (trash_view_) { RestoreApp(kAppTrash); return; }
     if (!root_) root_ = lv_screen_active();
     trash_view_ = std::make_shared<TrashView>(
         root_, width_, height_,
-        [this]() { trash_view_.reset(); });
+        [this]() { trash_view_.reset(); OnAppClosed(kAppTrash); });
     trash_view_->SetOnChanged([this]() { ReloadBackgrounds(); });
+    trash_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppTrash); });
     trash_view_->Start();
+    NoteAppOpened(kAppTrash);
+}
+
+/* ---- Multitasking ------------------------------------------------------
+ * LRU queue of live OverlayView apps (max kMaxRunningApps). Background apps
+ * are hidden, not destroyed: LVGL skips hidden subtrees entirely, so 5 warm
+ * apps cost zero render time and switching back is instant (no rebuild, no
+ * reload). Opening a 6th app closes the least recently used one. */
+
+OverlayView *Ds02HomeDisplay::GetAppView(AppId id) const {
+    switch (id) {
+    case kAppCalendar:  return calendar_view_.get();
+    case kAppDocuments: return documents_view_.get();
+    case kAppSettings:  return settings_view_.get();
+    case kAppChat:      return chat_view_.get();
+    case kAppTerminal:  return terminal_view_.get();
+    case kAppTrash:     return trash_view_.get();
+    case kAppGallery:   return gallery_view_.get();
+    default:            return nullptr;
+    }
+}
+
+void Ds02HomeDisplay::NoteAppOpened(AppId id) {
+    // The previous foreground app steps aside but stays warm in the queue.
+    if (foreground_app_ != kAppNone && foreground_app_ != id) {
+        SnapshotApp(foreground_app_);
+        if (auto *v = GetAppView(foreground_app_)) v->SetHidden(true);
+    }
+    task_queue_.erase(std::remove(task_queue_.begin(), task_queue_.end(), id),
+                      task_queue_.end());
+    task_queue_.push_back(id);
+    foreground_app_ = id;
+    // Over capacity -> evict the least recently used app (front of the queue;
+    // the app just opened sits at the back, so it is never the victim).
+    if (task_queue_.size() > kMaxRunningApps) CloseApp(task_queue_.front());
+    if (id == kAppGallery) AddGalleryDockItem();
+    UpdateDockDots();
+}
+
+void Ds02HomeDisplay::RestoreApp(AppId id) {
+    auto *view = GetAppView(id);
+    if (!view) return;
+    if (foreground_app_ != kAppNone && foreground_app_ != id) {
+        SnapshotApp(foreground_app_);
+        if (auto *v = GetAppView(foreground_app_)) v->SetHidden(true);
+    }
+    view->SetHidden(false); // warm restore: the view was never torn down
+    task_queue_.erase(std::remove(task_queue_.begin(), task_queue_.end(), id),
+                      task_queue_.end());
+    task_queue_.push_back(id);
+    foreground_app_ = id;
+    UpdateDockDots();
+}
+
+void Ds02HomeDisplay::BackgroundApp(AppId id) {
+    auto *view = GetAppView(id);
+    if (!view) return;
+    SnapshotApp(id); // fresh thumbnail for the switcher card
+    view->SetHidden(true);
+    if (foreground_app_ == id) foreground_app_ = kAppNone;
+    UpdateDockDots();
+}
+
+void Ds02HomeDisplay::CloseApp(AppId id) {
+    // RequestClose hides immediately and fires the view's close callback on a
+    // deferred one-shot timer; that callback resets the member and calls
+    // OnAppClosed(id), which removes the queue entry and the dock dot.
+    if (auto *view = GetAppView(id)) view->RequestClose();
+}
+
+void Ds02HomeDisplay::OnAppClosed(AppId id) {
+    task_queue_.erase(std::remove(task_queue_.begin(), task_queue_.end(), id),
+                      task_queue_.end());
+    FreeSnapshot(id);
+    if (foreground_app_ == id) foreground_app_ = kAppNone;
+    if (id == kAppGallery) RemoveGalleryDockItem();
+    UpdateDockDots();
+}
+
+void Ds02HomeDisplay::SnapshotApp(AppId id) {
+    auto *view = GetAppView(id);
+    if (!view || !view->overlay_obj()) return;
+    // Only visible overlays render a meaningful shot; a hidden app keeps the
+    // thumbnail captured when it went to the background.
+    if (lv_obj_has_flag(view->overlay_obj(), LV_OBJ_FLAG_HIDDEN)) return;
+    lv_draw_buf_t *shot = lv_snapshot_take(view->overlay_obj(), LV_COLOR_FORMAT_ARGB8888);
+    if (!shot) return;
+    FreeSnapshot(id);
+    app_snapshots_[id] = shot;
+}
+
+void Ds02HomeDisplay::FreeSnapshot(AppId id) {
+    auto it = app_snapshots_.find(id);
+    if (it == app_snapshots_.end()) return;
+    lv_draw_buf_destroy(it->second);
+    app_snapshots_.erase(it);
+}
+
+void Ds02HomeDisplay::UpdateDockDots() {
+    auto running = [this](AppId id) {
+        return std::find(task_queue_.begin(), task_queue_.end(), id) != task_queue_.end();
+    };
+    static constexpr struct { int dock_index; AppId app; } kDockApps[] = {
+        {1, kAppCalendar}, {2, kAppDocuments}, {5, kAppSettings},
+        {6, kAppChat},     {7, kAppTerminal},  {8, kAppTrash},
+    };
+    for (const auto &m : kDockApps) {
+        if (!dock_indicators_[m.dock_index]) continue;
+        lv_obj_set_style_bg_opa(dock_indicators_[m.dock_index],
+                                running(m.app) ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    }
+}
+
+void Ds02HomeDisplay::OpenAppSwitcher() {
+    DisplayLockGuard lock(this);
+    if (app_switcher_) { app_switcher_->Dismiss(); return; } // island click toggles
+    if (lock_screen_view_) return;
+    if (task_queue_.empty()) {
+        ShowNotification("Không có ứng dụng đang chạy", 1500);
+        return;
+    }
+    // Park the foreground app first so its switcher card is up to date and the
+    // switcher blooms over the home screen, mirroring the iPhone gesture.
+    if (foreground_app_ != kAppNone) BackgroundApp(foreground_app_);
+
+    auto icon_for = [this](AppId id, const char **path) -> const LvglImage * {
+        switch (id) {
+        case kAppCalendar:  *path = "assets/icons/dock/calendar.png"; return dock_icon_cache_[1].get();
+        case kAppDocuments: *path = "assets/icons/dock/folder.png";   return dock_icon_cache_[2].get();
+        case kAppSettings:  *path = "assets/icons/dock/settings.png"; return dock_icon_cache_[5].get();
+        case kAppChat:      *path = "assets/icons/dock/siri.png";     return dock_icon_cache_[6].get();
+        case kAppTerminal:  *path = "assets/icons/dock/terminal.png"; return dock_icon_cache_[7].get();
+        case kAppTrash:     *path = "assets/icons/dock/trash.png";    return dock_icon_cache_[8].get();
+        case kAppGallery:   *path = "assets/icons/drawer/photos.png"; return drawer_icon_cache_[5].get();
+        default:            *path = nullptr; return nullptr;
+        }
+    };
+
+    std::vector<AppSwitcher::Card> cards; // most recent first
+    for (auto it = task_queue_.rbegin(); it != task_queue_.rend(); ++it) {
+        AppSwitcher::Card c;
+        c.app_id = *it;
+        if (auto *v = GetAppView(*it)) c.title = v->title();
+        auto snap = app_snapshots_.find(*it);
+        if (snap != app_snapshots_.end()) c.snapshot = snap->second;
+        const char *path = nullptr;
+        const LvglImage *icon = icon_for(*it, &path);
+        if (icon && path) {
+            c.icon_src = icon->image_dsc();
+            c.icon_scale = (uint16_t)PngScaleToFit(path, 22);
+        }
+        cards.push_back(std::move(c));
+    }
+
+    const int cx = status_bar_ ? status_bar_->IslandCenterX() : width_ / 2;
+    const int cy = status_bar_ ? status_bar_->IslandCenterY() : 21;
+    app_switcher_ = std::make_unique<AppSwitcher>(
+        root_, width_, height_, std::move(cards), cx, cy,
+        [this](int id) { RestoreApp(static_cast<AppId>(id)); },
+        [this](int id) { CloseApp(static_cast<AppId>(id)); },
+        [this]() { app_switcher_.reset(); }); // fired via deferred timer
+}
+
+void Ds02HomeDisplay::AddGalleryDockItem() {
+    if (gallery_dock_item_ || !dock_) return;
+    // One extra slot; the flex row reflows, the strip stays centered.
+    if (dock_base_width_ > 0) {
+        lv_obj_set_width(dock_, std::min(dock_base_width_ + kDockButtonSize + 2 + kDockItemGap,
+                                         width_ - 24));
+    }
+    auto *item = lv_obj_create(dock_);
+    lv_obj_remove_style_all(item);
+    lv_obj_set_size(item, kDockButtonSize + 2, kDockItemHeight);
+    lv_obj_clear_flag(item, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    // Insert into the app group, before the divider+Trash pair at the end.
+    lv_obj_move_to_index(item, (int32_t)lv_obj_get_child_count(dock_) - 3);
+
+    auto *btn = lv_obj_create(item);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, kDockButtonSize, kDockButtonSize);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_ext_click_area(btn, 4);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(btn, OnGalleryDockClicked, LV_EVENT_CLICKED, this);
+
+    if (drawer_icon_cache_[5]) { // "Ảnh" drawer tile icon
+        auto *icon = lv_image_create(btn);
+        lv_image_set_src(icon, drawer_icon_cache_[5]->image_dsc());
+        lv_image_set_scale(icon, (uint16_t)PngScaleToFit("assets/icons/drawer/photos.png", 41));
+        lv_obj_center(icon);
+        lv_obj_clear_flag(icon, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    } else {
+        auto *fallback = lv_label_create(btn);
+        lv_obj_set_style_text_font(fallback, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(fallback, lv_color_white(), 0);
+        lv_label_set_text(fallback, LV_SYMBOL_IMAGE);
+        lv_obj_center(fallback);
+    }
+
+    // Running dot -- always lit: the slot only exists while Gallery runs.
+    auto *dot = lv_obj_create(item);
+    lv_obj_remove_style_all(dot);
+    lv_obj_set_size(dot, 5, 5);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dot, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+    lv_obj_align(dot, LV_ALIGN_BOTTOM_MID, 0, -1);
+    lv_obj_clear_flag(dot, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    gallery_dock_item_ = item;
+}
+
+void Ds02HomeDisplay::RemoveGalleryDockItem() {
+    if (!gallery_dock_item_) return;
+    lv_obj_del(gallery_dock_item_);
+    gallery_dock_item_ = nullptr;
+    if (dock_ && dock_base_width_ > 0) lv_obj_set_width(dock_, dock_base_width_);
+}
+
+void Ds02HomeDisplay::OnGalleryDockClicked(lv_event_t *e) {
+    auto *self = static_cast<Ds02HomeDisplay *>(lv_event_get_user_data(e));
+    if (self) self->OpenBackgroundGallery(); // running -> instant warm restore
 }
 
 void Ds02HomeDisplay::ApplyBackgroundFromFile(const std::string &file) {
@@ -1056,9 +1298,10 @@ void Ds02HomeDisplay::CheckIdleDim() {
 }
 
 bool Ds02HomeDisplay::HasOpenOverlay() const {
-    return wifi_view_ || bt_view_ || calendar_view_ || documents_view_ ||
-           gallery_view_ || settings_view_ || chat_view_ || terminal_view_ ||
-           trash_view_ || lock_screen_view_;
+    // Background (hidden) multitask apps do not keep the screen awake -- only
+    // a visible foreground app, the switcher, or the non-queue overlays do.
+    return wifi_view_ || bt_view_ || lock_screen_view_ ||
+           foreground_app_ != kAppNone || app_switcher_ != nullptr;
 }
 
 void Ds02HomeDisplay::SetStatus(const char *status) {
