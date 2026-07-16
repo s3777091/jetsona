@@ -189,6 +189,24 @@ void PodsView::RenderList() {
     }
     SetStatusLine(line);
 
+    // Publish running pods to the Chromium kiosk's island launcher:
+    // launch_chromium.sh appends this file ("Name|URL" per line) to the
+    // static app list that jetson_kiosk_bar's long-press menu reads, so a
+    // rented pod's web IDE is one hold-the-island away inside the browser
+    // session. Rewritten on every refresh so stopped/deleted pods drop out.
+    if (FILE *f = fopen("/tmp/jetson_kiosk_extra_apps", "w")) {
+        for (const auto &pod : pods_) {
+            const int port = pod.HttpPort();
+            if (!pod.running() || port <= 0) continue;
+            std::string name = pod.name.empty() ? pod.id : pod.name;
+            for (auto &c : name)
+                if (c == '|' || c == '\n') c = ' ';
+            fprintf(f, "Pod %s|%s\n", name.c_str(),
+                    jetson::RunpodClient::ProxyUrl(pod.id, port).c_str());
+        }
+        fclose(f);
+    }
+
     for (const auto &pod : pods_) {
         auto *row = lv_obj_create(list_);
         lv_obj_remove_style_all(row);

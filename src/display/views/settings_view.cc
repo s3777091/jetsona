@@ -2261,7 +2261,7 @@ void SettingsView::BtRescan() {
                 self->Notify(message.c_str());
                 ESP_LOGE(TAG, "Bluetooth scan failed: %s", error.c_str());
             } else {
-                self->SetStatus("Chạm thiết bị để kết nối/ngắt/quên");
+                self->SetStatus("Chạm thiết bị để kết nối, bấm (i) để ngắt/quên");
                 if (self->notification_cb_) {
                     const std::string message = self->bt_devs_.empty()
                                                     ? "Không tìm thấy thiết bị Bluetooth"
@@ -2313,6 +2313,14 @@ void SettingsView::BtCreateRow(const jetson::BtDevice &d) {
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 
+    // Same anatomy as the WiFi rows: leading connected checkmark, name block,
+    // signal bars, then the circled-i properties affordance.
+    auto *check = lv_label_create(row);
+    lv_obj_set_width(check, 22);
+    lv_obj_set_style_text_font(check, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(check, Color(p.accent), 0);
+    lv_label_set_text(check, d.connected ? LV_SYMBOL_OK : "");
+
     auto *left = lv_obj_create(row);
     lv_obj_remove_style_all(left);
     lv_obj_set_width(left, 1);
@@ -2338,29 +2346,45 @@ void SettingsView::BtCreateRow(const jetson::BtDevice &d) {
 
     auto *right = lv_obj_create(row);
     lv_obj_remove_style_all(right);
-    lv_obj_set_size(right, 132, 30);
+    lv_obj_set_size(right, 168, 32);
     lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(right, 6, 0);
+    lv_obj_set_style_pad_column(right, 8, 0);
     lv_obj_set_flex_align(right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    jetson::ui::CreateSignalBars(right, jetson::ui::RssiToSignalPercent(d.rssi));
     auto *tag = lv_label_create(right);
     lv_obj_set_style_text_font(tag, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(tag, d.connected ? Color(p.accent) : Color(p.sub_text), 0);
     lv_label_set_text(tag, d.connected ? "Đã kết nối" : (d.paired ? "Đã pair" : ""));
+    jetson::ui::CreateSignalBars(right, jetson::ui::RssiToSignalPercent(d.rssi));
 
-    auto *ctx = new BtRowCtx{this, d.address};
+    auto *ctx = new BtRowCtx{this, d};
+
+    // The information affordance is separate from the row action, matching
+    // the WiFi list: tapping the row connects, tapping the circled i opens
+    // properties (state, forget, disconnect).
+    auto *info = lv_obj_create(right);
+    lv_obj_remove_style_all(info);
+    lv_obj_set_size(info, 30, 30);
+    lv_obj_set_style_radius(info, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(info, 2, 0);
+    lv_obj_set_style_border_color(info, Color(p.accent), 0);
+    lv_obj_set_style_bg_opa(info, LV_OPA_TRANSP, 0);
+    lv_obj_add_flag(info, LV_OBJ_FLAG_CLICKABLE);
+    auto *infoLabel = lv_label_create(info);
+    lv_obj_set_style_text_font(infoLabel, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(infoLabel, Color(p.accent), 0);
+    lv_label_set_text(infoLabel, "i");
+    lv_obj_center(infoLabel);
+    lv_obj_add_event_cb(info, OnBtInfoClicked, LV_EVENT_CLICKED, ctx);
+
     lv_obj_add_event_cb(row, OnBtRowClicked, LV_EVENT_CLICKED, ctx);
     lv_obj_add_event_cb(row, OnBtRowDeleted, LV_EVENT_DELETE, ctx);
 }
 
-void SettingsView::BtOpenModal(const std::string &addr) {
+void SettingsView::BtOpenConnectSheet(const jetson::BtDevice &d) {
     CloseModal();
-    modal_bt_addr_ = addr;
-    // Find the device in the cached list for state + info.
-    const jetson::BtDevice *d = nullptr;
-    for (const auto &x : bt_devs_) if (x.address == addr) { d = &x; break; }
-    modal_bt_connected_ = d ? d->connected : false;
+    modal_bt_addr_ = d.address;
+    modal_bt_connected_ = false;
     const auto &p = jetson::UiTheme::Instance().Palette();
 
     popup_ = lv_obj_create(overlay_);
@@ -2371,44 +2395,257 @@ void SettingsView::BtOpenModal(const std::string &addr) {
     lv_obj_add_flag(popup_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(popup_, OnPopupDismiss, LV_EVENT_CLICKED, this);
 
-    int cardW = 320, cardH = 200;
+    const int cardW = std::min(width_ - 32, 620);
+    constexpr int sheetH = 236;
+    popup_card_ = lv_obj_create(popup_);
+    lv_obj_remove_style_all(popup_card_);
+    lv_obj_set_size(popup_card_, cardW, sheetH);
+    lv_obj_set_style_bg_color(popup_card_, Color(p.row), 0);
+    lv_obj_set_style_bg_opa(popup_card_, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(popup_card_, 22, 0);
+    lv_obj_set_style_clip_corner(popup_card_, true, 0);
+    lv_obj_set_style_pad_all(popup_card_, 16, 0);
+    lv_obj_set_style_pad_row(popup_card_, 8, 0);
+    lv_obj_set_flex_flow(popup_card_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(popup_card_, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_align(popup_card_, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(popup_card_, LV_OBJ_FLAG_CLICKABLE);
+
+    auto *header = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 40);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    auto makeCircleAction = [&](const char *glyph, uint32_t bg, uint32_t fg,
+                                lv_event_cb_t cb) {
+        auto *button = lv_obj_create(header);
+        lv_obj_remove_style_all(button);
+        lv_obj_set_size(button, 40, 40);
+        lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(button, Color(bg), 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        auto *label = lv_label_create(button);
+        lv_obj_set_style_text_font(label, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(fg), 0);
+        lv_label_set_text(label, glyph);
+        lv_obj_center(label);
+        lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, this);
+        return button;
+    };
+    makeCircleAction(LV_SYMBOL_CLOSE, p.button, p.text, OnModalClose);
+    // Pairing needs no password (bluetoothctl's default-agent handles PIN /
+    // Just-Works), so unlike the WiFi sheet the confirm is enabled right away.
+    popup_confirm_btn_ = makeCircleAction(LV_SYMBOL_OK, p.accent, 0xffffff,
+                                          OnModalBtAction);
+
+    auto *btIcon = lv_label_create(popup_card_);
+    lv_obj_set_style_text_font(btIcon, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(btIcon, Color(p.accent), 0);
+    lv_label_set_text(btIcon, LV_SYMBOL_BLUETOOTH);
+
+    auto *title = lv_label_create(popup_card_);
+    lv_obj_set_width(title, lv_pct(100));
+    lv_obj_set_style_text_font(title, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title, Color(p.text), 0);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
+    const std::string titleText = "Kết nối “" + d.name + "”";
+    lv_label_set_text(title, titleText.c_str());
+
+    auto *subtitle = lv_label_create(popup_card_);
+    lv_obj_set_width(subtitle, lv_pct(100));
+    lv_obj_set_style_text_font(subtitle, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(subtitle, Color(p.sub_text), 0);
+    lv_obj_set_style_text_align(subtitle, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(subtitle, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(subtitle,
+                      "Ghép đôi và kết nối với thiết bị Bluetooth này.");
+
+    auto *addr = lv_label_create(popup_card_);
+    lv_obj_set_width(addr, lv_pct(100));
+    lv_obj_set_style_text_font(addr, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(addr, Color(p.sub_text), 0);
+    lv_obj_set_style_text_align(addr, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(addr, d.address.c_str());
+
+    // iOS-style bottom sheet: start below the viewport and ease into place.
+    lv_anim_t slide;
+    lv_anim_init(&slide);
+    lv_anim_set_var(&slide, popup_card_);
+    lv_anim_set_values(&slide, sheetH + 16, 0);
+    lv_anim_set_time(&slide, 280);
+    lv_anim_set_exec_cb(&slide, SetWifiSheetTranslateY);
+    lv_anim_set_path_cb(&slide, lv_anim_path_ease_out);
+    lv_anim_start(&slide);
+}
+
+void SettingsView::BtOpenDetails(const jetson::BtDevice &d) {
+    CloseModal();
+    modal_bt_addr_ = d.address;
+    modal_bt_connected_ = d.connected;
+    const auto &p = jetson::UiTheme::Instance().Palette();
+
+    popup_ = lv_obj_create(overlay_);
+    lv_obj_remove_style_all(popup_);
+    lv_obj_set_size(popup_, width_, height_);
+    lv_obj_set_style_bg_color(popup_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(popup_, LV_OPA_50, 0);
+    lv_obj_add_flag(popup_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(popup_, OnPopupDismiss, LV_EVENT_CLICKED, this);
+
+    const int cardW = std::min(width_ - 32, 650);
+    const int cardH = height_ - 24;
     popup_card_ = lv_obj_create(popup_);
     lv_obj_remove_style_all(popup_card_);
     lv_obj_set_size(popup_card_, cardW, cardH);
     lv_obj_set_style_bg_color(popup_card_, Color(p.row), 0);
     lv_obj_set_style_bg_opa(popup_card_, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(popup_card_, 16, 0);
-    lv_obj_set_style_pad_all(popup_card_, 14, 0);
+    lv_obj_set_style_radius(popup_card_, 22, 0);
+    lv_obj_set_style_clip_corner(popup_card_, true, 0);
+    lv_obj_set_style_pad_all(popup_card_, 12, 0);
     lv_obj_set_style_pad_row(popup_card_, 8, 0);
     lv_obj_set_flex_flow(popup_card_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_align(popup_card_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(popup_card_, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_add_flag(popup_card_, LV_OBJ_FLAG_CLICKABLE);
 
-    auto *title = lv_label_create(popup_card_);
-    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
+    auto *header = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 42);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    auto *back = lv_obj_create(header);
+    lv_obj_remove_style_all(back);
+    lv_obj_set_size(back, 40, 40);
+    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(back, Color(p.button), 0);
+    lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+    auto *backLabel = lv_label_create(back);
+    lv_obj_set_style_text_font(backLabel, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(backLabel, Color(p.text), 0);
+    lv_label_set_text(backLabel, LV_SYMBOL_LEFT);
+    lv_obj_center(backLabel);
+    lv_obj_add_event_cb(back, OnModalClose, LV_EVENT_CLICKED, this);
+
+    auto *title = lv_label_create(header);
+    lv_obj_set_flex_grow(title, 1);
+    lv_obj_set_style_text_font(title, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(title, Color(p.text), 0);
-    lv_label_set_text(title, d ? d->name.c_str() : addr.c_str());
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_label_set_text(title, d.name.c_str());
 
-    auto *a = lv_label_create(popup_card_);
-    lv_obj_set_style_text_font(a, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(a, Color(p.sub_text), 0);
-    lv_label_set_text(a, ("Địa chỉ: " + addr).c_str());
+    auto *headerSpacer = lv_obj_create(header);
+    lv_obj_remove_style_all(headerSpacer);
+    lv_obj_set_size(headerSpacer, 40, 40);
+    lv_obj_clear_flag(headerSpacer, LV_OBJ_FLAG_SCROLLABLE);
 
-    auto *st = lv_label_create(popup_card_);
-    lv_obj_set_style_text_font(st, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(st, Color(p.sub_text), 0);
-    const char *state = modal_bt_connected_ ? "Đã kết nối" : (d && d->paired ? "Đã pair" : "Chưa pair");
-    lv_label_set_text(st, ("Trạng thái: " + std::string(state)).c_str());
+    auto *rows = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(rows);
+    lv_obj_set_width(rows, lv_pct(100));
+    lv_obj_set_flex_grow(rows, 1);
+    lv_obj_set_style_bg_opa(rows, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(rows, 4, 0);
+    lv_obj_set_style_pad_row(rows, 10, 0);
+    lv_obj_set_flex_flow(rows, LV_FLEX_FLOW_COLUMN);
+    lv_obj_add_flag(rows, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(rows, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(rows, LV_SCROLLBAR_MODE_ACTIVE);
 
-    auto *btns = lv_obj_create(popup_card_);
-    lv_obj_remove_style_all(btns);
-    lv_obj_set_width(btns, lv_pct(100));
-    lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(btns, 8, 0);
-    lv_obj_clear_flag(btns, LV_OBJ_FLAG_SCROLLABLE);
-    MakeButton(btns, modal_bt_connected_ ? "Ngắt" : "Kết nối", 0x2b6fd6, OnModalBtAction);
-    MakeButton(btns, "Quên", 0xb03a3a, OnModalBtRemove);
-    MakeButton(btns, "Đóng", 0x3a3a3a, OnModalClose);
+    auto makeActionRow = [&](const char *text, uint32_t color, lv_event_cb_t cb) {
+        auto *action = lv_obj_create(rows);
+        lv_obj_remove_style_all(action);
+        lv_obj_set_size(action, lv_pct(100), 44);
+        lv_obj_set_style_bg_color(action, Color(p.bg), 0);
+        lv_obj_set_style_bg_opa(action, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(action, 14, 0);
+        lv_obj_set_style_pad_left(action, 12, 0);
+        lv_obj_add_flag(action, LV_OBJ_FLAG_CLICKABLE);
+        auto *label = lv_label_create(action);
+        lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(color), 0);
+        lv_label_set_text(label, text);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_add_event_cb(action, cb, LV_EVENT_CLICKED, this);
+    };
+    makeActionRow(d.connected ? "Ngắt kết nối" : "Kết nối", p.accent,
+                  OnModalBtAction);
+    if (d.paired || d.connected)
+        makeActionRow("Quên thiết bị này", 0xff6b6b, OnModalBtRemove);
+
+    using DetailRows = std::vector<std::pair<std::string, std::string>>;
+    auto makeGroup = [&](const DetailRows &items) {
+        if (items.empty()) return;
+        auto *group = lv_obj_create(rows);
+        lv_obj_remove_style_all(group);
+        lv_obj_set_size(group, lv_pct(100), static_cast<int>(items.size()) * 42);
+        lv_obj_set_style_bg_color(group, Color(p.bg), 0);
+        lv_obj_set_style_bg_opa(group, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(group, 14, 0);
+        lv_obj_set_style_clip_corner(group, true, 0);
+        lv_obj_set_style_pad_all(group, 0, 0);
+        lv_obj_set_flex_flow(group, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(group, LV_OBJ_FLAG_SCROLLABLE);
+
+        for (size_t i = 0; i < items.size(); ++i) {
+            auto *row = lv_obj_create(group);
+            lv_obj_remove_style_all(row);
+            lv_obj_set_size(row, lv_pct(100), 42);
+            lv_obj_set_style_pad_left(row, 12, 0);
+            lv_obj_set_style_pad_right(row, 12, 0);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                                  LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            if (i + 1 < items.size()) {
+                lv_obj_set_style_border_width(row, 1, 0);
+                lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+                lv_obj_set_style_border_color(row, Color(p.border), 0);
+            }
+
+            auto *key = lv_label_create(row);
+            lv_obj_set_width(key, 170);
+            lv_obj_set_style_text_font(key, &BUILTIN_SMALL_TEXT_FONT, 0);
+            lv_obj_set_style_text_color(key, Color(p.text), 0);
+            lv_label_set_long_mode(key, LV_LABEL_LONG_DOT);
+            lv_label_set_text(key, items[i].first.c_str());
+
+            auto *value = lv_label_create(row);
+            lv_obj_set_flex_grow(value, 1);
+            lv_obj_set_style_text_font(value, &BUILTIN_SMALL_TEXT_FONT, 0);
+            lv_obj_set_style_text_color(value, Color(p.sub_text), 0);
+            lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_RIGHT, 0);
+            lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
+            lv_label_set_text(value, items[i].second.c_str());
+        }
+    };
+
+    makeGroup({
+        {"Trạng thái", d.connected ? "Đã kết nối"
+                       : (d.paired ? "Đã ghép đôi" : "Khả dụng")},
+        {"Địa chỉ", d.address},
+        {"Ghép đôi", d.paired ? "Có" : "Không"},
+        {"Tín hiệu", d.rssi
+             ? std::to_string(jetson::ui::RssiToSignalPercent(d.rssi)) + "%"
+             : "—"},
+    });
+
+    lv_anim_t slide;
+    lv_anim_init(&slide);
+    lv_anim_set_var(&slide, popup_card_);
+    lv_anim_set_values(&slide, cardH + 16, 0);
+    lv_anim_set_time(&slide, 240);
+    lv_anim_set_exec_cb(&slide, SetWifiSheetTranslateY);
+    lv_anim_set_path_cb(&slide, lv_anim_path_ease_out);
+    lv_anim_start(&slide);
 }
 
 void SettingsView::BtDoAction(const std::string &addr, bool connected) {
@@ -3026,7 +3263,7 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
                 self->BtRefreshSwitch();
                 if (self->bt_list_) self->BtRenderList();
                 if (on) {
-                    self->SetStatus("Chạm thiết bị để kết nối/ngắt/quên");
+                    self->SetStatus("Chạm thiết bị để kết nối, bấm (i) để ngắt/quên");
                     if (self->notification_cb_) {
                         const std::string message = self->bt_devs_.empty()
                                                         ? "Không tìm thấy thiết bị Bluetooth"
@@ -3063,7 +3300,19 @@ void SettingsView::OnBtRowClicked(lv_event_t *e) {
     LvLockGuard lock;
     auto *ctx = static_cast<BtRowCtx *>(lv_event_get_user_data(e));
     if (!ctx) return;
-    ctx->self->BtOpenModal(ctx->addr);
+    const auto &device = ctx->device;
+    // Mirror the WiFi list: tapping the connected device is a no-op (use the
+    // circled i to disconnect/forget), tapping anything else offers to connect.
+    if (device.connected) return;
+    ctx->self->BtOpenConnectSheet(device);
+}
+
+void SettingsView::OnBtInfoClicked(lv_event_t *e) {
+    LvLockGuard lock;
+    lv_event_stop_bubbling(e);
+    auto *ctx = static_cast<BtRowCtx *>(lv_event_get_user_data(e));
+    if (!ctx) return;
+    ctx->self->BtOpenDetails(ctx->device);
 }
 
 void SettingsView::OnLangVi(lv_event_t *e) {

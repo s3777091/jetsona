@@ -10,7 +10,9 @@
 #include <fcntl.h>
 #include <fstream>
 #include <linux/input.h>
+#include <linux/kd.h>
 #include <string>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -349,6 +351,42 @@ void LvglRuntime::releaseDisplayLease() {
     if (display_lease_fd_ < 0) return;
     close(display_lease_fd_);
     display_lease_fd_ = -1;
+}
+
+void LvglRuntime::enterGraphicsConsole() {
+    if (console_fd_ >= 0) return;
+
+    /* fbcon keeps drawing on the framebuffer we render to: its cursor blinks
+     * on top of the UI and kernel/getty text can scribble over frames. Switch
+     * the active VT to KD_GRAPHICS so the console stops touching the panel
+     * while the firmware owns it. /dev/tty0 is the current VT regardless of
+     * whether we were launched from systemd, a console shell, or SSH. */
+    const int fd = open("/dev/tty0", O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        ESP_LOGW(TAG, "console: open /dev/tty0 failed (%s); fbcon cursor may blink over the UI",
+                 strerror(errno));
+        return;
+    }
+    int mode = -1;
+    if (ioctl(fd, KDGETMODE, &mode) != 0) mode = -1;
+    if (ioctl(fd, KDSETMODE, KD_GRAPHICS) != 0) {
+        ESP_LOGW(TAG, "console: KDSETMODE KD_GRAPHICS failed (%s)", strerror(errno));
+        close(fd);
+        return;
+    }
+    console_fd_ = fd;
+    console_prev_mode_ = mode;
+}
+
+void LvglRuntime::restoreTextConsole() {
+    if (console_fd_ < 0) return;
+    /* Restore whatever mode the VT had before (normally KD_TEXT) so the
+     * console works again after run_fbdev.sh or a service stop. */
+    const int mode = (console_prev_mode_ >= 0) ? console_prev_mode_ : KD_TEXT;
+    (void)ioctl(console_fd_, KDSETMODE, mode);
+    close(console_fd_);
+    console_fd_ = -1;
+    console_prev_mode_ = -1;
 }
 
 lv_display_t *LvglRuntime::createDisplayDrm(int width, int height) {
@@ -690,6 +728,7 @@ void LvglRuntime::openMouse() {
 bool LvglRuntime::Init(int width, int height) {
 #if !defined(JETSON_DISPLAY_BACKEND_SDL) && !defined(JETSON_DISPLAY_BACKEND_WAYLAND)
     if (!acquireDisplayLease()) return false;
+    enterGraphicsConsole();
 #endif
 
     lv_init();
@@ -705,6 +744,7 @@ bool LvglRuntime::Init(int width, int height) {
 #endif
     if (!display_) {
         ESP_LOGE(TAG, "display creation failed");
+        restoreTextConsole();
         releaseDisplayLease();
         return false;
     }
@@ -748,6 +788,7 @@ void LvglRuntime::Stop() {
         if (tick_thread_.joinable()) tick_thread_.join();
         if (handler_thread_.joinable()) handler_thread_.join();
     }
+    restoreTextConsole();
     releaseDisplayLease();
 }
 

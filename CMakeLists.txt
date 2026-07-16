@@ -192,6 +192,27 @@ if(JETSON_DISPLAY_BACKEND STREQUAL "WAYLAND")
 endif()
 
 # ----------------------------------------------------------------------------
+# Chromium kiosk status bar (tools/kiosk_bar). A tiny X11 client that runs
+# alongside chromium in the bare-X hand-off session: it draws the Dynamic
+# Island top strip and acts as a micro-WM (input focus + stacking), which is
+# also what makes the USB keyboard work inside the kiosk. Optional: skipped
+# with a warning when libX11 headers are absent (apt install libx11-dev);
+# launch_chromium.sh then falls back to the old full-screen --kiosk mode.
+# ----------------------------------------------------------------------------
+find_library(X11_LIBRARY X11)
+find_path(X11_INCLUDE_DIR X11/Xlib.h)
+if(X11_LIBRARY AND X11_INCLUDE_DIR)
+    add_executable(jetson_kiosk_bar tools/kiosk_bar/kiosk_bar.c)
+    target_include_directories(jetson_kiosk_bar PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(jetson_kiosk_bar PRIVATE ${X11_LIBRARY})
+    install(TARGETS jetson_kiosk_bar RUNTIME DESTINATION /opt/jetson-fw)
+else()
+    message(WARNING "libX11 dev files not found; jetson_kiosk_bar will not be "
+        "built (Chromium kiosk keeps no status bar and no keyboard-focus fix). "
+        "apt install libx11-dev and re-run cmake.")
+endif()
+
+# ----------------------------------------------------------------------------
 # Runtime assets: fetch from MinIO (S3) before the build, then copy next to
 # the binary. Assets are gitignored (large binaries / data), so a fresh clone
 # pulls them from MinIO at build time. fetch_assets.sh is idempotent -- it

@@ -17,7 +17,7 @@ namespace home {
  * pane that rebuilds on selection. Categories: Display
  * (brightness 20..100 via a software scrim), Sound (volume, UI-only), WiFi
  * (radio toggle + scan + per-network info/login/forget modal), Bluetooth
- * (power toggle + scan + per-device connect/disconnect/forget modal), and one
+ * (power toggle + scan + the same connect-sheet/details/forget flow), and one
  * General category. General owns the Keyboard, Language & Region, Date & Time,
  * Fonts, Power & Lock, and About sub-pages instead of exposing those as six
  * unrelated top-level categories.
@@ -81,7 +81,7 @@ private:
 
     struct SideCtx { SettingsView *self; Cat cat; };
     struct WifiRowCtx { SettingsView *self; jetson::WifiNetwork network; };
-    struct BtRowCtx { SettingsView *self; std::string addr; };
+    struct BtRowCtx { SettingsView *self; jetson::BtDevice device; };
     struct OptCtx { SettingsView *self; std::string value; }; // timezone / sleep option
     struct FontCtx {
         SettingsView *self;
@@ -246,7 +246,8 @@ private:
     void BtRescan();
     void BtRenderList();
     void BtCreateRow(const jetson::BtDevice &d);
-    void BtOpenModal(const std::string &addr);
+    void BtOpenConnectSheet(const jetson::BtDevice &d);
+    void BtOpenDetails(const jetson::BtDevice &d);
     void BtDoAction(const std::string &addr, bool connected);
     void BtDoRemove(const std::string &addr);
 
@@ -292,6 +293,7 @@ private:
     static void OnBtSwitch(lv_event_t *e);
     static void OnBtRescan(lv_event_t *e);
     static void OnBtRowClicked(lv_event_t *e);
+    static void OnBtInfoClicked(lv_event_t *e);
 
     static void OnLangVi(lv_event_t *e);
     static void OnLangEn(lv_event_t *e);

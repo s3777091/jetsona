@@ -29,6 +29,14 @@ sudo systemctl stop jetson-fw 2>/dev/null || true
 echo "==> Installing to /opt/jetson-fw"
 sudo mkdir -p /opt/jetson-fw
 sudo cp "$BUILD_DIR/jetson_fw" /opt/jetson-fw/
+# Chromium kiosk status bar (Dynamic Island strip + keyboard-focus micro-WM).
+# Optional: only built when libx11-dev was present at cmake time.
+if [ -f "$BUILD_DIR/jetson_kiosk_bar" ]; then
+    sudo cp "$BUILD_DIR/jetson_kiosk_bar" /opt/jetson-fw/
+    sudo chmod +x /opt/jetson-fw/jetson_kiosk_bar
+else
+    echo "==> jetson_kiosk_bar not built (libx11-dev missing?); Chromium keeps full-screen kiosk mode" >&2
+fi
 sudo mkdir -p /opt/jetson-fw/assets
 sudo cp -r "$JETSON_DIR/assets/." /opt/jetson-fw/assets/
 sudo cp "$JETSON_DIR/config.yaml" /opt/jetson-fw/

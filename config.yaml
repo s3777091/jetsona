@@ -47,7 +47,7 @@ INA219_VMAX: "8.4"
 INA219_SHUNT: "0.1"
 
 # PS5 Remote Play (Chiaki).
-CHIAKI_BIN: ""
+CHIAKI_BIN: "/home/ekkohuynh/chiaki-ng/chiaki-ng"
 PS_REMOTE_PLAY_HOME: "/var/lib/jetson-fw/chiaki"
 PS_REMOTE_PLAY_STATE_FILE: "/var/lib/jetson-fw/ps-remote-play.conf"
 PS_REMOTE_PLAY_AUDIO_DRIVER: "alsa"
