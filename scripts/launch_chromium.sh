@@ -33,10 +33,18 @@ fi
 DISPLAY_NO="${CHROMIUM_DISPLAY:-:0}"
 export DISPLAY="$DISPLAY_NO"
 
-# Pick whichever chromium binary the distro ships.
+# Pick whichever Chromium binary the distro ships. xinit only treats a client
+# name beginning with '/' or '.' as the client program; a bare
+# "chromium-browser" is interpreted as an argument to its default xterm
+# client. Resolve the executable here so --kiosk is sent to Chromium, not
+# xterm.
 CHROMIUM=""
 for c in chromium-browser chromium chromium-browser.real; do
-    if command -v "$c" >/dev/null 2>&1; then CHROMIUM="$c"; break; fi
+    chromium_path="$(command -v "$c" 2>/dev/null || true)"
+    if [ -n "$chromium_path" ] && [ -x "$chromium_path" ]; then
+        CHROMIUM="$chromium_path"
+        break
+    fi
 done
 if [ -z "$CHROMIUM" ]; then
     echo "launch_chromium: chromium not found. apt install chromium-browser" >&2

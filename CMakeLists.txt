@@ -215,12 +215,15 @@ else()
         "Run scripts/fetch_assets.sh manually before building, or assets/ will be empty.")
 endif()
 
-# Copy assets next to the binary so the default relative ASSETS_DIR works.
-# jetson_fetch_assets (above) guarantees assets/ exists before this runs.
-add_custom_command(TARGET jetson_fw POST_BUILD
+# Copy assets next to the binary on every build, including incremental builds
+# where jetson_fw does not need to be relinked. A POST_BUILD command alone
+# leaves newly-added assets (for example a launcher icon) out of an existing
+# build directory until some C/C++ source happens to change.
+add_custom_target(jetson_copy_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets"
             "$<TARGET_FILE_DIR:jetson_fw>/assets")
+add_dependencies(jetson_copy_assets jetson_fw)
 
 # ----------------------------------------------------------------------------
 # Install (systemd boot service -> /opt/jetson-fw)

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <sstream>
 #include <thread>
+#include <unordered_set>
 
 #define TAG "Bt"
 
@@ -245,6 +246,7 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
 
     std::istringstream iss(devicesOut);
     std::string line;
+    std::unordered_set<std::string> seen_addresses;
     while (std::getline(iss, line)) {
         // Lines: "Device AA:BB:CC:DD:EE:FF Name with spaces"
         const char *prefix = "Device ";
@@ -256,6 +258,13 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
         if (sp == std::string::npos) continue;
         BtDevice d;
         d.address = rest.substr(0, sp);
+        // Older bluetoothctl versions can echo the device list twice (once as
+        // command output and once while repainting the interactive prompt).
+        // Treat the controller address as the stable identity before running
+        // the relatively expensive per-device `info` command or building UI
+        // rows.  The log in the reported failure showed every address exactly
+        // twice (9 real devices rendered as 18 rows).
+        if (!seen_addresses.insert(d.address).second) continue;
         d.name = rest.substr(sp + 1);
         // trim
         while (!d.name.empty() && (d.name.front() == ' ' || d.name.front() == '\t')) d.name.erase(d.name.begin());

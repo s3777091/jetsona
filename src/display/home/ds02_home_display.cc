@@ -841,26 +841,14 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
 
 void Ds02HomeDisplay::OpenWifiSettings() {
     DisplayLockGuard lock(this);
-    if (wifi_view_) return;
-    if (!root_) root_ = lv_screen_active();
-    wifi_view_ = std::make_shared<WifiSettingsView>(
-        root_, width_, height_, wifi_,
-        [this]() { wifi_view_.reset(); });
-    wifi_view_->SetNotifyCb(
-        [this](const char *msg) { ShowNotification(msg, 2500); });
-    wifi_view_->Start();
+    OpenSettings();
+    if (settings_view_) settings_view_->ShowWifiPage();
 }
 
 void Ds02HomeDisplay::OpenBluetoothSettings() {
     DisplayLockGuard lock(this);
-    if (bt_view_) return;
-    if (!root_) root_ = lv_screen_active();
-    bt_view_ = std::make_shared<BluetoothSettingsView>(
-        root_, width_, height_, bluetooth_,
-        [this]() { bt_view_.reset(); });
-    bt_view_->SetNotifyCb(
-        [this](const char *msg) { ShowNotification(msg, 2500); });
-    bt_view_->Start();
+    OpenSettings();
+    if (settings_view_) settings_view_->ShowBluetoothPage();
 }
 
 void Ds02HomeDisplay::OpenCalendar() {
@@ -941,7 +929,9 @@ void Ds02HomeDisplay::OpenSettings() {
         });
     settings_view_->SetLockRequest([this]() { OpenLockScreen(); });
     settings_view_->SetNotificationApplier(
-        [this](const char *message) { ShowNotification(message, 2800); });
+        [this](const char *message, int duration_ms) {
+            ShowNotification(message, duration_ms);
+        });
     settings_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppSettings); });
     settings_view_->Start();
     NoteAppOpened(kAppSettings);

@@ -4,8 +4,8 @@
 
 namespace jetson::ui {
 
-// Converts a Bluetooth RSSI value (-100..0 dBm) to the percentage used by the
-// shared WiFi/Bluetooth strength indicator.
+// Converts a Bluetooth RSSI value (-100..-1 dBm) to the percentage used by the
+// shared WiFi/Bluetooth strength indicator. BtDevice's 0 (unknown) maps to 0%.
 int RssiToSignalPercent(int rssi_dbm);
 
 // Creates the standard four-bar signal indicator and returns its root object.

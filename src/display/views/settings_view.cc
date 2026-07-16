@@ -370,6 +370,30 @@ void SetWifiSheetTranslateY(void *obj, int32_t value) {
     lv_obj_set_style_translate_y(static_cast<lv_obj_t *>(obj), value, 0);
 }
 
+// Bluetooth commands finish on detached worker threads.  Queue their result
+// handling onto LVGL's timer thread so list cleanup/layout, switch state
+// changes, and Dynamic-Island animations never run concurrently with an LVGL
+// event callback.  The heap task owns any captured shared_ptr until it runs.
+void RunLvglTask(void *user_data) {
+    std::unique_ptr<std::function<void()>> task(
+        static_cast<std::function<void()> *>(user_data));
+    LvLockGuard lock;
+    (*task)();
+}
+
+void DispatchToLvgl(std::function<void()> callback) {
+    auto task = std::make_unique<std::function<void()>>(std::move(callback));
+    LvLockGuard lock;
+    if (lv_async_call(RunLvglTask, task.get()) == LV_RESULT_OK) {
+        (void)task.release();
+        return;
+    }
+    // Allocation failure inside lv_async_call is rare; completing under the
+    // global LVGL lock is still preferable to leaving a radio operation stuck
+    // forever in its busy state.
+    (*task)();
+}
+
 } // namespace
 
 // =========================================================================
@@ -395,6 +419,14 @@ SettingsView::SettingsView(lv_obj_t *parent, int width, int height,
     // "Cài đặt" on the device.
     if (title_label_) lv_obj_add_flag(title_label_, LV_OBJ_FLAG_HIDDEN);
     BuildShell();
+}
+
+void SettingsView::ShowWifiPage() {
+    ShowCategory(Cat::Wifi);
+}
+
+void SettingsView::ShowBluetoothPage() {
+    ShowCategory(Cat::Bluetooth);
 }
 
 void SettingsView::BuildShell() {
@@ -518,7 +550,8 @@ void SettingsView::AirplaneRefreshUi() {
         else lv_obj_clear_state(wifi_switch_, LV_STATE_DISABLED);
     }
     if (bt_switch_) {
-        if (airplane_enabled_) lv_obj_add_state(bt_switch_, LV_STATE_DISABLED);
+        if (airplane_enabled_ || bt_busy_.load())
+            lv_obj_add_state(bt_switch_, LV_STATE_DISABLED);
         else lv_obj_clear_state(bt_switch_, LV_STATE_DISABLED);
     }
     VpnRefreshUi();
@@ -2178,6 +2211,8 @@ void SettingsView::BtRefreshSwitch() {
     if (!bt_switch_) return;
     if (bt_powered_) lv_obj_add_state(bt_switch_, LV_STATE_CHECKED);
     else lv_obj_clear_state(bt_switch_, LV_STATE_CHECKED);
+    if (bt_busy_.load()) lv_obj_add_state(bt_switch_, LV_STATE_DISABLED);
+    else lv_obj_clear_state(bt_switch_, LV_STATE_DISABLED);
 }
 
 void SettingsView::BtRescan() {
@@ -2191,34 +2226,53 @@ void SettingsView::BtRescan() {
         SetStatus("Bluetooth bị tắt bởi chế độ máy bay");
         return;
     }
-    if (bt_busy_.exchange(true)) return;
+    if (bt_busy_.exchange(true)) {
+        BtRefreshSwitch();
+        BtRenderList();
+        return;
+    }
     SetStatus("Đang quét Bluetooth...");
+    BtRefreshSwitch();
+    Notify("Đang tìm kiếm thiết bị Bluetooth...", 30000);
     ESP_LOGI(TAG, "Bluetooth scan requested from Settings");
     std::thread([self = Self()]() {
         const bool powered = self->bluetooth_.IsPowered();
         std::vector<jetson::BtDevice> devs;
         if (powered) devs = self->bluetooth_.Scan(8);
         const std::string error = self->bluetooth_.LastError();
-        LvLockGuard lock;
-        self->bt_busy_ = false;
-        self->bt_powered_ = powered;
-        self->bt_devs_ = std::move(devs);
-        self->bt_scanned_ = powered;
-        self->BtRefreshSwitch();
-        if (self->bt_list_) self->BtRenderList();
-        if (!powered) {
-            // Distinguish "adapter is simply off" from a real failure
-            // (e.g. bluetoothd not running) so the user sees the cause.
-            self->SetStatus(error.empty()
-                                ? "Bluetooth đang tắt. Bật công tắc Bluetooth để quét."
-                                : ("Lỗi Bluetooth: " + error).c_str());
-        } else if (self->bt_devs_.empty() && !error.empty()) {
-            self->SetStatus(("Lỗi quét Bluetooth: " + error).c_str());
-            ESP_LOGE(TAG, "Bluetooth scan failed: %s", error.c_str());
-        } else {
-            self->SetStatus("Chạm thiết bị để kết nối/ngắt/quên");
-            ESP_LOGI(TAG, "Bluetooth scan rendered %zu devices", self->bt_devs_.size());
-        }
+        DispatchToLvgl([self, powered, devs = std::move(devs), error]() mutable {
+            self->bt_busy_ = false;
+            self->bt_powered_ = powered;
+            self->bt_devs_ = std::move(devs);
+            self->bt_scanned_ = powered;
+            self->BtRefreshSwitch();
+            if (self->bt_list_) self->BtRenderList();
+            if (!powered) {
+                // Distinguish "adapter is simply off" from a real failure
+                // (e.g. bluetoothd not running) so the user sees the cause.
+                const std::string message = error.empty()
+                                                ? "Bluetooth đang tắt. Bật công tắc Bluetooth để quét."
+                                                : "Lỗi Bluetooth: " + error;
+                self->SetStatus(message.c_str());
+                self->Notify(message.c_str());
+            } else if (self->bt_devs_.empty() && !error.empty()) {
+                const std::string message = "Lỗi quét Bluetooth: " + error;
+                self->SetStatus(message.c_str());
+                self->Notify(message.c_str());
+                ESP_LOGE(TAG, "Bluetooth scan failed: %s", error.c_str());
+            } else {
+                self->SetStatus("Chạm thiết bị để kết nối/ngắt/quên");
+                if (self->notification_cb_) {
+                    const std::string message = self->bt_devs_.empty()
+                                                    ? "Không tìm thấy thiết bị Bluetooth"
+                                                    : "Đã tìm thấy " +
+                                                          std::to_string(self->bt_devs_.size()) +
+                                                          " thiết bị Bluetooth";
+                    self->Notify(message.c_str());
+                }
+                ESP_LOGI(TAG, "Bluetooth scan rendered %zu devices", self->bt_devs_.size());
+            }
+        });
     }).detach();
 }
 
@@ -2232,7 +2286,11 @@ void SettingsView::BtRenderList() {
         lv_obj_set_style_text_color(e, Color(p.sub_text), 0);
         lv_label_set_text(e, airplane_enabled_
                                 ? "Chế độ máy bay đang bật."
-                                : "Không có thiết bị. Bấm \"Quét lại\".");
+                                : (bt_busy_.load() && bt_powered_)
+                                      ? "Đang tìm kiếm thiết bị Bluetooth..."
+                                      : !bt_powered_
+                                            ? "Bluetooth đang tắt."
+                                            : "Không có thiết bị. Bấm \"Quét lại\".");
         return;
     }
     for (const auto &d : bt_devs_) BtCreateRow(d);
@@ -2257,33 +2315,37 @@ void SettingsView::BtCreateRow(const jetson::BtDevice &d) {
 
     auto *left = lv_obj_create(row);
     lv_obj_remove_style_all(left);
+    lv_obj_set_width(left, 1);
+    lv_obj_set_height(left, 42);
     lv_obj_set_flex_grow(left, 1);
     lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(left, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(left, 2, 0);
     auto *name = lv_label_create(left);
-    lv_obj_set_style_text_font(name, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_width(name, lv_pct(100));
+    lv_obj_set_style_text_font(name, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(name, Color(p.text), 0);
     lv_label_set_text(name, d.name.c_str());
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     auto *addr = lv_label_create(left);
-    lv_obj_set_style_text_font(addr, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_width(addr, lv_pct(100));
+    lv_obj_set_style_text_font(addr, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(addr, Color(p.sub_text), 0);
     lv_label_set_text(addr, d.address.c_str());
+    lv_label_set_long_mode(addr, LV_LABEL_LONG_DOT);
 
     auto *right = lv_obj_create(row);
     lv_obj_remove_style_all(right);
-    lv_obj_set_size(right, 110, 22);
+    lv_obj_set_size(right, 132, 30);
     lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(right, 6, 0);
     lv_obj_set_flex_align(right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    int lvl = d.rssi + 100; // dBm (-100..0) -> 0..100
-    if (lvl < 0) lvl = 0;
-    if (lvl > 100) lvl = 100;
-    jetson::ui::CreateSignalBars(right, lvl);
+    jetson::ui::CreateSignalBars(right, jetson::ui::RssiToSignalPercent(d.rssi));
     auto *tag = lv_label_create(right);
-    lv_obj_set_style_text_font(tag, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_font(tag, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(tag, d.connected ? Color(p.accent) : Color(p.sub_text), 0);
     lv_label_set_text(tag, d.connected ? "Đã kết nối" : (d.paired ? "Đã pair" : ""));
 
@@ -2358,18 +2420,26 @@ void SettingsView::BtDoAction(const std::string &addr, bool connected) {
         std::vector<jetson::BtDevice> devs;
         if (ok) devs = self->bluetooth_.Scan(4);
         const std::string error = self->bluetooth_.LastError();
-        LvLockGuard lock;
-        self->bt_busy_ = false;
-        if (ok) {
-            self->bt_powered_ = true;
-            self->bt_devs_ = std::move(devs);
-            self->bt_scanned_ = true;
-            if (self->bt_list_) self->BtRenderList();
-            self->SetStatus(connected ? "Đã ngắt kết nối" : "Đã kết nối");
-        } else {
-            self->SetStatus(("Lỗi: " + error).c_str());
-            ESP_LOGE(TAG, "Bluetooth action failed for %s: %s", addr.c_str(), error.c_str());
-        }
+        DispatchToLvgl([self, addr, connected, ok, devs = std::move(devs), error]() mutable {
+            self->bt_busy_ = false;
+            self->BtRefreshSwitch();
+            if (ok) {
+                self->bt_powered_ = true;
+                self->bt_devs_ = std::move(devs);
+                self->bt_scanned_ = true;
+                if (self->bt_list_) self->BtRenderList();
+                const char *message = connected ? "Đã ngắt kết nối Bluetooth"
+                                                : "Đã kết nối Bluetooth";
+                self->SetStatus(message);
+                self->Notify(message);
+            } else {
+                const std::string message = "Lỗi Bluetooth: " + error;
+                self->SetStatus(message.c_str());
+                self->Notify(message.c_str());
+                ESP_LOGE(TAG, "Bluetooth action failed for %s: %s",
+                         addr.c_str(), error.c_str());
+            }
+        });
     }).detach();
 }
 
@@ -2380,16 +2450,22 @@ void SettingsView::BtDoRemove(const std::string &addr) {
         std::vector<jetson::BtDevice> devs;
         if (ok && self->bluetooth_.IsPowered()) devs = self->bluetooth_.Scan(4);
         const std::string error = self->bluetooth_.LastError();
-        LvLockGuard lock;
-        self->bt_busy_ = false;
-        if (ok) {
-            self->bt_devs_ = std::move(devs);
-            if (self->bt_list_) self->BtRenderList();
-            self->SetStatus("Đã quên thiết bị");
-        } else {
-            self->SetStatus(("Lỗi: " + error).c_str());
-            ESP_LOGE(TAG, "Bluetooth remove failed for %s: %s", addr.c_str(), error.c_str());
-        }
+        DispatchToLvgl([self, addr, ok, devs = std::move(devs), error]() mutable {
+            self->bt_busy_ = false;
+            self->BtRefreshSwitch();
+            if (ok) {
+                self->bt_devs_ = std::move(devs);
+                if (self->bt_list_) self->BtRenderList();
+                self->SetStatus("Đã quên thiết bị Bluetooth");
+                self->Notify("Đã quên thiết bị Bluetooth");
+            } else {
+                const std::string message = "Lỗi Bluetooth: " + error;
+                self->SetStatus(message.c_str());
+                self->Notify(message.c_str());
+                ESP_LOGE(TAG, "Bluetooth remove failed for %s: %s",
+                         addr.c_str(), error.c_str());
+            }
+        });
     }).detach();
 }
 
@@ -2734,7 +2810,7 @@ void SettingsView::OnAirplaneSwitch(lv_event_t *e) {
         self->AirplaneRefreshUi();
         const char *message = "Vui lòng đợi thao tác WiFi/Bluetooth hoàn tất";
         self->SetStatus(message);
-        if (self->notification_cb_) self->notification_cb_(message);
+        self->Notify(message);
         return;
     }
 
@@ -2774,7 +2850,7 @@ void SettingsView::OnAirplaneSwitch(lv_event_t *e) {
         self->SetStatus(result.error.empty()
                             ? message.c_str()
                             : (message + ": " + result.error).c_str());
-        if (self->notification_cb_) self->notification_cb_(message.c_str());
+        self->Notify(message.c_str());
     }).detach();
 }
 
@@ -2790,7 +2866,7 @@ void SettingsView::OnVpnSwitch(lv_event_t *e) {
         self->VpnRefreshUi();
         const char *message = "Tắt chế độ máy bay trước khi bật VPN";
         self->SetStatus(message);
-        if (self->notification_cb_) self->notification_cb_(message);
+        self->Notify(message);
         return;
     }
     if (self->vpn_busy_.exchange(true)) {
@@ -2825,7 +2901,7 @@ void SettingsView::OnVpnSwitch(lv_event_t *e) {
                                    : "Không thể ngắt kết nối VPN";
         }
         self->SetStatus(status.c_str());
-        if (self->notification_cb_) self->notification_cb_(notification);
+        self->Notify(notification);
     }).detach();
 }
 
@@ -2870,7 +2946,7 @@ void SettingsView::OnWifiSwitch(lv_event_t *e) {
             self->WifiRefreshSwitch();
             const std::string message = "Lỗi WiFi: " + error;
             self->SetStatus(message.c_str());
-            if (self->notification_cb_) self->notification_cb_(message.c_str());
+            self->Notify(message.c_str());
             ESP_LOGE(TAG, "WiFi power change failed: %s", error.c_str());
         }
     }).detach();
@@ -2908,7 +2984,9 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
     if (self->airplane_enabled_ || self->airplane_busy_.load() ||
         jetson::IsAirplaneModeEnabled()) {
         self->BtRefreshSwitch();
-        self->SetStatus("Tắt chế độ máy bay trước khi bật Bluetooth");
+        const char *message = "Tắt chế độ máy bay trước khi bật Bluetooth";
+        self->SetStatus(message);
+        self->Notify(message);
         return;
     }
     bool on = lv_obj_has_state(self->bt_switch_, LV_STATE_CHECKED);
@@ -2918,28 +2996,60 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
     }
     // Optimistic UI: keep the switch where the user put it; revert on failure.
     self->bt_powered_ = on;
-    std::thread([self = self->Self(), on]() {
-        const bool ok = on ? self->bluetooth_.PowerOn() : self->bluetooth_.PowerOff();
+    self->bt_scanned_ = false;
+    auto previous_devs = self->bt_devs_;
+    self->bt_devs_.clear();
+    self->BtRefreshSwitch();
+    if (self->bt_list_) self->BtRenderList();
+    if (on) {
+        self->SetStatus("Đang tìm kiếm thiết bị Bluetooth...");
+        self->Notify("Đang tìm kiếm thiết bị Bluetooth...", 30000);
+    } else {
+        self->SetStatus("Đang tắt Bluetooth...");
+    }
+
+    std::thread([self = self->Self(), on, previous_devs = std::move(previous_devs)]() mutable {
+        bool ok = on ? self->bluetooth_.PowerOn() : self->bluetooth_.PowerOff();
         std::vector<jetson::BtDevice> devs;
         if (ok && on) devs = self->bluetooth_.Scan(8);
-        const std::string error = self->bluetooth_.LastError();
-        LvLockGuard lock;
-        self->bt_busy_ = false;
-        if (ok) {
-            self->bt_powered_ = on;
-            self->bt_scanned_ = false;
-            self->bt_devs_ = std::move(devs);
-            self->bt_scanned_ = on;
-            if (self->bt_list_) self->BtRenderList();
-            self->SetStatus(on ? "Đã bật Bluetooth" : "Đã tắt Bluetooth");
-        } else {
-            self->bt_powered_ = !on; // revert the optimistic toggle
-            self->BtRefreshSwitch();
-            const std::string message = "Lỗi Bluetooth: " + error;
-            self->SetStatus(message.c_str());
-            if (self->notification_cb_) self->notification_cb_(message.c_str());
-            ESP_LOGE(TAG, "Bluetooth power change failed: %s", error.c_str());
-        }
+        std::string error = self->bluetooth_.LastError();
+        // Power-on succeeded but discovery itself can still fail.  Do not
+        // present a blank list as success when BlueZ supplied an error.
+        if (ok && on && !error.empty()) ok = false;
+        DispatchToLvgl([self, on, ok, devs = std::move(devs), error,
+                        previous_devs = std::move(previous_devs)]() mutable {
+            self->bt_busy_ = false;
+            if (ok) {
+                self->bt_powered_ = on;
+                self->bt_devs_ = std::move(devs);
+                self->bt_scanned_ = on;
+                self->BtRefreshSwitch();
+                if (self->bt_list_) self->BtRenderList();
+                if (on) {
+                    self->SetStatus("Chạm thiết bị để kết nối/ngắt/quên");
+                    if (self->notification_cb_) {
+                        const std::string message = self->bt_devs_.empty()
+                                                        ? "Không tìm thấy thiết bị Bluetooth"
+                                                        : "Đã tìm thấy " +
+                                                              std::to_string(self->bt_devs_.size()) +
+                                                              " thiết bị Bluetooth";
+                        self->Notify(message.c_str());
+                    }
+                } else {
+                    self->SetStatus("Đã tắt Bluetooth");
+                }
+            } else {
+                self->bt_powered_ = !on; // revert the optimistic toggle
+                self->bt_devs_ = std::move(previous_devs);
+                self->bt_scanned_ = !self->bt_devs_.empty();
+                self->BtRefreshSwitch();
+                if (self->bt_list_) self->BtRenderList();
+                const std::string message = "Lỗi Bluetooth: " + error;
+                self->SetStatus(message.c_str());
+                self->Notify(message.c_str());
+                ESP_LOGE(TAG, "Bluetooth power change failed: %s", error.c_str());
+            }
+        });
     }).detach();
 }
 

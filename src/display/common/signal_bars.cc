@@ -24,6 +24,10 @@ static_assert(SignalBarCount(100) == 4);
 } // namespace
 
 int RssiToSignalPercent(int rssi_dbm) {
+    // BtDevice uses 0 when BlueZ did not report RSSI.  Zero dBm would be an
+    // unrealistically strong nearby transmitter, so showing four full bars is
+    // actively misleading; render the unknown state as empty bars instead.
+    if (rssi_dbm >= 0) return 0;
     return std::clamp(rssi_dbm + 100, 0, 100);
 }
 

@@ -12,10 +12,20 @@ if [ ! -f "$BUILD_DIR/jetson_fw" ]; then
     exit 1
 fi
 
+# Launcher icons are required runtime inputs, not optional decoration. Catch a
+# stale/incomplete asset cache before replacing the installed firmware.
+STUDIO_ICON="$JETSON_DIR/assets/icons/drawer/studio.png"
+if [ ! -s "$STUDIO_ICON" ]; then
+    echo "Required Studio icon not found: $STUDIO_ICON" >&2
+    echo "Run bash scripts/fetch_assets.sh, then install again." >&2
+    exit 1
+fi
+
 echo "==> Installing to /opt/jetson-fw"
 sudo mkdir -p /opt/jetson-fw
 sudo cp "$BUILD_DIR/jetson_fw" /opt/jetson-fw/
-sudo cp -r "$JETSON_DIR/assets" /opt/jetson-fw/
+sudo mkdir -p /opt/jetson-fw/assets
+sudo cp -r "$JETSON_DIR/assets/." /opt/jetson-fw/assets/
 sudo cp "$JETSON_DIR/config.yaml" /opt/jetson-fw/
 sudo mkdir -p /opt/jetson-fw/scripts
 sudo cp "$JETSON_DIR/scripts/s3_assets.py" /opt/jetson-fw/scripts/

@@ -54,9 +54,13 @@ __pycache__/
 jetson.tar.gz
 
 # --- Runtime assets (data) ---
-# Assets are NOT in git. They are fetched from MinIO (S3) at build time by
-# scripts/fetch_assets.sh -> scripts/s3_assets.py (idempotent: skips files
-# already present). See config.yaml for setup and .env.example for credentials. Never commit
-# binaries / large data into the repo.
-/assets/
-/assets/**
+# Assets are fetched from MinIO (S3) at build time by scripts/fetch_assets.sh
+# -> scripts/s3_assets.py. Keep the small Studio launcher icon in Git because
+# the UI references it unconditionally and must also work with an old/offline
+# asset cache. Continue ignoring every other runtime asset.
+/assets/*
+!/assets/icons/
+/assets/icons/*
+!/assets/icons/drawer/
+/assets/icons/drawer/*
+!/assets/icons/drawer/studio.png

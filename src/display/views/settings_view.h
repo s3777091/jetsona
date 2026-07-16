@@ -38,9 +38,16 @@ public:
     }
     void SetVolumeApplier(std::function<void(int, bool)> cb) { volume_cb_ = std::move(cb); }
     void SetLockRequest(std::function<void()> cb) { lock_cb_ = std::move(cb); }
-    void SetNotificationApplier(std::function<void(const char *)> cb) {
+    void SetNotificationApplier(std::function<void(const char *, int)> cb) {
         notification_cb_ = std::move(cb);
     }
+
+    // Status-bar connectivity shortcuts reuse the Settings window instead of
+    // opening a second full-screen overlay with a different header.  Keeping
+    // both pages here gives them the normal traffic-light controls and the
+    // same top inset as every other multitasked app.
+    void ShowWifiPage();
+    void ShowBluetoothPage();
 
 protected:
     void OnStart() override;
@@ -159,7 +166,10 @@ private:
     std::function<void()> display_preferences_cb_;
     std::function<void(int, bool)> volume_cb_;  // (volume, muted)
     std::function<void()> lock_cb_;
-    std::function<void(const char *)> notification_cb_;
+    std::function<void(const char *, int)> notification_cb_;
+    void Notify(const char *message, int duration_ms = 2800) {
+        if (notification_cb_) notification_cb_(message, duration_ms);
+    }
 
     // ---- layout / panes ----
     void BuildShell();

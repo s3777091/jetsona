@@ -31,6 +31,24 @@ int g_text_size = kDefaultTextSize;
 bool g_text_bold = false;
 std::map<std::tuple<std::string, int, bool>, lv_font_t *> g_font_cache;
 
+const lv_font_t *SymbolFallbackForSize(int size) {
+    /* LVGL's built-in Montserrat fonts include the LV_SYMBOL_* private-use
+     * glyphs. Runtime TTF families generally do not, so keep a similarly
+     * sized built-in font at the end of each text font's fallback chain. */
+    switch (std::clamp(((size + 1) / 2) * 2, 16, 34)) {
+        case 16: return &lv_font_montserrat_16;
+        case 18: return &lv_font_montserrat_18;
+        case 20: return &lv_font_montserrat_20;
+        case 22: return &lv_font_montserrat_22;
+        case 24: return &lv_font_montserrat_24;
+        case 26: return &lv_font_montserrat_26;
+        case 28: return &lv_font_montserrat_28;
+        case 30: return &lv_font_montserrat_30;
+        case 32: return &lv_font_montserrat_32;
+        default: return &lv_font_montserrat_34;
+    }
+}
+
 bool FileExists(const std::string &path) {
     FILE *f = std::fopen(path.c_str(), "rb");
     if (!f) return false;
@@ -46,6 +64,9 @@ lv_font_t *LoadTextFace(int size, bool bold) {
     if (found != g_font_cache.end()) return found->second;
 
     lv_font_t *font = path.empty() ? nullptr : lv_tiny_ttf_create_file(path.c_str(), size);
+    if (font) {
+        font->fallback = SymbolFallbackForSize(size);
+    }
     if (!font) {
         ESP_LOGW(TAG, "tiny_ttf failed for %s at %d px", path.c_str(), size);
         font = size <= 24 ? (lv_font_t *)&lv_font_montserrat_24
