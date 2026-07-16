@@ -709,38 +709,21 @@ void Ds02HomeDisplay::SetDockActive(int index) {
 
 void Ds02HomeDisplay::ApplyStandbyState() {
     if (!standby_layer_ || !launcher_layer_) return;
-    Settings display("display", false);
-    const bool always_on = display.GetBool("always_on", true);
-    const bool show_wallpaper = display.GetBool("aod_wallpaper", true);
-    const bool blur_wallpaper = display.GetBool("aod_blur", true);
     switch (standby_state_) {
     case StandbyState::Dim:
-        // A sleep-screen wallpaper (if set) replaces the desktop wallpaper
-        // while dim; only a light scrim is drawn over it so it stays visible.
+        // Keep the same desktop wallpaper visible in every state. The old AOD
+        // path could make it fully transparent or cover it with a black
+        // screen, producing a visible wallpaper on/off loop on noisy input.
         ApplyWallpaperForState();
-        lv_obj_set_style_bg_opa(dim_overlay_,
-                                show_wallpaper
-                                    ? (sleep_background_file_.empty() ? LV_OPA_60 : LV_OPA_20)
-                                    : LV_OPA_90,
-                                0);
+        lv_obj_set_style_bg_opa(dim_overlay_, LV_OPA_20, 0);
         if (wallpaper_image_obj_) {
-            lv_obj_set_style_image_opa(wallpaper_image_obj_,
-                                       show_wallpaper ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-            lv_obj_set_style_image_recolor(wallpaper_image_obj_, Color(0x30343a), 0);
-            lv_obj_set_style_image_recolor_opa(wallpaper_image_obj_,
-                                               blur_wallpaper ? LV_OPA_30 : LV_OPA_TRANSP, 0);
+            lv_obj_set_style_image_opa(wallpaper_image_obj_, LV_OPA_COVER, 0);
+            lv_obj_set_style_image_recolor_opa(wallpaper_image_obj_, LV_OPA_TRANSP, 0);
         }
         lv_obj_clear_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
-        if (screen_off_overlay_) {
-            lv_obj_set_style_bg_opa(screen_off_overlay_,
-                                    always_on ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
-            lv_obj_clear_flag(screen_off_overlay_, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (status_bar_) {
-            if (always_on) status_bar_->Show();
-            else status_bar_->Hide();
-        }
+        if (screen_off_overlay_) lv_obj_add_flag(screen_off_overlay_, LV_OBJ_FLAG_HIDDEN);
+        if (status_bar_) status_bar_->Show();
         break;
     case StandbyState::Awake:
         ApplyWallpaperForState();
@@ -1404,7 +1387,6 @@ void Ds02HomeDisplay::SetSleepBackground(const std::string &file) {
     sleep_background_file_ = file;
     Settings s("display", true);
     s.SetString("ds02_sleep_bg_file", file);
-    if (standby_state_ == StandbyState::Dim) ApplyWallpaperForState();
 }
 
 void Ds02HomeDisplay::ReloadBackgrounds() {
@@ -1420,7 +1402,7 @@ void Ds02HomeDisplay::ReloadBackgrounds() {
         !sleep_background_file_.empty() && !is_available(sleep_background_file_);
 
     // Detach LVGL before freeing image descriptors for files moved to Trash.
-    if ((background_missing || sleep_background_missing) && wallpaper_image_obj_) {
+    if (background_missing && wallpaper_image_obj_) {
         lv_image_set_src(wallpaper_image_obj_, nullptr);
     }
 
@@ -1508,22 +1490,13 @@ bool Ds02HomeDisplay::ApplyBackgroundFile(const std::string &file) {
     return true;
 }
 
-// Choose which wallpaper to show based on standby state: the sleep-screen
-// wallpaper (if set) when dim, otherwise the desktop wallpaper.
+// Keep one desktop wallpaper stable across Awake/Launcher/Dim. Do not clear a
+// valid currently displayed image just because a reload temporarily fails.
 void Ds02HomeDisplay::ApplyWallpaperForState() {
     if (!wallpaper_image_obj_) return;
-    std::string file = background_file_;
-    if (standby_state_ == StandbyState::Dim && !sleep_background_file_.empty()) {
-        // Only swap if the sleep file still exists on disk.
-        bool exists = false;
-        for (const auto &f : background_files_) if (f == sleep_background_file_) { exists = true; break; }
-        if (exists) file = sleep_background_file_;
-    }
-    if (LvglImage *img = GetBackgroundImage(file)) {
+    if (LvglImage *img = GetBackgroundImage(background_file_)) {
         lv_image_set_src(wallpaper_image_obj_, img->image_dsc());
         lv_obj_center(wallpaper_image_obj_);
-    } else {
-        lv_image_set_src(wallpaper_image_obj_, nullptr);
     }
 }
 
@@ -1550,20 +1523,9 @@ void Ds02HomeDisplay::OnRefreshTimer(void *arg) {
 }
 
 void Ds02HomeDisplay::CheckIdleDim() {
-    // Auto-dim the standby screen after the configured idle timeout. 0 = never.
-    // Only fires from Awake; once dimmed, input activity wakes it back up via
-    // the existing standby-button handling. App overlays are ignored (their own
-    // UI keeps the screen alive and they sit above the dim scrim anyway).
-    int timeout = Settings("display").GetInt("sleep_timeout", 0);
-    if (timeout <= 0) return;
-    DisplayLockGuard lock(this);
-    if (HasOpenOverlay()) return;
-    if (standby_state_ != StandbyState::Awake) return;
-    uint32_t idle_ms = lv_disp_get_inactive_time(nullptr);
-    if (idle_ms >= (uint32_t)timeout * 1000u) {
-        standby_state_ = StandbyState::Dim;
-        ApplyStandbyState();
-    }
+    // Disabled on this mouse-only panel. Repeated synthetic input activity can
+    // otherwise alternate Awake/Dim and make the wallpaper appear to flash.
+    // Manual launcher/app transitions remain available.
 }
 
 bool Ds02HomeDisplay::HasOpenOverlay() const {
