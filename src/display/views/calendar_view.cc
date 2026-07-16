@@ -697,6 +697,18 @@ void CalendarView::OpenDayModal(int day) {
         lv_obj_set_size(dropdown, 150, 34);
         lv_dropdown_set_options(dropdown, options);
         lv_obj_set_style_text_font(dropdown, &BUILTIN_SMALL_TEXT_FONT, 0);
+        // The default LV_SYMBOL_DOWN arrow renders with the INDICATOR part's
+        // font; the tiny_ttf text faces have no Font Awesome block, which
+        // spammed "glyph dsc. not found U+F078" + tiny_ttf "cache not
+        // allocated" on every redraw. Use the dedicated 16x16 chevron PNG
+        // (shown 1:1), with the symbol-capable icon font as fallback.
+        if (!dropdown_icon_) dropdown_icon_ = LvglImageFromFile("assets/icons/app/dropdown.png");
+        if (dropdown_icon_) {
+            lv_dropdown_set_symbol(dropdown, dropdown_icon_->image_dsc());
+        } else {
+            lv_obj_set_style_text_font(dropdown, &BUILTIN_ICON_FONT, LV_PART_INDICATOR);
+            lv_obj_set_style_text_color(dropdown, Color(p.sub_text), LV_PART_INDICATOR);
+        }
         lv_obj_set_style_text_color(dropdown, Color(p.sub_text), 0);
         lv_obj_set_style_bg_color(dropdown, Color(p.button), 0);
         lv_obj_set_style_bg_opa(dropdown, LV_OPA_COVER, 0);

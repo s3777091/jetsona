@@ -1,5 +1,6 @@
 #pragma once
 
+#include "display/core/lvgl_image.h"
 #include "display/views/overlay_view.h"
 #include "display/widgets/telex_ime.h"
 
@@ -36,6 +37,9 @@ private:
         bool done = false;
         std::string title;
     };
+    // 16x16 chevron shown 1:1 as the dropdown indicator (the TTF text fonts
+    // carry no Font Awesome block, so the LV_SYMBOL_DOWN glyph is unusable).
+    std::unique_ptr<LvglImage> dropdown_icon_;
     struct DayCtx {
         CalendarView *self;
         int day;            // 0 = empty cell
