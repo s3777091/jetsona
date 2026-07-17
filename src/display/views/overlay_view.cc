@@ -116,12 +116,17 @@ void OverlayView::SetRightButton(const char *icon_symbol, RightCb cb) {
     right_cb_ = std::move(cb);
     const auto &p = jetson::UiTheme::Instance().Palette();
     right_btn_ = lv_button_create(header_);
-    lv_obj_set_size(right_btn_, 40, 40);
-    lv_obj_align(right_btn_, LV_ALIGN_RIGHT_MID, 0, 0);
+    // y=0..41 belongs to the global status bar.  A 40 px button centered in
+    // the 72 px app header started at y=16 and covered that strip.  Keep the
+    // action entirely in the lower app-control band instead.
+    lv_obj_set_size(right_btn_, 28, 28);
+    lv_obj_align(right_btn_, LV_ALIGN_BOTTOM_RIGHT, -12, -1);
+    lv_obj_set_style_pad_all(right_btn_, 0, 0);
     lv_obj_set_style_bg_color(right_btn_, Color(p.button), 0);
+    lv_obj_set_style_radius(right_btn_, 8, 0);
     lv_obj_add_event_cb(right_btn_, OnRight, LV_EVENT_CLICKED, this);
     auto *lbl = lv_label_create(right_btn_);
-    lv_obj_set_style_text_font(lbl, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(lbl, Color(p.text), 0);
     lv_label_set_text(lbl, icon_symbol ? icon_symbol : "");
     lv_obj_center(lbl);

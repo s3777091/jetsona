@@ -231,64 +231,12 @@ void AnimateSheetIn(lv_obj_t *card, int height) {
 
 void DrawController(lv_obj_t *root, bool connected) {
     if (!root) return;
-    const auto &palette = jetson::UiTheme::Instance().Palette();
     lv_obj_clean(root);
-
-    const uint32_t stroke = connected ? palette.accent : palette.sub_text;
-    auto *body = lv_obj_create(root);
-    lv_obj_remove_style_all(body);
-    lv_obj_set_size(body, 98, 54);
-    lv_obj_set_pos(body, 7, 11);
-    lv_obj_set_style_bg_color(body, Color(palette.panel), 0);
-    lv_obj_set_style_bg_opa(body, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(body, Color(stroke), 0);
-    lv_obj_set_style_border_width(body, 3, 0);
-    lv_obj_set_style_radius(body, 23, 0);
-    RemoveInteraction(body);
-
-    auto add_shape = [&](int x, int y, int width, int height, int radius) {
-        auto *shape = lv_obj_create(body);
-        lv_obj_remove_style_all(shape);
-        lv_obj_set_size(shape, width, height);
-        lv_obj_set_pos(shape, x, y);
-        lv_obj_set_style_bg_color(shape, Color(stroke), 0);
-        lv_obj_set_style_bg_opa(shape, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(shape, radius, 0);
-        RemoveInteraction(shape);
-        return shape;
-    };
-
-    // D-pad and face buttons make the state icon readable without relying on
-    // an emoji/font glyph that may be missing on the embedded image.
-    add_shape(20, 24, 22, 6, 3);
-    add_shape(28, 16, 6, 22, 3);
-    add_shape(68, 18, 8, 8, LV_RADIUS_CIRCLE);
-    add_shape(79, 29, 8, 8, LV_RADIUS_CIRCLE);
-
-    auto *badge = lv_obj_create(root);
-    lv_obj_remove_style_all(badge);
-    lv_obj_set_size(badge, 24, 24);
-    lv_obj_set_pos(badge, 84, 0);
-    lv_obj_set_style_bg_color(badge, Color(connected ? kGreen : palette.button), 0);
-    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(badge, Color(palette.panel), 0);
-    lv_obj_set_style_border_width(badge, 3, 0);
-    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
-    RemoveInteraction(badge);
-    auto *state = MakeLabel(badge, connected ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE,
-                            &BUILTIN_ICON_FONT,
-                            connected ? 0xffffff : palette.sub_text);
-    lv_obj_center(state);
-
-    if (!connected) {
-        static lv_point_precise_t slash_points[] = {{16, 67}, {99, 8}};
-        auto *slash = lv_line_create(root);
-        lv_line_set_points(slash, slash_points, 2);
-        lv_obj_set_style_line_color(slash, Color(kRed), 0);
-        lv_obj_set_style_line_width(slash, 5, 0);
-        lv_obj_set_style_line_rounded(slash, true, 0);
-        RemoveInteraction(slash);
-    }
+    // Dedicated 72x72 state assets (assets/icons/app); the icon cache always
+    // returns a valid image object, so no drawn fallback is needed.
+    auto *icon = jetson::ui::CreateAppIcon(
+        root, connected ? "controller" : "no-controller", 72);
+    lv_obj_center(icon);
 }
 
 } // namespace
@@ -419,7 +367,9 @@ void PsRemotePlayView::OpenPinModal() {
 
     pin_modal_ = MakeModalBackdrop(overlay_, width_, height_, palette.scrim,
                                    OnPinDismiss, this);
-    constexpr int kSheetHeight = 230;
+    // Fit the content tightly; the old 230 px sheet left a visible dead strip
+    // below the error line on the 480 px display.
+    constexpr int kSheetHeight = 210;
     auto *card = MakeBottomSheet(pin_modal_, 580, kSheetHeight, palette.panel);
     AddGrabber(card, palette.sub_text);
     MakeSheetHeader(card, "Đăng nhập mã PIN", OnPinCancel, OnPinSave, this);
@@ -438,21 +388,17 @@ void PsRemotePlayView::OpenPinModal() {
     lv_obj_set_flex_align(form, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 
-    pin_input_ = lv_textarea_create(form);
-    lv_obj_set_size(pin_input_, 1, 44);
-    lv_obj_set_flex_grow(pin_input_, 1);
-    lv_obj_set_style_bg_opa(pin_input_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(pin_input_, 0, 0);
-    lv_obj_set_style_text_font(pin_input_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(pin_input_, Color(palette.text), 0);
-    lv_obj_set_style_text_color(pin_input_, Color(palette.sub_text),
-                                LV_PART_TEXTAREA_PLACEHOLDER);
-    lv_textarea_set_one_line(pin_input_, true);
-    lv_textarea_set_max_length(pin_input_, 8);
-    lv_textarea_set_accepted_chars(pin_input_, "0123456789");
-    lv_textarea_set_password_mode(pin_input_, true);
-    lv_textarea_set_placeholder_text(pin_input_, "Nhập mã PIN PS5 của bạn");
-    lv_obj_add_event_cb(pin_input_, OnPinSave, LV_EVENT_READY, this);
+    // Use the same keypad-group input wrapper as the rest of the firmware.
+    // Native lv_textarea did not reliably receive EV_KEY input on the Jetson
+    // evdev keyboard path, while TelexInput owns LV_EVENT_KEY explicitly.
+    pin_input_ = new TelexInput(form, 1, 44);
+    lv_obj_set_flex_grow(pin_input_->obj(), 1);
+    pin_input_->SetTelex(false);
+    pin_input_->SetPassword(true);
+    pin_input_->SetMaxLen(8);
+    pin_input_->SetAcceptedChars("0123456789");
+    pin_input_->SetPlaceholder("Nhập mã PIN PS5 của bạn");
+    lv_obj_add_event_cb(pin_input_->obj(), OnPinSave, LV_EVENT_READY, this);
 
     auto *submit = lv_button_create(form);
     lv_obj_set_size(submit, 44, 44);
@@ -463,8 +409,9 @@ void PsRemotePlayView::OpenPinModal() {
     lv_obj_set_style_shadow_width(submit, 0, 0);
     lv_obj_set_style_pad_all(submit, 0, 0);
     lv_obj_add_event_cb(submit, OnPinSave, LV_EVENT_CLICKED, this);
-    auto *enter = jetson::ui::CreateAppIcon(submit, "enter", 22);
-    if (enter) {
+    lv_obj_t *enter = nullptr;
+    if (jetson::ui::AppIconDsc("enter")) {
+        enter = jetson::ui::CreateAppIcon(submit, "enter", 22);
         lv_obj_set_style_image_recolor(enter, lv_color_white(), 0);
         lv_obj_set_style_image_recolor_opa(enter, LV_OPA_COVER, 0);
     } else {
@@ -477,10 +424,7 @@ void PsRemotePlayView::OpenPinModal() {
     lv_obj_set_width(pin_error_, lv_pct(100));
     lv_obj_set_style_text_align(pin_error_, LV_TEXT_ALIGN_CENTER, 0);
 
-    if (auto *group = jetson::LvglRuntime::Instance().keypad_group()) {
-        lv_group_add_obj(group, pin_input_);
-        lv_group_focus_obj(pin_input_);
-    }
+    pin_input_->Focus();
     lv_obj_move_foreground(pin_modal_);
     AnimateSheetIn(card, kSheetHeight);
 }
@@ -495,8 +439,7 @@ void PsRemotePlayView::ClosePinModal() {
 
 void PsRemotePlayView::AcceptPin() {
     if (!pin_input_) return;
-    const char *value = lv_textarea_get_text(pin_input_);
-    const std::string pin = value ? value : "";
+    const std::string pin = pin_input_->Text();
     if (pin.empty()) {
         if (pin_error_) {
             lv_label_set_text(pin_error_, "Vui lòng nhập mã PIN PS5");

@@ -2,6 +2,7 @@
 
 #include "display/common/backgrounds.h"
 #include "display/common/lvgl_utils.h"
+#include "display/core/app_icons.h"
 #include "display/theme/ui_theme.h"
 #include "fonts.h"
 
@@ -77,16 +78,15 @@ using jetson::ui::LvglLockGuard;
 TrashView::TrashView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
     : OverlayView(parent, width, height, "Thùng rác", std::move(on_closed)) {
     empty_btn_ = lv_button_create(header_);
-    lv_obj_set_size(empty_btn_, 112, 34);
-    lv_obj_align(empty_btn_, LV_ALIGN_BOTTOM_RIGHT, -12, -4);
-    lv_obj_set_style_radius(empty_btn_, 10, 0);
-    lv_obj_set_style_bg_color(empty_btn_, Color(0xff5f57), 0);
+    lv_obj_set_size(empty_btn_, 28, 28);
+    lv_obj_align(empty_btn_, LV_ALIGN_BOTTOM_RIGHT, -12, -1);
+    lv_obj_set_style_radius(empty_btn_, 8, 0);
+    lv_obj_set_style_bg_color(
+        empty_btn_, Color(jetson::UiTheme::Instance().Palette().button), 0);
+    lv_obj_set_style_pad_all(empty_btn_, 0, 0);
     lv_obj_add_event_cb(empty_btn_, OnEmptyClicked, LV_EVENT_CLICKED, this);
-    auto *label = lv_label_create(empty_btn_);
-    lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(label, lv_color_white(), 0);
-    lv_label_set_text(label, "Empty Trash");
-    lv_obj_center(label);
+    auto *icon = jetson::ui::CreateAppIcon(empty_btn_, "empty-trash", 18);
+    lv_obj_center(icon);
     BuildBody();
 }
 

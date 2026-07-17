@@ -7,7 +7,7 @@
 #
 # Runtime prerequisite (install once on the Jetson):
 #   sudo apt install -y xserver-xorg-video-all xserver-xorg-input-libinput \
-#       x11-xkb-utils xinit chromium-browser libx11-dev
+#       x11-xkb-utils x11-xserver-utils xinit chromium-browser libx11-dev
 # (libx11-dev is a build dependency for tools/kiosk_bar, the Dynamic Island
 # strip + micro-WM that runs on top of Chromium.)
 # The HDMI LCD is driven by the stock tegra/nvidia X driver; this script just
@@ -16,6 +16,9 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The firmware runs as root and persists its UI choices here. Preserve the
+# path before client mode replaces HOME with Chromium's private runtime home.
+export JETSON_SETTINGS_FILE="${JETSON_SETTINGS_FILE:-${HOME:-/root}/.jetson-fw/settings.kv}"
 
 # xinit must start an executable as its first client, so it re-enters this
 # script in client mode.  Keep Chromium out of the service's stale desktop
@@ -29,6 +32,32 @@ if [ "${1:-}" = "--x-client" ]; then
     export XDG_CONFIG_HOME="${CHROMIUM_KIOSK_CONFIG_HOME:-$HOME/.config}"
     export XDG_CACHE_HOME="${CHROMIUM_KIOSK_CACHE_HOME:-$HOME/.cache}"
     mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+
+    # Xorg remains privileged because it owns the physical display, while the
+    # browser runs as the dedicated unprivileged account created by install.sh.
+    # This keeps Chromium's real sandbox enabled and removes the unsafe
+    # --no-sandbox warning instead of merely hiding its infobar.
+    if [ -z "${CHROMIUM_RUN_USER:-}" ] || ! id "$CHROMIUM_RUN_USER" >/dev/null 2>&1; then
+        echo "launch_chromium: kiosk user is missing; run scripts/install.sh again" >&2
+        exit 1
+    fi
+    if ! command -v runuser >/dev/null 2>&1 || ! command -v xhost >/dev/null 2>&1; then
+        echo "launch_chromium: runuser/xhost missing (install util-linux x11-xserver-utils)" >&2
+        exit 1
+    fi
+    if ! xhost "+SI:localuser:$CHROMIUM_RUN_USER" >/dev/null 2>&1; then
+        echo "launch_chromium: cannot authorize $CHROMIUM_RUN_USER on $DISPLAY" >&2
+        exit 1
+    fi
+    chromium_run()
+    {
+        runuser -u "$CHROMIUM_RUN_USER" -- env \
+            HOME="$HOME" \
+            XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+            XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+            DISPLAY="$DISPLAY" \
+            "$@"
+    }
 
     if command -v setxkbmap >/dev/null 2>&1; then
         # Ctrl+Alt+Backspace exits the bare-X session even though Chromium has
@@ -49,7 +78,7 @@ if [ "${1:-}" = "--x-client" ]; then
     if [ -n "${JETSON_KIOSK_BAR:-}" ] && [ -x "$JETSON_KIOSK_BAR" ]; then
         "$JETSON_KIOSK_BAR" &
         BAR_PID=$!
-        "$@" &
+        chromium_run "$@" &
         APP_PID=$!
 
         # Extra kiosk windows: every URL beyond the first (newline-separated
@@ -71,7 +100,7 @@ if [ "${1:-}" = "--x-client" ]; then
                 sleep 2
                 while IFS= read -r u; do
                     [ -n "$u" ] || continue
-                    "$CHROMIUM_BIN" --no-sandbox \
+                    chromium_run "$CHROMIUM_BIN" \
                         --user-data-dir="$PROFILE" \
                         --app="$u" >/dev/null 2>&1 || true
                 done <<EOF
@@ -94,7 +123,8 @@ EOF
         wait "$BAR_PID" 2>/dev/null
         exit 0
     fi
-    exec "$@"
+    chromium_run "$@"
+    exit $?
 fi
 
 JETSON_DIR="$(dirname "$SCRIPT_DIR")"
@@ -179,6 +209,23 @@ if ! mkdir -p "$PROFILE_DIR" 2>/dev/null; then
     mkdir -p "$PROFILE_DIR"
 fi
 chmod 700 "$PROFILE_DIR" 2>/dev/null || true
+
+# Browser sandbox boundary. The service itself stays root for DRM/Xorg, but no
+# Chromium process (including Dynamic Island app relaunches) inherits root.
+CHROMIUM_RUN_USER="${CHROMIUM_KIOSK_USER:-jetson-kiosk}"
+if ! run_identity="$(id -u "$CHROMIUM_RUN_USER" 2>/dev/null)"; then
+    echo "launch_chromium: user '$CHROMIUM_RUN_USER' not found; run scripts/install.sh" >&2
+    exit 1
+fi
+run_group="$(id -g "$CHROMIUM_RUN_USER")"
+export CHROMIUM_RUN_USER CHROMIUM_RUN_UID="$run_identity" CHROMIUM_RUN_GID="$run_group"
+RUNTIME_HOME="${CHROMIUM_KIOSK_HOME:-/var/lib/jetson-fw/chromium-home}"
+mkdir -p "$RUNTIME_HOME" "$RUNTIME_HOME/.config" "$RUNTIME_HOME/.cache" \
+         /tmp/chromium-kiosk-cache
+chown -R "$run_identity:$run_group" "$PROFILE_DIR" "$RUNTIME_HOME" \
+         /tmp/chromium-kiosk-cache
+chmod 700 "$PROFILE_DIR" "$RUNTIME_HOME"
+export CHROMIUM_KIOSK_HOME="$RUNTIME_HOME"
 # The supervisor serializes kiosk sessions, so any singleton left in the
 # (now persistent) profile is from a dead process. Clearing it up front keeps
 # the extra-URL relaunches from racing a stale lock into a second browser.
@@ -197,10 +244,12 @@ export CHROMIUM_EXTRA_URLS="$EXTRA_URLS"
 # refresh. Studio only appears when config/.env provides JETSON_STUDIO_URL.
 APPS_FILE=/tmp/jetson_kiosk_apps
 {
+    echo "Chromium|$HOME_URL"
     echo "YouTube|https://www.youtube.com"
     echo "GitHub|https://github.com"
     echo "Facebook|https://www.facebook.com"
     echo "Messenger|https://www.messenger.com"
+    echo "Teams|https://teams.microsoft.com"
     if [ -n "${JETSON_STUDIO_URL:-}" ]; then
         echo "Studio|$JETSON_STUDIO_URL"
     fi
@@ -211,13 +260,12 @@ APPS_FILE=/tmp/jetson_kiosk_apps
     fi
 } > "$APPS_FILE"
 
-# Common flags: --no-sandbox (runs as root under the service), --user-data-dir
-# so a root profile doesn't collide with any existing one, --disable-gpu for
+# Common flags: the browser runs as jetson-kiosk so Chromium's sandbox stays
+# enabled; --user-data-dir isolates its persistent profile, --disable-gpu for
 # the software-only tegra stack. The RAM block keeps a multi-window session
 # viable on the 4GB Jetson: one renderer per *site* instead of per window,
 # hard cap on renderer count, and no extension/sync/telemetry background work.
 CHROMIUM_FLAGS=(
-    --no-sandbox
     --user-data-dir="$PROFILE_DIR"
     --disk-cache-dir=/tmp/chromium-kiosk-cache
     --disk-cache-size=67108864
@@ -232,7 +280,6 @@ CHROMIUM_FLAGS=(
     --process-per-site
     --renderer-process-limit=4
     --disable-extensions
-    --disable-background-networking
     --disable-component-update
     --disable-sync
     --disable-breakpad

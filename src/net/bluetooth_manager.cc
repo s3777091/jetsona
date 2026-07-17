@@ -4,6 +4,7 @@
 #include "platform/shell_command.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -74,6 +75,44 @@ std::string field(const std::string &out, const std::string &key) {
 
 bool fieldBool(const std::string &out, const std::string &key) {
     return field(out, key) == "yes";
+}
+
+// Categorize a device from its `bluetoothctl info` output. BlueZ's `Icon`
+// hint is the discriminator: "input-gaming"/"joystick" for gamepads, any
+// "audio-*" value (headset/headphones/card) for audio devices. Devices that
+// never advertised a class (typical for unpaired scan results) have no Icon
+// line and stay Unknown.
+BtDeviceKind KindFromInfo(const std::string &info) {
+    std::string icon = field(info, "Icon");
+    std::transform(icon.begin(), icon.end(), icon.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (contains(icon, "gaming") || contains(icon, "joystick") ||
+        contains(icon, "gamepad"))
+        return BtDeviceKind::Controller;
+    if (contains(icon, "audio") || contains(icon, "headset") ||
+        contains(icon, "headphone"))
+        return BtDeviceKind::Headphones;
+    return BtDeviceKind::Unknown;
+}
+
+// Parse "Device AA:BB:CC:DD:EE:FF Name" lines into unique addresses. Older
+// bluetoothctl versions can echo the list twice (see Scan), so dedupe here.
+std::vector<std::string> ParseDeviceAddresses(const std::string &out) {
+    std::vector<std::string> addresses;
+    std::unordered_set<std::string> seen;
+    std::istringstream iss(out);
+    std::string line;
+    while (std::getline(iss, line)) {
+        const char *prefix = "Device ";
+        size_t p = line.find(prefix);
+        if (p == std::string::npos) continue;
+        std::string rest = line.substr(p + std::strlen(prefix));
+        size_t sp = rest.find(' ');
+        std::string address = sp == std::string::npos ? rest : rest.substr(0, sp);
+        if (address.empty() || !seen.insert(address).second) continue;
+        addresses.push_back(std::move(address));
+    }
+    return addresses;
 }
 
 } // namespace
@@ -234,7 +273,12 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
         "; printf 'scan off\\n'; } | timeout --signal=TERM " +
         std::to_string(duration_s + 10) + "s bluetoothctl";
     std::string junk;
-    RunShellCommand(scanCmd, junk);
+    const int scanRc = RunShellCommand(scanCmd, junk);
+    if (scanRc != 0) {
+        last_error_ = junk.empty() ? "bluetoothctl discovery failed" : junk;
+        ESP_LOGE(TAG, "discovery failed (rc=%d): %s", scanRc, junk.c_str());
+        return devs;
+    }
 
     std::string devicesOut;
     int listRc = runBt("devices\n", devicesOut, 6);
@@ -276,6 +320,7 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
         runBt("info " + d.address + "\n", info, 5);
         d.paired = fieldBool(info, "Paired");
         d.connected = fieldBool(info, "Connected");
+        d.kind = KindFromInfo(info);
         std::string rssi = field(info, "RSSI");
         if (!rssi.empty()) {
             try { d.rssi = std::stoi(rssi); } catch (...) { d.rssi = 0; }
@@ -299,6 +344,34 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
     ESP_LOGI(TAG, "scan completed: %zu devices in %lld ms",
              devs.size(), static_cast<long long>(elapsed));
     return devs;
+}
+
+BtDeviceKind BluetoothManager::ConnectedDeviceKind() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    // Polled every 10 s by the status bar, so skip Available()'s extra
+    // bluetoothctl round-trip: when the daemon or adapter is down the paired
+    // list simply comes back empty/failed and the answer is None. Only paired
+    // devices are checked — the connect flow always pairs+trusts first.
+    std::string out;
+    if (runBt("paired-devices\n", out, 6) != 0) return BtDeviceKind::None;
+
+    auto rank = [](BtDeviceKind k) {
+        switch (k) {
+            case BtDeviceKind::Controller: return 3;
+            case BtDeviceKind::Headphones: return 2;
+            case BtDeviceKind::Unknown: return 1;
+            default: return 0;
+        }
+    };
+    BtDeviceKind best = BtDeviceKind::None;
+    for (const std::string &address : ParseDeviceAddresses(out)) {
+        std::string info;
+        if (runBt("info " + address + "\n", info, 5) != 0) continue;
+        if (!fieldBool(info, "Connected")) continue;
+        const BtDeviceKind kind = KindFromInfo(info);
+        if (rank(kind) > rank(best)) best = kind;
+    }
+    return best;
 }
 
 bool BluetoothManager::PairAndConnect(const std::string &address) {

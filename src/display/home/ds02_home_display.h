@@ -29,6 +29,7 @@ class CalendarView;
 class ChatView;
 class DocumentsView;
 class LockScreenView;
+class MusicView;
 class OverlayView;
 class PodsView;
 class PsRemotePlayView;
@@ -67,6 +68,7 @@ public:
     void OpenBluetoothSettings();
     void OpenCalendar();
     void OpenDocuments();
+    void OpenMusic();
     void OpenReminders();
     void OpenBackgroundGallery();
     void OpenSettings();
@@ -106,12 +108,13 @@ private:
     enum class StandbyState { Dim, Awake, Launcher };
 
     static constexpr size_t kDockItemCount = 9;
-    static constexpr size_t kDrawerItemCount = 12;
+    static constexpr size_t kDrawerItemCount = 16;
     static constexpr size_t kDrawerItemsPerPage = 8;
     static constexpr size_t kDrawerPageCount =
         (kDrawerItemCount + kDrawerItemsPerPage - 1) / kDrawerItemsPerPage;
-    static constexpr size_t kGalleryDrawerIndex = 7;
-    static constexpr size_t kPodsDrawerIndex = 8;
+    static constexpr size_t kGalleryDrawerIndex = 6;
+    static constexpr size_t kPodsDrawerIndex = 7;
+    static constexpr size_t kPsRemotePlayDrawerIndex = 2;
 
     /* ---- Multitasking ----
      * Every OverlayView app that opens joins an LRU queue and stays alive when
@@ -124,6 +127,7 @@ private:
         kAppNone = 0,
         kAppCalendar,
         kAppDocuments,
+        kAppMusic,
         kAppReminders,
         kAppSettings,
         kAppChat,
@@ -234,6 +238,7 @@ private:
     std::shared_ptr<BluetoothSettingsView> bt_view_;
     std::shared_ptr<CalendarView> calendar_view_;
     std::shared_ptr<DocumentsView> documents_view_;
+    std::shared_ptr<MusicView> music_view_;
     std::shared_ptr<RemindersView> reminders_view_;
     std::shared_ptr<BackgroundGalleryView> gallery_view_;
     std::shared_ptr<SettingsView> settings_view_;

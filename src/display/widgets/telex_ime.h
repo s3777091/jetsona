@@ -62,6 +62,7 @@ public:
     void SetTelex(bool on) { ime_.SetEnabled(on); }
     void SetPassword(bool on) { password_ = on; Refresh(); }
     void SetMaxLen(size_t n) { ime_.SetMaxLen(n); }
+    void SetAcceptedChars(const char *chars) { accepted_chars_ = chars ? chars : ""; }
     void SetPlaceholder(const char *text);
     void SetFont(const lv_font_t *font);
     void Clear() { ime_.Clear(); Refresh(); }
@@ -72,6 +73,7 @@ private:
     lv_obj_t *root_ = nullptr;   // clickable container, member of the keypad group
     lv_obj_t *label_ = nullptr;
     std::string placeholder_;
+    std::string accepted_chars_;
     TelexIme ime_;
     bool password_ = false;
     bool focused_ = false;

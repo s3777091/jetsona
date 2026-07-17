@@ -37,6 +37,9 @@ find_library(DL_LIBRARY dl)
 # libcurl: HTTP client for the in-process LLM (Ollama cloud chat completions).
 find_package(CURL REQUIRED)
 
+# SHA-256 + HMAC-SHA512 signatures for the native Zing music client.
+find_package(OpenSSL REQUIRED)
+
 # libdrm is always useful (DRM backend uses it; SDL/kmsdrm also benefits).
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
@@ -174,7 +177,8 @@ target_link_libraries(jetson_fw PRIVATE
     Threads::Threads
     ${DL_LIBRARY}
     ${DRM_LIBRARIES}
-    CURL::libcurl)
+    CURL::libcurl
+    OpenSSL::Crypto)
 
 # forkpty() lives in libutil on older glibc (e.g. JetPack 4.x / Ubuntu 18.04,
 # glibc 2.27). On glibc >= 2.34 it is part of libc, so the library is optional.

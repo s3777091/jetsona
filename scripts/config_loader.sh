@@ -23,7 +23,7 @@ jetson_unquote() {
 
 jetson_is_secret_key() {
     case "$1" in
-        *_API_KEY|*_ACCESS_KEY|*_SECRET_KEY|*_PRIVATE_KEY|*_TOKEN|*_PASSWORD|TS_AUTHKEY)
+        *_API_KEY|*_ACCESS_KEY|*_SECRET_KEY|*_PRIVATE_KEY|*_TOKEN|*_PASSWORD|*_COOKIE|*_COOKIES|TS_AUTHKEY)
             return 0
             ;;
         *)

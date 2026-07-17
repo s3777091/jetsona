@@ -89,14 +89,12 @@ OptimizeWidget::OptimizeWidget(lv_obj_t *parent) {
     lv_obj_set_flex_align(root_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(root_, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // Round blue action button; the "Tối ưu" caption beside it shares the
-    // same clickable hit area.
+    // Compact icon-only action.  The widget already communicates its purpose
+    // through the clean-cache glyph; the old "Tối ưu" caption needlessly
+    // widened the pill on the 800x480 panel.
     button_ = lv_obj_create(root_);
     lv_obj_remove_style_all(button_);
-    lv_obj_set_size(button_, LV_SIZE_CONTENT, 52);
-    lv_obj_set_style_pad_column(button_, 8, 0);
-    lv_obj_set_flex_flow(button_, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(button_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_size(button_, 44, 52);
     lv_obj_clear_flag(button_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(button_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(button_, OnOptimizeClicked, LV_EVENT_CLICKED, this);
@@ -111,17 +109,12 @@ OptimizeWidget::OptimizeWidget(lv_obj_t *parent) {
     lv_obj_set_style_shadow_width(circle, 10, 0);
     lv_obj_set_style_shadow_opa(circle, LV_OPA_30, 0);
     lv_obj_clear_flag(circle, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_center(circle);
 
     auto *icon = jetson::ui::CreateAppIcon(circle, "clean-cache", 24);
     lv_obj_set_style_image_recolor(icon, lv_color_white(), 0);
     lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
     lv_obj_center(icon);
-
-    auto *caption = lv_label_create(button_);
-    lv_obj_set_style_text_font(caption, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(caption, Color(kTextDark), 0);
-    lv_label_set_text(caption, "Tối ưu");
-    lv_obj_clear_flag(caption, LV_OBJ_FLAG_CLICKABLE);
 
     auto *bars = lv_obj_create(root_);
     lv_obj_remove_style_all(bars);

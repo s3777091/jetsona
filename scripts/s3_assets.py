@@ -8,6 +8,8 @@ Usage
 -----
   python3 scripts/s3_assets.py fetch     # build-time: download missing assets
   python3 scripts/s3_assets.py upload     # one-time seed: push ./assets -> bucket
+  python3 scripts/s3_assets.py upload-file icons/app/reload.png
+                                         # upload one changed local asset
   python3 scripts/s3_assets.py list      # debug: list objects in the bucket
   python3 scripts/s3_assets.py fetch-file fonts/cloud/Example.ttf
                                          # runtime: fetch exactly one asset
@@ -225,8 +227,12 @@ def _sha256_hex(data):
 
 
 def _uri_quote(s):
-    # RFC 3986 unreserved + '/' for path segments; for query values too.
-    return urllib.parse.quote(str(s), safe="/-_.~")
+    # SigV4 query keys/values use RFC 3986 unreserved bytes only.  In
+    # particular '/' inside a prefix must be %2F; leaving it literal makes
+    # MinIO calculate a different canonical request (fetch-file -> 403).
+    # Object paths are encoded separately by _path_quote(), which preserves
+    # their segment separators.
+    return urllib.parse.quote(str(s), safe="-_.~")
 
 
 def _path_quote(s):
@@ -439,6 +445,27 @@ def cmd_fetch_file(c, rel):
     print("==> fetch-file: downloaded {} ({} bytes)".format(rel, size))
 
 
+def cmd_upload_files(c, paths):
+    """Upload selected local assets without rewriting the rest of the bucket."""
+    prepared = []
+    for rel in paths:
+        rel = rel.replace("\\", "/")
+        if (not rel or rel.startswith("/") or rel.endswith("/") or
+                any(part in ("", ".", "..") for part in rel.split("/"))):
+            die("upload-file requires safe relative asset paths.", code=2)
+        source = os.path.join(c["assets_dir"], *rel.split("/"))
+        if not os.path.isfile(source):
+            die("local asset '{}' was not found.".format(source), code=2)
+        prepared.append((rel, source))
+    s3 = _make_s3(c)
+    ensure_bucket(s3, c["bucket"], c["region"])
+    for rel, source in prepared:
+        key = (c["prefix"] + rel) if c["prefix"] else rel
+        put_object(s3, c["bucket"], key, source)
+        print("==> upload-file: uploaded {} ({} bytes)".format(
+            rel, os.path.getsize(source)))
+
+
 def _iter_local_files(assets_dir):
     for root, dirs, files in os.walk(assets_dir):
         # Trash is local mutable state, not a source asset to seed back into
@@ -481,10 +508,16 @@ def main(argv):
             die("usage: s3_assets.py fetch-file <relative-object-key>", code=2)
         cmd_fetch_file(cfg(), argv[2])
         return
+    if len(argv) >= 2 and argv[1] == "upload-file":
+        if len(argv) < 3:
+            die("usage: s3_assets.py upload-file <relative-asset-path> [...]", code=2)
+        cmd_upload_files(cfg(), argv[2:])
+        return
     if len(argv) < 2 or argv[1] not in COMMANDS:
-        die("usage: s3_assets.py <fetch|fetch-file|upload|list>\n"
+        die("usage: s3_assets.py <fetch|fetch-file|upload|upload-file|list>\n"
             "  fetch  - download missing/mismatched assets from MinIO\n"
             "  fetch-file <key> - download exactly one on-demand asset\n"
+            "  upload-file <path> - upload exactly one local asset\n"
             "  upload - seed ./assets into the MinIO bucket\n"
             "  list   - list objects in the bucket", code=2)
     COMMANDS[argv[1]](cfg())

@@ -8,6 +8,7 @@
 #include "display/views/chat_view.h"
 #include "display/views/documents_view.h"
 #include "display/views/lock_screen_view.h"
+#include "display/views/music_view.h"
 #include "display/views/pods_view.h"
 #include "display/views/ps_remote_play_view.h"
 #include "display/views/reminders_view.h"
@@ -17,6 +18,7 @@
 #include "display/views/wifi_settings_view.h"
 #include "agent/conversation.h"
 #include "application.h"
+#include "media/player_controller.h"
 #include "net/bluetooth_manager.h"
 #include "net/weather_client.h"
 #include "net/wifi_manager.h"
@@ -380,18 +382,22 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
     // ---- App drawer grid (the DS-02 launcher content) ----
     struct AppDef { const char *icon; const char *label; int id; };
     static const AppDef kApps[kDrawerItemCount] = {
-        {"assets/icons/drawer/agent.png",       "Agent",      0},
         {"assets/icons/drawer/calculator.png",  "Máy tính",   8},
         {"assets/icons/drawer/chromium.png",    "Chromium",   1},
         {"assets/icons/drawer/game.png",        "Trò chơi",   9},
         {"assets/icons/drawer/github.png",      "GitHub",     2},
-        {"assets/icons/drawer/minion.png",      "Minion",     3},
+        {"assets/icons/drawer/agent.png",       "Agent",      3},
         {"assets/icons/drawer/nightowl.png",    "NightOwl",   4},
         {"assets/icons/drawer/photos.png",      "Ảnh",        5},
         {"assets/icons/drawer/pods.png",        "Pods",      10},
         {"assets/icons/drawer/record.png",      "Ghi âm",    11},
         {"assets/icons/drawer/studio.png",      "Studio",    12},
         {"assets/icons/drawer/translate.png",   "Dịch",       7},
+        {"assets/icons/drawer/chat-gpt.png",    "ChatGPT",   13},
+        {"assets/icons/drawer/youtube.png",     "YouTube",   14},
+        {"assets/icons/drawer/messenger.png",   "Messenger", 15},
+        {"assets/icons/drawer/team.png",        "Teams",     16},
+        {"assets/icons/drawer/facebook.png",    "Facebook",  17},
     };
     constexpr int kCols = 4;
     static const int32_t kGridCols[] = {
@@ -543,6 +549,11 @@ void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
     case 9: self->OpenPsRemotePlay(); break;    // drawer "Trò chơi" -> PS5 Remote Play
     case 10: self->OpenPods(); break;           // RunPod GPU manager
     case 12: self->OpenStudio(); break;         // running pod's web IDE
+    case 13: self->OpenChromium("https://chatgpt.com/"); break;
+    case 14: self->OpenChromium("https://www.youtube.com/"); break;
+    case 15: self->OpenChromium("https://www.messenger.com/"); break;
+    case 16: self->OpenChromium("https://teams.microsoft.com/"); break;
+    case 17: self->OpenChromium("https://www.facebook.com/"); break;
     default: self->ShowNotification("Sắp ra mắt", 1500); break;
     }
 }
@@ -553,6 +564,9 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
      * centered sensor pill; notifications morph that same pill. Created before
      * the brightness overlay so the software dimmer affects it too. */
     volume_muted_ = Settings("display").GetBool("muted", false);
+    auto &music_player = jetson::music::PlayerController::Instance();
+    music_player.SetVolume(Settings("display").GetInt("volume", 50));
+    music_player.SetMuted(volume_muted_);
     // Warm the shared app-icon cache (raw bytes + one decode per icon into
     // LVGL's image cache) before the status bar and views start asking for
     // wifi/cellular/bluetooth/speaker states frame by frame.
@@ -804,9 +818,9 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     // Dock icons (in file order): finder, calendar, folder, music, reminders,
     // settings, siri, terminal, separator, trash. The finder icon toggles the app drawer
     // open/closed (no touch swipe on this panel); the folder icon opens the
-    // Documents file browser. Music carries WiFi while Reminders opens its own
-    // persistent task list; Bluetooth remains available from the status bar
-    // and Settings. The wallpaper
+    // Documents file browser. Music opens the native Zing browser/player while
+    // Reminders keeps its own persistent task list; Bluetooth remains available
+    // from the status bar and Settings. The wallpaper
     // gallery lives in the drawer's "Ảnh" tile.
     switch (focused) {
     case 0: // finder -> toggle app drawer
@@ -817,7 +831,7 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
         break;
     case 1: self->OpenCalendar(); break;
     case 2: self->OpenDocuments(); break;
-    case 3: self->OpenWifiSettings(); break;
+    case 3: self->OpenMusic(); break;
     case 4: self->OpenReminders(); break;
     case 5: self->OpenSettings(); break;
     case 6: self->OpenChat(); break;
@@ -861,6 +875,20 @@ void Ds02HomeDisplay::OpenDocuments() {
     documents_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppDocuments); });
     documents_view_->Start();
     NoteAppOpened(kAppDocuments);
+}
+
+void Ds02HomeDisplay::OpenMusic() {
+    DisplayLockGuard lock(this);
+    if (music_view_) { RestoreApp(kAppMusic); return; }
+    if (!root_) root_ = lv_screen_active();
+    music_view_ = std::make_shared<MusicView>(
+        root_, width_, height_,
+        [this]() { music_view_.reset(); OnAppClosed(kAppMusic); });
+    music_view_->SetNotifyCb(
+        [this](const char *message) { ShowNotification(message, 3200); });
+    music_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppMusic); });
+    music_view_->Start();
+    NoteAppOpened(kAppMusic);
 }
 
 void Ds02HomeDisplay::OpenReminders() {
@@ -911,9 +939,9 @@ void Ds02HomeDisplay::OpenSettings() {
     settings_view_->SetVolumeApplier(
         [this](int v, bool muted) {
             volume_muted_ = muted;
-            (void)v;
-            // The global StatusBar reads the persisted "muted" flag and updates
-            // its own icon, so nothing to touch here.
+            auto &player = jetson::music::PlayerController::Instance();
+            player.SetVolume(v);
+            player.SetMuted(muted);
         });
     settings_view_->SetLockRequest([this]() { OpenLockScreen(); });
     settings_view_->SetNotificationApplier(
@@ -1165,6 +1193,7 @@ OverlayView *Ds02HomeDisplay::GetAppView(AppId id) const {
     switch (id) {
     case kAppCalendar:  return calendar_view_.get();
     case kAppDocuments: return documents_view_.get();
+    case kAppMusic:     return music_view_.get();
     case kAppReminders: return reminders_view_.get();
     case kAppSettings:  return settings_view_.get();
     case kAppChat:      return chat_view_.get();
@@ -1258,7 +1287,7 @@ void Ds02HomeDisplay::UpdateDockDots() {
         return std::find(task_queue_.begin(), task_queue_.end(), id) != task_queue_.end();
     };
     static constexpr struct { int dock_index; AppId app; } kDockApps[] = {
-        {1, kAppCalendar}, {2, kAppDocuments}, {4, kAppReminders}, {5, kAppSettings},
+        {1, kAppCalendar}, {2, kAppDocuments}, {3, kAppMusic}, {4, kAppReminders}, {5, kAppSettings},
         {6, kAppChat},     {7, kAppTerminal},  {8, kAppTrash},
     };
     for (const auto &m : kDockApps) {
@@ -1284,13 +1313,14 @@ void Ds02HomeDisplay::OpenAppSwitcher() {
         switch (id) {
         case kAppCalendar:  *path = "assets/icons/dock/calendar.png"; return dock_icon_cache_[1].get();
         case kAppDocuments: *path = "assets/icons/dock/folder.png";   return dock_icon_cache_[2].get();
+        case kAppMusic:     *path = "assets/icons/dock/music.png";    return dock_icon_cache_[3].get();
         case kAppReminders: *path = "assets/icons/dock/reminders.png"; return dock_icon_cache_[4].get();
         case kAppSettings:  *path = "assets/icons/dock/settings.png"; return dock_icon_cache_[5].get();
         case kAppChat:      *path = "assets/icons/dock/siri.png";     return dock_icon_cache_[6].get();
         case kAppTerminal:  *path = "assets/icons/dock/terminal.png"; return dock_icon_cache_[7].get();
         case kAppTrash:     *path = "assets/icons/dock/trash.png";    return dock_icon_cache_[8].get();
         case kAppGallery:   *path = "assets/icons/drawer/photos.png"; return drawer_icon_cache_[kGalleryDrawerIndex].get();
-        case kAppPsRemotePlay: *path = "assets/icons/drawer/game.png"; return drawer_icon_cache_[3].get();
+        case kAppPsRemotePlay: *path = "assets/icons/drawer/game.png"; return drawer_icon_cache_[kPsRemotePlayDrawerIndex].get();
         case kAppPods:      *path = "assets/icons/drawer/pods.png";   return drawer_icon_cache_[kPodsDrawerIndex].get();
         default:            *path = nullptr; return nullptr;
         }
@@ -1443,6 +1473,7 @@ void Ds02HomeDisplay::ToggleVolume() {
     // Persist so the global StatusBar (which reads "muted") reflects the toggle
     // within ~1 s. The bar owns the icon now; no label to update here.
     Settings("display", true).SetBool("muted", volume_muted_);
+    jetson::music::PlayerController::Instance().SetMuted(volume_muted_);
     ShowNotification(volume_muted_ ? "Tắt tiếng" : "Bật tiếng", 1200);
 }
 

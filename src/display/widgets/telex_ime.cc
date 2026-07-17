@@ -257,6 +257,9 @@ void TelexInput::OnKey(lv_event_t *e) {
     } else if (key == LV_KEY_ENTER) {
         lv_obj_send_event(self->root_, LV_EVENT_READY, nullptr);
     } else if (key >= 0x20 && key < 0x7F) {
+        if (!self->accepted_chars_.empty() &&
+            self->accepted_chars_.find((char)key) == std::string::npos)
+            return;
         self->ime_.Feed((char)key);
         self->cursor_visible_ = true;
         self->Refresh();

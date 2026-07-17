@@ -28,6 +28,30 @@ sudo systemctl stop jetson-fw 2>/dev/null || true
 
 echo "==> Installing to /opt/jetson-fw"
 sudo mkdir -p /opt/jetson-fw
+
+# Keep Chromium out of the root service account. Xorg/firmware still need root
+# for the physical display, but the browser can then retain its normal process
+# sandbox and never needs the unsafe --no-sandbox flag.
+CHROMIUM_KIOSK_USER="${CHROMIUM_KIOSK_USER:-jetson-kiosk}"
+if ! id "$CHROMIUM_KIOSK_USER" >/dev/null 2>&1; then
+    echo "==> Creating unprivileged Chromium user: $CHROMIUM_KIOSK_USER"
+    sudo useradd --system --create-home \
+        --home-dir /var/lib/jetson-fw/chromium-home \
+        --shell /usr/sbin/nologin "$CHROMIUM_KIOSK_USER"
+fi
+# Web audio and distro Chromium GPU helpers may need these device groups. The
+# group list differs between JetPack releases, so add only groups that exist.
+for kiosk_group in audio video render; do
+    if getent group "$kiosk_group" >/dev/null 2>&1; then
+        sudo usermod -a -G "$kiosk_group" "$CHROMIUM_KIOSK_USER"
+    fi
+done
+chromium_uid="$(id -u "$CHROMIUM_KIOSK_USER")"
+chromium_gid="$(id -g "$CHROMIUM_KIOSK_USER")"
+sudo install -d -m 700 -o "$chromium_uid" -g "$chromium_gid" \
+    /var/lib/jetson-fw/chromium-home \
+    /var/lib/jetson-fw/chromium-profile
+
 sudo cp "$BUILD_DIR/jetson_fw" /opt/jetson-fw/
 # Chromium kiosk status bar (Dynamic Island strip + keyboard-focus micro-WM).
 # Optional: only built when libx11-dev was present at cmake time.

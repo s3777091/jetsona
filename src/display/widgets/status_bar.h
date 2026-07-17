@@ -17,9 +17,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <thread>
+#include <utility>
+
+class LvglImage;
 
 namespace home {
 
@@ -35,7 +40,8 @@ public:
     void SetLockAction(Action cb) { lock_action_ = std::move(cb); }
     void SetRebootAction(Action cb) { reboot_action_ = std::move(cb); }
     void SetShutdownAction(Action cb) { shutdown_action_ = std::move(cb); }
-    // Clicking the resting island toggles the app switcher (multitasking).
+    // With music active, click toggles compact/expanded now-playing. Otherwise
+    // it opens the app switcher; long-press always keeps the switcher reachable.
     void SetIslandAction(Action cb) { island_action_ = std::move(cb); }
 
     // Island center point in screen coords -- the app switcher blooms from here.
@@ -52,11 +58,38 @@ public:
 private:
     lv_obj_t *status_strip_ = nullptr;
     lv_obj_t *pill_ = nullptr;
+    // Resting island content: Bluetooth device mini icon (controller-mini /
+    // headphones / unknow-device) + connection status ring. Hidden while a
+    // notification blooms the pill.
+    lv_obj_t *island_rest_ = nullptr;
+    lv_obj_t *island_device_icon_ = nullptr;
+    lv_obj_t *island_ring_ = nullptr;
     lv_obj_t *island_content_ = nullptr;
     lv_obj_t *island_icon_bg_ = nullptr;
     lv_obj_t *island_icon_ = nullptr;
     lv_obj_t *island_title_ = nullptr;
     lv_obj_t *island_message_ = nullptr;
+    // Persistent media presentation. Notifications temporarily cover this
+    // subtree, then the island returns to compact now-playing automatically.
+    lv_obj_t *media_content_ = nullptr;
+    lv_obj_t *media_compact_ = nullptr;
+    lv_obj_t *media_compact_art_host_ = nullptr;
+    lv_obj_t *media_compact_art_ = nullptr;
+    lv_obj_t *media_compact_title_ = nullptr;
+    lv_obj_t *media_compact_artist_ = nullptr;
+    lv_obj_t *media_compact_more_ = nullptr;
+    lv_obj_t *media_expanded_ = nullptr;
+    lv_obj_t *media_expanded_art_host_ = nullptr;
+    lv_obj_t *media_expanded_art_ = nullptr;
+    lv_obj_t *media_expanded_title_ = nullptr;
+    lv_obj_t *media_expanded_artist_ = nullptr;
+    lv_obj_t *media_progress_ = nullptr;
+    lv_obj_t *media_elapsed_ = nullptr;
+    lv_obj_t *media_remaining_ = nullptr;
+    lv_obj_t *media_toggle_label_ = nullptr;
+    std::unique_ptr<LvglImage> media_artwork_;
+    std::string media_artwork_path_;
+    uint64_t media_revision_ = 0;
     lv_obj_t *left_cluster_ = nullptr;
     lv_obj_t *right_cluster_ = nullptr;
     lv_obj_t *airplane_icon_ = nullptr;
@@ -92,6 +125,10 @@ private:
     bool low_warned_ = false;
     bool visible_ = true;
     bool island_expanded_ = false;
+    bool notification_visible_ = false;
+    bool media_available_ = false;
+    bool media_expanded_open_ = false;
+    bool suppress_island_click_ = false;
     std::string cached_datetime_;
     std::string cached_lang_;
     bool cached_airplane_mode_ = false;
@@ -107,8 +144,11 @@ private:
     std::atomic<bool> conn_poll_stop_{false};
     std::atomic<int> polled_wifi_signal_{-2};
     std::atomic<int> polled_bt_powered_{-1}; // -1 unknown, 0 off, 1 on
+    // jetson::BtDeviceKind of the connected device (-1 = not polled yet).
+    std::atomic<int> polled_bt_device_{-1};
     int cached_wifi_signal_ = -3;            // last value applied to the UI
     int cached_bt_powered_ = -2;
+    int cached_bt_device_ = -2;
 
     Action wifi_action_, bt_action_, lock_action_, reboot_action_, shutdown_action_;
     Action island_action_;
@@ -126,6 +166,14 @@ private:
                            int duration_ms);
     void AnimateIslandSize(int width, int height, bool collapsing);
     void CollapseIsland(bool animated = true);
+    // Show island_rest_ only while the pill is a plain resting island (no
+    // notification bloom, no now-playing surface).
+    void SyncIslandRest();
+    void BuildMediaContent();
+    void RefreshMedia(bool force_layout = false);
+    void ShowMediaPresentation(bool animate);
+    void HideMediaContent();
+    void LoadMediaArtwork(const std::string &path);
     void AnimateDrop(lv_obj_t *obj, bool show);
 
     static void OnTimer(lv_timer_t *t);
@@ -136,6 +184,10 @@ private:
     static void OnWifiClick(lv_event_t *e);
     static void OnBtClick(lv_event_t *e);
     static void OnIslandClick(lv_event_t *e);
+    static void OnIslandLongPress(lv_event_t *e);
+    static void OnMediaPrevious(lv_event_t *e);
+    static void OnMediaToggle(lv_event_t *e);
+    static void OnMediaNext(lv_event_t *e);
     static void OnPowerClick(lv_event_t *e);
     static void OnPowerLock(lv_event_t *e);
     static void OnPowerReboot(lv_event_t *e);

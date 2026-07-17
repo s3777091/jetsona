@@ -13,9 +13,11 @@ sudo apt-get install -y \
     python3 \
     libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev \
     libsdl2-dev libsdl2-ttf-dev \
-    libcurl4-openssl-dev libopus-dev libasound2-dev \
+    libcurl4-openssl-dev libssl-dev libopus-dev libasound2-dev mpv \
     bluez bluez-tools rfkill \
-    network-manager
+    network-manager \
+    xserver-xorg-video-all xserver-xorg-input-libinput \
+    x11-xkb-utils x11-xserver-utils xinit libx11-dev chromium-browser
 
 # nlohmann json v3 single-header -> /usr/local/include (GCC searches it before
 # /usr/include, so this shadows bionic's v2.1.1 nlohmann-json-dev header).

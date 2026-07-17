@@ -8,6 +8,7 @@
  */
 
 #include "display/views/overlay_view.h"
+#include "display/widgets/telex_ime.h"
 
 #include <lvgl.h>
 
@@ -47,7 +48,7 @@ private:
 
     // PIN bottom sheet.
     lv_obj_t *pin_modal_ = nullptr;
-    lv_obj_t *pin_input_ = nullptr;
+    TelexInput *pin_input_ = nullptr;
     lv_obj_t *pin_error_ = nullptr;
 
     // Settings bottom sheet.

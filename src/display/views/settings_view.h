@@ -114,6 +114,7 @@ private:
 
     // WiFi pane.
     lv_obj_t *wifi_switch_ = nullptr;
+    lv_obj_t *wifi_reload_btn_ = nullptr;
     lv_obj_t *wifi_list_ = nullptr;
     std::vector<jetson::WifiNetwork> wifi_nets_;
     bool wifi_scanned_ = false;
@@ -122,6 +123,7 @@ private:
 
     // Bluetooth pane.
     lv_obj_t *bt_switch_ = nullptr;
+    lv_obj_t *bt_reload_btn_ = nullptr;
     lv_obj_t *bt_list_ = nullptr;
     std::vector<jetson::BtDevice> bt_devs_;
     bool bt_scanned_ = false;
@@ -188,6 +190,7 @@ private:
     lv_obj_t *MakeSwitch(lv_obj_t *parent, bool on, lv_event_cb_t cb);
     lv_obj_t *MakeSlider(lv_obj_t *parent, int minv, int maxv, int val, lv_event_cb_t cb);
     lv_obj_t *MakeButton(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb);
+    lv_obj_t *MakeReloadButton(lv_obj_t *parent, lv_event_cb_t cb);
     lv_obj_t *DisplayCard();
     lv_obj_t *DisplayRow(lv_obj_t *card, const char *title, const char *sub = nullptr,
                          int height = 48);
@@ -233,6 +236,7 @@ private:
 
     // ---- WiFi ----
     void WifiRefreshSwitch();
+    void WifiLoadState();
     void WifiRescan();
     void WifiRenderList();
     void WifiCreateRow(const jetson::WifiNetwork &n);
@@ -244,6 +248,7 @@ private:
 
     // ---- Bluetooth ----
     void BtRefreshSwitch();
+    void BtLoadState();
     void BtRescan();
     void BtRenderList();
     void BtCreateRow(const jetson::BtDevice &d);

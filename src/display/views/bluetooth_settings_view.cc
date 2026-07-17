@@ -149,6 +149,13 @@ lv_obj_t *BluetoothSettingsView::CreateRow(const jetson::BtDevice &dev) {
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
+    // Leading device-category icon from the scan (controller-mini /
+    // headphones / unknow-device).
+    auto *kind_icon =
+        jetson::ui::CreateAppIcon(row, jetson::BtKindIconName(dev.kind), 24);
+    lv_obj_set_style_image_recolor(kind_icon, lv_color_white(), 0);
+    lv_obj_set_style_image_recolor_opa(kind_icon, LV_OPA_COVER, 0);
+
     // Left: name (white) over address (grey), stacked in a column.
     auto *left = lv_obj_create(row);
     lv_obj_remove_style_all(left);

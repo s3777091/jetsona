@@ -2,7 +2,9 @@
 #include "display/common/airplane_icon.h"
 #include "display/common/lvgl_utils.h"
 #include "display/core/app_icons.h"
+#include "display/core/lvgl_image.h"
 #include "fonts.h"
+#include "media/player_controller.h"
 #include "net/airplane_mode.h"
 #include "net/bluetooth_manager.h"
 #include "net/vpn_manager.h"
@@ -34,6 +36,10 @@ constexpr int kPillW = 132;
 constexpr int kPillH = 36;
 constexpr int kExpandedW = 430;
 constexpr int kExpandedH = 72;
+constexpr int kMediaCompactW = 224;
+constexpr int kMediaCompactH = 40;
+constexpr int kMediaExpandedW = 430;
+constexpr int kMediaExpandedH = 126;
 constexpr int kTopInset = 3;
 constexpr int kAutoCloseMs = 6000;
 
@@ -51,6 +57,55 @@ const char *CellularIconForSignal(int signal) {
     if (signal >= 55) return "cellular-4";
     if (signal >= 30) return "cellular-3";
     return "cellular-2";
+}
+
+void RemoveInteraction(lv_obj_t *obj) {
+    if (!obj) return;
+    lv_obj_clear_flag(obj,
+        (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+}
+
+std::string MediaTime(int64_t milliseconds) {
+    const int seconds = static_cast<int>(std::max<int64_t>(0, milliseconds) / 1000);
+    char out[16];
+    std::snprintf(out, sizeof(out), "%d:%02d", seconds / 60, seconds % 60);
+    return out;
+}
+
+void ImageDimensions(const lv_img_dsc_t *dsc, int &w, int &h) {
+    w = h = 240;
+    if (!dsc || !dsc->data || dsc->data_size < 24) return;
+    const uint8_t *d = dsc->data;
+    const size_t n = dsc->data_size;
+    if (d[0] == 0x89 && d[1] == 0x50) {
+        w = (d[16] << 24) | (d[17] << 16) | (d[18] << 8) | d[19];
+        h = (d[20] << 24) | (d[21] << 16) | (d[22] << 8) | d[23];
+        return;
+    }
+    if (d[0] != 0xff || d[1] != 0xd8) return;
+    size_t offset = 2;
+    while (offset + 8 < n) {
+        if (d[offset] != 0xff) { ++offset; continue; }
+        while (offset < n && d[offset] == 0xff) ++offset;
+        if (offset >= n) break;
+        const uint8_t marker = d[offset++];
+        if (marker == 0xd8 || marker == 0xd9) continue;
+        if (offset + 2 > n) break;
+        const size_t length = (static_cast<size_t>(d[offset]) << 8) |
+                              d[offset + 1];
+        if (length < 2 || offset + length > n) break;
+        const bool start_of_frame =
+            (marker >= 0xc0 && marker <= 0xc3) ||
+            (marker >= 0xc5 && marker <= 0xc7) ||
+            (marker >= 0xc9 && marker <= 0xcb) ||
+            (marker >= 0xcd && marker <= 0xcf);
+        if (start_of_frame && length >= 7) {
+            h = (d[offset + 3] << 8) | d[offset + 4];
+            w = (d[offset + 5] << 8) | d[offset + 6];
+            return;
+        }
+        offset += length;
+    }
 }
 } // namespace
 
@@ -211,12 +266,40 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_set_style_shadow_width(pill_, 12, 0);
     lv_obj_set_style_shadow_opa(pill_, LV_OPA_30, 0);
     lv_obj_clear_flag(pill_, LV_OBJ_FLAG_SCROLLABLE);
-    // A click on the resting island opens the app switcher (like the iPhone
-    // app-switcher gesture). The island keeps working as the notification
-    // surface; a click while expanded simply toggles the switcher too.
+    // With music active, a click expands/collapses now-playing. Long-press
+    // retains the app-switcher gesture; without music, a normal click opens it.
     lv_obj_add_flag(pill_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(pill_, 6);
     lv_obj_add_event_cb(pill_, OnIslandClick, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(pill_, OnIslandLongPress, LV_EVENT_LONG_PRESSED, this);
+
+    // Resting island content: Bluetooth device mini icon on the left and a
+    // connection-status ring on the right (green while a device is connected,
+    // dim gray otherwise). The icon swaps per polled device kind:
+    // controller-mini / headphones / unknow-device. Non-clickable so the
+    // island click-to-switcher keeps working.
+    island_rest_ = lv_obj_create(pill_);
+    lv_obj_remove_style_all(island_rest_);
+    lv_obj_set_size(island_rest_, lv_pct(100), lv_pct(100));
+    lv_obj_clear_flag(island_rest_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    island_device_icon_ = jetson::ui::CreateAppIcon(island_rest_, "unknow-device", 18);
+    lv_obj_set_style_image_recolor(island_device_icon_, lv_color_white(), 0);
+    lv_obj_set_style_image_recolor_opa(island_device_icon_, LV_OPA_COVER, 0);
+    lv_obj_align(island_device_icon_, LV_ALIGN_LEFT_MID, 16, 0);
+    lv_obj_add_flag(island_device_icon_, LV_OBJ_FLAG_HIDDEN);
+
+    island_ring_ = lv_obj_create(island_rest_);
+    lv_obj_remove_style_all(island_ring_);
+    lv_obj_set_size(island_ring_, 18, 18);
+    lv_obj_align(island_ring_, LV_ALIGN_RIGHT_MID, -16, 0);
+    lv_obj_set_style_radius(island_ring_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(island_ring_, 3, 0);
+    lv_obj_set_style_border_color(island_ring_, Color(0x3a3a3c), 0);
+    lv_obj_set_style_bg_opa(island_ring_, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(island_ring_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     // Expanded content is already laid out inside the pill, but kept hidden
     // until the pill has started to bloom. This avoids a separate toast panel.
@@ -258,6 +341,8 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_label_set_long_mode(island_message_, LV_LABEL_LONG_DOT);
     lv_label_set_text(island_message_, "");
 
+    BuildMediaContent();
+
     // ---- Power menu drop (below pill center, on layer_top; no full-screen
     // backdrop -- a full-screen clickable on layer_top intercepted mouse input,
     // so the menu now dismisses via the power icon toggle + an auto-close
@@ -278,16 +363,286 @@ StatusBar::StatusBar(lv_obj_t *parent) {
                 if (jetson::IsAirplaneModeEnabled()) {
                     polled_wifi_signal_.store(-1);
                     polled_bt_powered_.store(0);
+                    polled_bt_device_.store(
+                        static_cast<int>(jetson::BtDeviceKind::None));
                 } else {
                     polled_wifi_signal_.store(
                         jetson::WifiManager::Instance().ActiveSignal());
-                    polled_bt_powered_.store(
-                        jetson::BluetoothManager::Instance().IsPowered() ? 1 : 0);
+                    auto &bt = jetson::BluetoothManager::Instance();
+                    const bool bt_on = bt.IsPowered();
+                    polled_bt_powered_.store(bt_on ? 1 : 0);
+                    // Device kind drives the island mini icon + status ring.
+                    polled_bt_device_.store(static_cast<int>(
+                        bt_on ? bt.ConnectedDeviceKind()
+                              : jetson::BtDeviceKind::None));
                 }
             }
             std::this_thread::sleep_for(kConnPollTick);
         }
     });
+}
+
+void StatusBar::BuildMediaContent() {
+    media_content_ = lv_obj_create(pill_);
+    lv_obj_remove_style_all(media_content_);
+    lv_obj_set_size(media_content_, lv_pct(100), lv_pct(100));
+    RemoveInteraction(media_content_);
+    lv_obj_add_flag(media_content_, LV_OBJ_FLAG_HIDDEN);
+
+    auto create_art_host = [](lv_obj_t *parent, int size, int x, int y) {
+        auto *host = lv_obj_create(parent);
+        lv_obj_remove_style_all(host);
+        lv_obj_set_size(host, size, size);
+        lv_obj_set_pos(host, x, y);
+        lv_obj_set_style_radius(host, size >= 40 ? 9 : 7, 0);
+        lv_obj_set_style_clip_corner(host, true, 0);
+        lv_obj_set_style_bg_color(host, Color(0x27213b), 0);
+        lv_obj_set_style_bg_grad_color(host, Color(0x101827), 0);
+        lv_obj_set_style_bg_grad_dir(host, LV_GRAD_DIR_VER, 0);
+        lv_obj_set_style_bg_opa(host, LV_OPA_COVER, 0);
+        RemoveInteraction(host);
+        auto *fallback = lv_label_create(host);
+        lv_obj_set_style_text_font(fallback, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(fallback, Color(0x22d3ee), 0);
+        lv_label_set_text(fallback, LV_SYMBOL_AUDIO);
+        lv_obj_center(fallback);
+        RemoveInteraction(fallback);
+        return host;
+    };
+
+    // Compact now-playing state (reference image 5).
+    media_compact_ = lv_obj_create(media_content_);
+    lv_obj_remove_style_all(media_compact_);
+    lv_obj_set_size(media_compact_, kMediaCompactW, kMediaCompactH);
+    RemoveInteraction(media_compact_);
+    media_compact_art_host_ = create_art_host(media_compact_, 30, 6, 5);
+
+    media_compact_title_ = lv_label_create(media_compact_);
+    lv_obj_set_pos(media_compact_title_, 44, 3);
+    lv_obj_set_size(media_compact_title_, 142, 19);
+    lv_obj_set_style_text_font(media_compact_title_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(media_compact_title_, lv_color_white(), 0);
+    lv_label_set_long_mode(media_compact_title_, LV_LABEL_LONG_DOT);
+    RemoveInteraction(media_compact_title_);
+
+    media_compact_artist_ = lv_label_create(media_compact_);
+    lv_obj_set_pos(media_compact_artist_, 44, 20);
+    lv_obj_set_size(media_compact_artist_, 142, 17);
+    lv_obj_set_style_text_font(media_compact_artist_, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(media_compact_artist_, Color(0x9ca3af), 0);
+    lv_label_set_long_mode(media_compact_artist_, LV_LABEL_LONG_DOT);
+    RemoveInteraction(media_compact_artist_);
+
+    media_compact_more_ = lv_label_create(media_compact_);
+    lv_obj_set_pos(media_compact_more_, 191, 7);
+    lv_obj_set_size(media_compact_more_, 28, 22);
+    lv_obj_set_style_text_font(media_compact_more_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(media_compact_more_, Color(0x777b87), 0);
+    lv_label_set_text(media_compact_more_, "•••");
+    RemoveInteraction(media_compact_more_);
+
+    // Expanded controls (reference image 4; waveform intentionally omitted).
+    media_expanded_ = lv_obj_create(media_content_);
+    lv_obj_remove_style_all(media_expanded_);
+    lv_obj_set_size(media_expanded_, kMediaExpandedW, kMediaExpandedH);
+    RemoveInteraction(media_expanded_);
+    lv_obj_add_flag(media_expanded_, LV_OBJ_FLAG_HIDDEN);
+    media_expanded_art_host_ = create_art_host(media_expanded_, 48, 14, 12);
+
+    media_expanded_title_ = lv_label_create(media_expanded_);
+    lv_obj_set_pos(media_expanded_title_, 74, 10);
+    lv_obj_set_size(media_expanded_title_, 328, 24);
+    lv_obj_set_style_text_font(media_expanded_title_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(media_expanded_title_, lv_color_white(), 0);
+    lv_label_set_long_mode(media_expanded_title_, LV_LABEL_LONG_DOT);
+    RemoveInteraction(media_expanded_title_);
+
+    media_expanded_artist_ = lv_label_create(media_expanded_);
+    lv_obj_set_pos(media_expanded_artist_, 74, 35);
+    lv_obj_set_size(media_expanded_artist_, 328, 20);
+    lv_obj_set_style_text_font(media_expanded_artist_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(media_expanded_artist_, Color(0x9ca3af), 0);
+    lv_label_set_long_mode(media_expanded_artist_, LV_LABEL_LONG_DOT);
+    RemoveInteraction(media_expanded_artist_);
+
+    media_progress_ = lv_bar_create(media_expanded_);
+    lv_obj_set_size(media_progress_, kMediaExpandedW - 28, 4);
+    lv_obj_set_pos(media_progress_, 14, 64);
+    lv_bar_set_range(media_progress_, 0, 1000);
+    lv_bar_set_value(media_progress_, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(media_progress_, Color(0x30313a), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(media_progress_, Color(0x22d3ee), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(media_progress_, 2, LV_PART_MAIN);
+    lv_obj_set_style_radius(media_progress_, 2, LV_PART_INDICATOR);
+    RemoveInteraction(media_progress_);
+
+    media_elapsed_ = lv_label_create(media_expanded_);
+    lv_obj_set_pos(media_elapsed_, 14, 71);
+    lv_obj_set_size(media_elapsed_, 58, 18);
+    lv_obj_set_style_text_font(media_elapsed_, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(media_elapsed_, Color(0x9ca3af), 0);
+    RemoveInteraction(media_elapsed_);
+    media_remaining_ = lv_label_create(media_expanded_);
+    lv_obj_set_pos(media_remaining_, kMediaExpandedW - 72, 71);
+    lv_obj_set_size(media_remaining_, 58, 18);
+    lv_obj_set_style_text_align(media_remaining_, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_font(media_remaining_, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(media_remaining_, Color(0x9ca3af), 0);
+    RemoveInteraction(media_remaining_);
+
+    auto create_control = [this](const char *symbol, int x, int size,
+                                 lv_event_cb_t callback, lv_obj_t **label_out) {
+        auto *button = lv_obj_create(media_expanded_);
+        lv_obj_remove_style_all(button);
+        lv_obj_set_size(button, size, size);
+        lv_obj_set_pos(button, x, 86);
+        lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(button, Color(0x25262d), 0);
+        lv_obj_set_style_bg_color(button, Color(0x22d3ee), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, this);
+        auto *label = lv_label_create(button);
+        lv_obj_set_style_text_font(label, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(label, lv_color_white(), 0);
+        lv_label_set_text(label, symbol);
+        lv_obj_center(label);
+        RemoveInteraction(label);
+        if (label_out) *label_out = label;
+    };
+    create_control(LV_SYMBOL_PREV, 137, 34, OnMediaPrevious, nullptr);
+    create_control(LV_SYMBOL_PLAY, 190, 40, OnMediaToggle, &media_toggle_label_);
+    create_control(LV_SYMBOL_NEXT, 249, 34, OnMediaNext, nullptr);
+}
+
+void StatusBar::SyncIslandRest() {
+    if (!island_rest_) return;
+    if (!notification_visible_ && !media_available_)
+        lv_obj_clear_flag(island_rest_, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_add_flag(island_rest_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void StatusBar::HideMediaContent() {
+    if (media_content_) lv_obj_add_flag(media_content_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void StatusBar::LoadMediaArtwork(const std::string &path) {
+    if (path == media_artwork_path_) return;
+    media_artwork_path_ = path;
+    if (media_compact_art_) {
+        lv_image_set_src(media_compact_art_, nullptr);
+        lv_obj_del(media_compact_art_);
+        media_compact_art_ = nullptr;
+    }
+    if (media_expanded_art_) {
+        lv_image_set_src(media_expanded_art_, nullptr);
+        lv_obj_del(media_expanded_art_);
+        media_expanded_art_ = nullptr;
+    }
+    if (media_artwork_)
+        lv_image_cache_drop(media_artwork_->image_dsc());
+    media_artwork_.reset();
+    if (path.empty()) return;
+    media_artwork_ = LvglImageFromFile(path);
+    if (!media_artwork_) return;
+
+    int w, h;
+    ImageDimensions(media_artwork_->image_dsc(), w, h);
+    auto create_image = [&](lv_obj_t *host, int size) {
+        auto *image = lv_image_create(host);
+        lv_image_set_src(image, media_artwork_->image_dsc());
+        lv_obj_set_size(image, w, h);
+        lv_image_set_scale(image,
+            static_cast<uint32_t>(size * 256 / std::max(1, std::min(w, h))));
+        lv_image_set_pivot(image, w / 2, h / 2);
+        lv_obj_center(image);
+        RemoveInteraction(image);
+        return image;
+    };
+    media_compact_art_ = create_image(media_compact_art_host_, 30);
+    media_expanded_art_ = create_image(media_expanded_art_host_, 48);
+}
+
+void StatusBar::ShowMediaPresentation(bool animate) {
+    if (!visible_ || !media_available_ || notification_visible_ || !media_content_)
+        return;
+    if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN)) return;
+    if (island_content_) lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
+    SyncIslandRest();
+    lv_obj_clear_flag(media_content_, LV_OBJ_FLAG_HIDDEN);
+    if (media_expanded_open_) {
+        lv_obj_add_flag(media_compact_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(media_expanded_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(media_compact_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(media_expanded_, LV_OBJ_FLAG_HIDDEN);
+    }
+    const int target_w = media_expanded_open_ ? kMediaExpandedW : kMediaCompactW;
+    const int target_h = media_expanded_open_ ? kMediaExpandedH : kMediaCompactH;
+    lv_obj_set_style_border_color(pill_, Color(0x22d3ee), 0);
+    lv_obj_set_style_border_opa(pill_, LV_OPA_40, 0);
+    lv_obj_update_layout(pill_);
+    if (animate && (lv_obj_get_width(pill_) != target_w ||
+                    lv_obj_get_height(pill_) != target_h)) {
+        AnimateIslandSize(target_w, target_h, false);
+    } else {
+        lv_obj_set_size(pill_, target_w, target_h);
+        lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
+    }
+    island_expanded_ = media_expanded_open_;
+}
+
+void StatusBar::RefreshMedia(bool force_layout) {
+    const auto snapshot = jetson::music::PlayerController::Instance().Snapshot();
+    const bool available = snapshot.has_current &&
+                           snapshot.status != jetson::music::PlaybackStatus::Idle;
+    if (!available) {
+        const bool was_available = media_available_;
+        media_available_ = false;
+        media_expanded_open_ = false;
+        HideMediaContent();
+        SyncIslandRest();
+        if (was_available && !notification_visible_ && pill_) {
+            lv_anim_delete(pill_, OnIslandWidth);
+            lv_anim_delete(pill_, OnIslandHeight);
+            lv_obj_set_size(pill_, kPillW, kPillH);
+            lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
+            lv_obj_set_style_border_color(pill_, Color(0x253142), 0);
+        }
+        return;
+    }
+
+    media_available_ = true;
+    lv_label_set_text(media_compact_title_, snapshot.current.title.c_str());
+    lv_label_set_text(media_compact_artist_, snapshot.current.artist.c_str());
+    lv_label_set_text(media_expanded_title_, snapshot.current.title.c_str());
+    lv_label_set_text(media_expanded_artist_,
+        snapshot.status == jetson::music::PlaybackStatus::Error &&
+                !snapshot.error.empty()
+            ? snapshot.error.c_str()
+            : snapshot.current.artist.c_str());
+    const bool playing = snapshot.status == jetson::music::PlaybackStatus::Playing ||
+                         snapshot.status == jetson::music::PlaybackStatus::Resolving ||
+                         snapshot.status == jetson::music::PlaybackStatus::Buffering;
+    lv_label_set_text(media_toggle_label_, playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    const int progress = snapshot.duration_ms > 0
+        ? static_cast<int>(std::clamp<int64_t>(
+              snapshot.position_ms * 1000 / snapshot.duration_ms, 0, 1000))
+        : 0;
+    lv_bar_set_value(media_progress_, progress, LV_ANIM_OFF);
+    const std::string elapsed = MediaTime(snapshot.position_ms);
+    const std::string remaining = "-" +
+        MediaTime(std::max<int64_t>(0, snapshot.duration_ms - snapshot.position_ms));
+    lv_label_set_text(media_elapsed_, elapsed.c_str());
+    lv_label_set_text(media_remaining_, remaining.c_str());
+    if (force_layout || snapshot.revision != media_revision_ ||
+        snapshot.current.artwork_path != media_artwork_path_) {
+        media_revision_ = snapshot.revision;
+        LoadMediaArtwork(snapshot.current.artwork_path);
+    }
+    if (!notification_visible_) ShowMediaPresentation(force_layout);
 }
 
 void StatusBar::BuildPowerMenu() {
@@ -343,6 +698,10 @@ StatusBar::~StatusBar() {
     if (power_menu_) { lv_obj_del(power_menu_); power_menu_ = nullptr; }
     if (pill_) { lv_obj_del(pill_); pill_ = nullptr; }
     if (status_strip_) { lv_obj_del(status_strip_); status_strip_ = nullptr; }
+    if (media_artwork_) {
+        lv_image_cache_drop(media_artwork_->image_dsc());
+        media_artwork_.reset();
+    }
 }
 
 void StatusBar::Hide() {
@@ -360,8 +719,12 @@ void StatusBar::Hide() {
         lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
         lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
     }
+    HideMediaContent();
     if (status_strip_) lv_obj_add_flag(status_strip_, LV_OBJ_FLAG_HIDDEN);
     island_expanded_ = false;
+    notification_visible_ = false;
+    media_expanded_open_ = false;
+    SyncIslandRest();
     if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN))
         HidePowerMenu();
 }
@@ -370,6 +733,7 @@ void StatusBar::Show() {
     visible_ = true;
     if (status_strip_) lv_obj_clear_flag(status_strip_, LV_OBJ_FLAG_HIDDEN);
     if (pill_) lv_obj_clear_flag(pill_, LV_OBJ_FLAG_HIDDEN);
+    RefreshMedia(true);
 }
 
 void StatusBar::Refresh() {
@@ -377,6 +741,7 @@ void StatusBar::Refresh() {
     RefreshBattery();
     RefreshLang();
     RefreshConnectivity();
+    RefreshMedia();
 }
 
 void StatusBar::RefreshConnectivity() {
@@ -384,9 +749,11 @@ void StatusBar::RefreshConnectivity() {
     const bool vpn = jetson::VpnManager::Instance().CachedEnabled();
     const int wifi_signal = polled_wifi_signal_.load();
     const int bt_powered = polled_bt_powered_.load();
+    const int bt_device_polled = polled_bt_device_.load();
     if (airplane_state_read_ && airplane == cached_airplane_mode_ &&
         vpn_state_read_ && vpn == cached_vpn_enabled_ &&
-        wifi_signal == cached_wifi_signal_ && bt_powered == cached_bt_powered_)
+        wifi_signal == cached_wifi_signal_ && bt_powered == cached_bt_powered_ &&
+        bt_device_polled == cached_bt_device_)
         return;
     airplane_state_read_ = true;
     cached_airplane_mode_ = airplane;
@@ -394,6 +761,7 @@ void StatusBar::RefreshConnectivity() {
     cached_vpn_enabled_ = vpn;
     cached_wifi_signal_ = wifi_signal;
     cached_bt_powered_ = bt_powered;
+    cached_bt_device_ = bt_device_polled;
 
     if (airplane_icon_) {
         if (airplane) lv_obj_clear_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
@@ -422,6 +790,27 @@ void StatusBar::RefreshConnectivity() {
                                bt_powered == 0 ? "no-bluetooh" : "bluetooth",
                                kStatusIconPx);
     }
+
+    // Resting island: device-type mini icon + status ring. The ring turns
+    // green while any Bluetooth device is connected; without one the icon
+    // hides and the ring dims (-1 = not polled yet behaves like "none").
+    const int bt_device = airplane
+        ? static_cast<int>(jetson::BtDeviceKind::None) : cached_bt_device_;
+    if (island_device_icon_) {
+        const auto kind = static_cast<jetson::BtDeviceKind>(
+            bt_device > 0 ? bt_device
+                          : static_cast<int>(jetson::BtDeviceKind::None));
+        if (kind == jetson::BtDeviceKind::None) {
+            lv_obj_add_flag(island_device_icon_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            jetson::ui::SetAppIcon(island_device_icon_,
+                                   jetson::BtKindIconName(kind), 18);
+            lv_obj_clear_flag(island_device_icon_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (island_ring_)
+        lv_obj_set_style_border_color(
+            island_ring_, Color(bt_device > 0 ? 0x30d158 : 0x3a3a3c), 0);
 }
 
 void StatusBar::RefreshClock() {
@@ -558,6 +947,10 @@ void StatusBar::ShowIslandMessage(const char *title, const char *text,
     lv_obj_set_style_border_color(pill_, Color(accent), 0);
     lv_obj_set_style_border_opa(pill_, LV_OPA_40, 0);
 
+    HideMediaContent();
+    media_expanded_open_ = false;
+    notification_visible_ = true;
+    SyncIslandRest();
     lv_obj_clear_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
     lv_anim_delete(island_content_, OnIslandContentOpa);
     lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
@@ -591,11 +984,15 @@ void StatusBar::CollapseIsland(bool animated) {
         lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
         lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
         lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
+        HideMediaContent();
         lv_obj_set_style_border_color(pill_, Color(0x253142), 0);
         island_expanded_ = false;
+        notification_visible_ = false;
+        media_expanded_open_ = false;
+        SyncIslandRest();
         return;
     }
-    if (!island_expanded_) return;
+    if (!island_expanded_ && !notification_visible_) return;
 
     lv_anim_t content;
     lv_anim_init(&content);
@@ -605,7 +1002,9 @@ void StatusBar::CollapseIsland(bool animated) {
     lv_anim_set_time(&content, 180);
     lv_anim_set_path_cb(&content, lv_anim_path_ease_in);
     lv_anim_start(&content);
-    AnimateIslandSize(kPillW, kPillH, true);
+    media_expanded_open_ = false;
+    AnimateIslandSize(media_available_ ? kMediaCompactW : kPillW,
+                      media_available_ ? kMediaCompactH : kPillH, true);
 }
 
 void StatusBar::AnimateDrop(lv_obj_t *obj, bool show) {
@@ -659,6 +1058,7 @@ void StatusBar::ShowPowerMenu() {
 void StatusBar::HidePowerMenu() {
     if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
     if (power_menu_) AnimateDrop(power_menu_, false);
+    RefreshMedia(true);
 }
 
 void StatusBar::OnTimer(lv_timer_t *t) {
@@ -706,7 +1106,49 @@ void StatusBar::OnWifiClick(lv_event_t *e) {
 void StatusBar::OnIslandClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
+    if (self->suppress_island_click_) {
+        self->suppress_island_click_ = false;
+        return;
+    }
+    const auto snapshot = jetson::music::PlayerController::Instance().Snapshot();
+    if (snapshot.has_current &&
+        snapshot.status != jetson::music::PlaybackStatus::Idle) {
+        if (self->notif_timer_) {
+            lv_timer_del(self->notif_timer_);
+            self->notif_timer_ = nullptr;
+        }
+        if (self->island_content_) {
+            lv_anim_delete(self->island_content_, OnIslandContentOpa);
+            lv_obj_set_style_opa(self->island_content_, LV_OPA_0, 0);
+            lv_obj_add_flag(self->island_content_, LV_OBJ_FLAG_HIDDEN);
+        }
+        self->notification_visible_ = false;
+        self->media_expanded_open_ = !self->media_expanded_open_;
+        self->RefreshMedia(true);
+        return;
+    }
     if (self->island_action_) self->island_action_();
+}
+
+void StatusBar::OnIslandLongPress(lv_event_t *e) {
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    LvglLockGuard lock;
+    self->suppress_island_click_ = true;
+    self->media_expanded_open_ = false;
+    self->RefreshMedia(true);
+    if (self->island_action_) self->island_action_();
+}
+
+void StatusBar::OnMediaPrevious(lv_event_t *e) {
+    jetson::music::PlayerController::Instance().Previous();
+}
+
+void StatusBar::OnMediaToggle(lv_event_t *e) {
+    jetson::music::PlayerController::Instance().Toggle();
+}
+
+void StatusBar::OnMediaNext(lv_event_t *e) {
+    jetson::music::PlayerController::Instance().Next();
 }
 
 int StatusBar::IslandCenterX() const {
@@ -781,14 +1223,21 @@ void StatusBar::OnIslandContentOpa(void *var, int32_t v) {
 void StatusBar::OnIslandCollapsed(lv_anim_t *a) {
     auto *self = static_cast<StatusBar *>(lv_anim_get_user_data(a));
     if (!self || !self->pill_) return;
-    lv_obj_set_size(self->pill_, kPillW, kPillH);
-    lv_obj_align(self->pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
     if (self->island_content_) {
         lv_obj_set_style_opa(self->island_content_, LV_OPA_0, 0);
         lv_obj_add_flag(self->island_content_, LV_OBJ_FLAG_HIDDEN);
     }
-    lv_obj_set_style_border_color(self->pill_, Color(0x253142), 0);
+    self->notification_visible_ = false;
+    self->media_expanded_open_ = false;
     self->island_expanded_ = false;
+    self->SyncIslandRest();
+    if (self->media_available_) {
+        self->RefreshMedia(true);
+    } else {
+        lv_obj_set_size(self->pill_, kPillW, kPillH);
+        lv_obj_align(self->pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
+        lv_obj_set_style_border_color(self->pill_, Color(0x253142), 0);
+    }
 }
 
 void StatusBar::OnDropOpa(void *var, int32_t v) {

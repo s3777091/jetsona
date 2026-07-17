@@ -21,12 +21,34 @@
 
 namespace jetson {
 
+// Coarse device category derived from BlueZ's `Icon` hint (`bluetoothctl
+// info` prints e.g. "Icon: input-gaming" for gamepads, "Icon: audio-headset"
+// for headphones). The numeric values are stable so the UI can publish the
+// kind through an atomic<int>.
+enum class BtDeviceKind {
+    None = 0,        // no connected device
+    Controller = 1,  // gamepad / joystick
+    Headphones = 2,  // headset / headphones / other audio sink
+    Unknown = 3,     // device present but not a recognized category
+};
+
+// Status-icon asset (assets/icons/app) for a device category. Single source
+// for the Dynamic Island mini icon and the Bluetooth device lists.
+inline const char *BtKindIconName(BtDeviceKind kind) {
+    switch (kind) {
+        case BtDeviceKind::Controller: return "controller-mini";
+        case BtDeviceKind::Headphones: return "headphones";
+        default: return "unknow-device";
+    }
+}
+
 struct BtDevice {
     std::string address;   // "AA:BB:CC:DD:EE:FF"
     std::string name;
     bool paired = false;
     bool connected = false;
     int rssi = 0;          // dBm, negative (0 if unknown)
+    BtDeviceKind kind = BtDeviceKind::Unknown;
 };
 
 class IBluetoothManager {
@@ -38,6 +60,7 @@ public:
     virtual bool PowerOff() = 0;
     virtual bool IsPowered() const = 0;
     virtual std::vector<BtDevice> Scan(int duration_s = 8) = 0;
+    virtual BtDeviceKind ConnectedDeviceKind() const = 0;
     virtual bool PairAndConnect(const std::string &address) = 0;
     virtual bool Disconnect(const std::string &address) = 0;
     virtual bool Remove(const std::string &address) = 0;
@@ -60,6 +83,11 @@ public:
 
     // Scan for `duration_s` seconds, then return all known devices. Blocking.
     std::vector<BtDevice> Scan(int duration_s = 8) override;
+
+    // Category of the currently connected paired device (best match when
+    // several are connected: controller > headphones > unknown). Blocking
+    // (one `info` per paired device) — call off the LVGL thread.
+    BtDeviceKind ConnectedDeviceKind() const override;
 
     // Pair + trust + connect to a device by address. Returns true if connected.
     bool PairAndConnect(const std::string &address) override;
