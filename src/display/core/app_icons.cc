@@ -2,6 +2,10 @@
 #include "display/core/lvgl_image.h"
 #include "esp_log.h"
 
+/* lv_image_decoder_dsc_t is only forward-declared in LVGL 9.2's public
+ * headers; PreloadAppIcons() opens a decode session on the stack. */
+#include <src/draw/lv_image_decoder_private.h>
+
 #include <dirent.h>
 #include <strings.h>
 
