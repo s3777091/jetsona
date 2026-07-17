@@ -119,21 +119,25 @@ static int npending = 0;
  * that leaves the kiosk (replaces the accident-prone double-click gesture). */
 static int menu_total(void) { return napps + 1; }
 
-/* Small override-redirect surfaces used for the macOS-like drop transition
- * and for notifications that bloom out of the island. They deliberately stay
- * compact instead of covering the whole web page. */
+/* Window-switch transition: a full app-area override-redirect cover that
+ * plays the island zoom. The leaving app collapses up into the island (screen
+ * "closing"), the arriving app zooms back out to fill the panel -- the real
+ * window swap underneath happens while the cover is opaque, so it is never
+ * seen. Notifications (toast) still bloom compactly out of the island. */
 static Window transition = None, transition_target = None;
 static Pixmap transition_buffer = None;
 static long transition_start = 0;
 static int transition_switched = 0;
 static int transition_rotate = 0;
+static int transition_from_app = -1; /* app card shown while closing */
+static int transition_show_app = -1; /* app card the current frame draws */
+static double transition_scale = 1.0;/* 1 = fills panel, 0 = tucked in island */
 static Window toast = None, toast_target = None;
 static Pixmap toast_buffer = None;
 static int toast_app = -1;
 static long toast_start = 0, toast_until = 0;
 static char toast_message[96];
-#define TRANSITION_MAX_W (PILL_W + 68)
-#define TRANSITION_MAX_H 46
+#define TRANS_MS 460  /* island zoom: close over 0..0.5, open over 0.5..1 */
 #define TOAST_MAX_W 318
 #define TOAST_MAX_H 68
 
@@ -418,7 +422,7 @@ static void shape_round_corners(Window win, int w, int h, int r)
  * can run inside Chromium). Every surface an icon lands on (pill, rail,
  * toast) is black, so alpha is resolved at scale time by blending over
  * black; XPutImage then needs no mask and no per-frame math. */
-#define ICON_CACHE_MAX 64
+#define ICON_CACHE_MAX 96
 static struct { int icon, size; XImage *img; } icon_ximages[ICON_CACHE_MAX];
 static int nicon_ximages = 0;
 
@@ -428,7 +432,13 @@ static XImage *icon_ximage(int icon, int size)
     for (int i = 0; i < nicon_ximages; i++)
         if (icon_ximages[i].icon == icon && icon_ximages[i].size == size)
             return icon_ximages[i].img;
-    if (nicon_ximages >= ICON_CACHE_MAX) return NULL;
+    if (nicon_ximages >= ICON_CACHE_MAX) {
+        /* The zoom churns through many transient sizes. Drop the whole cache
+         * and rebuild on demand rather than returning NULL, which would flash
+         * the letter-disc fallback mid-animation. */
+        for (int i = 0; i < nicon_ximages; i++) XDestroyImage(icon_ximages[i].img);
+        nicon_ximages = 0;
+    }
 
     char *data = malloc((size_t)size * size * 4);
     if (!data) return NULL;
@@ -1116,40 +1126,66 @@ static void draw_transition(void)
 {
     if (transition == None || !transition_start || transition_buffer == None)
         return;
-    XWindowAttributes a;
-    if (!XGetWindowAttributes(dpy, transition, &a)) return;
+    int W = sw, H = sh - BAR_H;              /* the cover spans the app area */
     Drawable d = transition_buffer;
-    XSetForeground(dpy, gc, px(COL_PILL_BG));
-    XFillRectangle(dpy, d, gc, 0, 0, (unsigned)a.width, (unsigned)a.height);
-    XSetForeground(dpy, gc, px(COL_PILL_EDGE));
-    fill_round_rect(d, 0, 0, a.width, a.height, a.height / 2, 0);
-    int i = win_index(transition_target);
-    draw_app_icon(d, effective_app(i), a.width / 2, a.height / 2,
-                  a.height > 30 ? 26 : (a.height > 8 ? a.height - 4 : 4));
+    double s = transition_scale;             /* 1 = full panel, 0 = island */
+
+    /* Black backdrop == the "screen closing" moment; the app card shrinks into
+     * / grows out of the island against it. */
+    XSetForeground(dpy, gc, px(COL_BAR_BG));
+    XFillRectangle(dpy, d, gc, 0, 0, (unsigned)W, (unsigned)H);
+
+    const int cw = PILL_W, ch = 6;           /* collapsed footprint = island */
+    int w = cw + (int)((W - cw) * s);
+    int h = ch + (int)((H - ch) * s);
+    if (w < 2) w = 2;
+    if (h < 2) h = 2;
+    int x = (W - w) / 2;                      /* centred; top-anchored so it   */
+    int y = 0;                                /* tucks up under the island     */
+    int r = 6 + (int)(22.0 * s);              /* 28 full -> 6 collapsed        */
+    if (r * 2 > h) r = h / 2;
+    if (r * 2 > w) r = w / 2;
+
+    /* Elevated dark tile with a brand-coloured hairline + centred app icon. */
+    XSetForeground(dpy, gc, px(0x1c1c1e));
+    fill_round_rect(d, x, y, w, h, r, 1);
+    XSetForeground(dpy, gc, px(app_color(transition_show_app)));
+    XSetLineAttributes(dpy, gc, 2, LineSolid, CapRound, JoinRound);
+    fill_round_rect(d, x, y, w, h, r, 0);
+    XSetLineAttributes(dpy, gc, 0, LineSolid, CapButt, JoinMiter);
+
+    int isz = ((w < h ? w : h) * 42 / 100) & ~7;  /* quantise to 8px steps */
+    if (isz < 8) isz = 8;
+    if (isz > 96) isz = 96;
+    draw_app_icon(d, transition_show_app, x + w / 2, y + h / 2, isz);
+
     XCopyArea(dpy, transition_buffer, transition, gc, 0, 0,
-              (unsigned)a.width, (unsigned)a.height, 0, 0);
+              (unsigned)W, (unsigned)H, 0, 0);
 }
 
 static void start_switch(Window target)
 {
     if (target == None || win_index(target) < 0) return;
+    unsigned W = (unsigned)sw, H = (unsigned)(sh - BAR_H);
     if (transition == None) {
         XSetWindowAttributes a;
         a.override_redirect = True;
-        a.background_pixel = px(COL_PILL_BG);
+        a.background_pixel = px(COL_BAR_BG);
         a.event_mask = ExposureMask;
-        transition = XCreateWindow(dpy, root, 0, BAR_H - 2, 1, 1, 0,
+        transition = XCreateWindow(dpy, root, 0, BAR_H, W, H, 0,
                                    CopyFromParent, InputOutput, CopyFromParent,
                                    CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
-        transition_buffer = XCreatePixmap(dpy, transition, TRANSITION_MAX_W,
-                                          TRANSITION_MAX_H,
+        transition_buffer = XCreatePixmap(dpy, transition, W, H,
                                           (unsigned)DefaultDepth(dpy, DefaultScreen(dpy)));
     }
     transition_target = target;
     transition_rotate = 0;
+    transition_from_app = effective_app(0);   /* window currently in front */
+    transition_show_app = transition_from_app;
+    transition_scale = 1.0;
     transition_start = now_ms();
     transition_switched = 0;
-    XMoveResizeWindow(dpy, transition, sw / 2, BAR_H - 3, 1, 1);
+    XMoveResizeWindow(dpy, transition, 0, BAR_H, W, H);
     XMapRaised(dpy, transition);
 }
 
@@ -1163,29 +1199,38 @@ static void start_cycle(void)
 static void update_transition(long now)
 {
     if (!transition_start || transition == None) return;
-    double t = (double)(now - transition_start) / 300.0;
+    double t = (double)(now - transition_start) / (double)TRANS_MS;
     if (t >= 1.0) {
-        XUnmapWindow(dpy, transition);
+        XUnmapWindow(dpy, transition);   /* reveal the already-swapped app */
         transition_start = 0;
         transition_target = None;
+        XFlush(dpy);
         return;
     }
     if (t < 0.0) t = 0.0;
-    double wave = t < 0.5 ? t * 2.0 : (1.0 - t) * 2.0;
-    double ease = 1.0 - (1.0 - wave) * (1.0 - wave);
-    int w = PILL_W + (int)(68.0 * ease);
-    int h = 2 + (int)(44.0 * ease);
-    XMoveResizeWindow(dpy, transition, (sw - w) / 2, BAR_H - 3,
-                      (unsigned)w, (unsigned)h);
-    shape_round_corners(transition, w, h, h / 2);
-    if (!transition_switched && t >= 0.44) {
-        int i = win_index(transition_target);
-        if (i >= 0) {
-            if (transition_rotate && i == 1) rotate_next();
-            else promote_index(i, 1);
-            focus_active();
+
+    if (t < 0.5) {
+        /* Close: ease-in -- the leaving app lingers, then snaps up into the
+         * island like a screen powering off. */
+        double p = t / 0.5;
+        transition_scale = 1.0 - p * p;
+        transition_show_app = transition_from_app;
+    } else {
+        /* Open: ease-out -- the arriving app bursts out of the island then
+         * settles. The real window swap runs here, hidden by the opaque cover
+         * at its smallest, so it is never seen. */
+        double q = (t - 0.5) / 0.5;
+        transition_scale = 1.0 - (1.0 - q) * (1.0 - q);
+        if (!transition_switched) {
+            int i = win_index(transition_target);
+            if (i >= 0) {
+                if (transition_rotate && i == 1) rotate_next();
+                else promote_index(i, 1);
+                focus_active();
+            }
+            transition_switched = 1;
         }
-        transition_switched = 1;
+        transition_show_app = effective_app(0);
     }
     XRaiseWindow(dpy, transition);
     draw_transition();
