@@ -192,11 +192,16 @@ fi
 BAR_H=42
 PANEL_W="${CHROMIUM_PANEL_WIDTH:-800}"
 PANEL_H="${CHROMIUM_PANEL_HEIGHT:-480}"
+# Prefer whichever copy is NEWEST, not just the installed one. build.sh
+# refreshes build/jetson_kiosk_bar but leaves the old /opt/jetson-fw copy
+# untouched (only install.sh replaces that), so a plain "first match wins"
+# kept running a stale bar -- letter-disc icons, no rail power button, an
+# invisible border -- until the next reinstall. "-nt" picks up a rebuild
+# even without running install.sh.
 JETSON_KIOSK_BAR=""
 for p in /opt/jetson-fw/jetson_kiosk_bar "$JETSON_DIR/build/jetson_kiosk_bar"; do
-    if [ -x "$p" ]; then
+    if [ -x "$p" ] && { [ -z "$JETSON_KIOSK_BAR" ] || [ "$p" -nt "$JETSON_KIOSK_BAR" ]; }; then
         JETSON_KIOSK_BAR="$p"
-        break
     fi
 done
 export JETSON_KIOSK_BAR

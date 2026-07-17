@@ -220,7 +220,15 @@
     #define LV_FS_POSIX_LETTER 'B'
     #define LV_FS_POSIX_BUFFER_SIZE 4096
 #endif
-#define LV_USE_FS_MEMFS 0
+/* Enable the in-memory FS shim. LVGL's built-in TJPGD decoder can only decode a
+ * JPEG held in an lv_img_dsc_t (LV_IMAGE_SRC_VARIABLE, which is how music/Zing
+ * artwork is loaded) by opening it through MEMFS; with this off it returns
+ * LV_RESULT_INVALID and every JPEG cover falls back to the placeholder note.
+ * PNG (lodepng) decodes from memory directly and is unaffected. */
+#define LV_USE_FS_MEMFS 1
+#if LV_USE_FS_MEMFS
+    #define LV_FS_MEMFS_LETTER 'M'
+#endif
 #define LV_USE_FS_LITTLEFS 0
 #define LV_USE_FS_FATFS 0
 #define LV_USE_FS_WIN32 0

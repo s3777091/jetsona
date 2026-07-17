@@ -62,6 +62,7 @@
 #define COL_BAR_BG    0x000000
 #define COL_PILL_BG   0x000000
 #define COL_PILL_EDGE 0x253142
+#define COL_MENU_EDGE 0x5a5a5e  /* rail hairline: bright enough to read on black */
 #define COL_TEXT      0xffffff
 #define COL_BAT_GREEN 0x34c759
 #define COL_BAT_YELLO 0xffcc00
@@ -1005,8 +1006,13 @@ static void draw_menu(void)
     Drawable d = menu_buffer;
     XSetForeground(dpy, gc, px(COL_BAR_BG));
     XFillRectangle(dpy, d, gc, 0, 0, (unsigned)menu_w, MENU_H);
-    XSetForeground(dpy, gc, px(COL_PILL_EDGE));
-    fill_round_rect(d, 0, 0, menu_w, MENU_H, MENU_RADIUS, 0);
+    /* A 2px hairline so the rail reads as a floating panel over the web page,
+     * not a stray black rectangle. COL_PILL_EDGE was too dark on black to see;
+     * inset by 1px so the stroke is not clipped by the rounded shape mask. */
+    XSetForeground(dpy, gc, px(COL_MENU_EDGE));
+    XSetLineAttributes(dpy, gc, 2, LineSolid, CapRound, JoinRound);
+    fill_round_rect(d, 1, 1, menu_w - 2, MENU_H - 2, MENU_RADIUS - 1, 0);
+    XSetLineAttributes(dpy, gc, 0, LineSolid, CapButt, JoinMiter);
     int total = menu_total();
     for (int slot = 0; slot < menu_visible; slot++) {
         int i = menu_scroll + slot;

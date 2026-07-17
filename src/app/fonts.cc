@@ -230,6 +230,29 @@ bool ApplyBuiltinFontFamily(const std::string &display_name,
     return true;
 }
 
+const lv_font_t *BuiltinTextFaceAt(int size_px) {
+    /* Deliberately below LoadTextFace's 16 px body-text floor: these are
+     * compact secondary labels. Shares g_font_cache with LoadTextFace, so a
+     * size already built for the body text is reused. */
+    size_px = std::clamp(size_px, 10, 24);
+    const std::string &path = g_regular_path;
+    const auto key = std::make_tuple(path, size_px, false);
+    auto found = g_font_cache.find(key);
+    if (found != g_font_cache.end()) return found->second;
+
+    lv_font_t *font = path.empty() ? nullptr
+                                   : lv_tiny_ttf_create_file(path.c_str(), size_px);
+    if (font) {
+        font->fallback = SymbolFallbackForSize(size_px);
+    } else {
+        ESP_LOGW(TAG, "tiny_ttf compact face failed for %s at %d px",
+                 path.c_str(), size_px);
+        font = (lv_font_t *)&lv_font_montserrat_14;
+    }
+    g_font_cache[key] = font;
+    return font;
+}
+
 const std::string &BuiltinFontName() { return g_font_name; }
 const std::string &BuiltinFontRegularPath() { return g_regular_path; }
 const std::string &BuiltinAssetsDir() { return g_assets_dir; }

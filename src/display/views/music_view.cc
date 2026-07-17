@@ -10,6 +10,7 @@
 #include <lvgl.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <exception>
 #include <memory>
@@ -31,6 +32,12 @@ constexpr int kPlayerBarHeight = 64;
 constexpr int kCardWidth = 124;
 constexpr int kCoverSize = 112;
 constexpr int kRailHeight = 178;
+
+// Zing occasionally 5xx's a signed request; retry the whole fetch once off the
+// LVGL thread (the skeleton stays up meanwhile) before surfacing the error UI,
+// so the user never has to press refresh for a transient blip.
+constexpr int kMaxLoadAttempts = 2;
+constexpr int kRetryDelayMs = 500;
 
 void RemoveInteraction(lv_obj_t *obj) {
     if (!obj) return;
@@ -197,7 +204,7 @@ void MusicView::BuildBody() {
     player_artist_ = lv_label_create(player_bar_);
     lv_obj_set_size(player_artist_, 300, 22);
     lv_obj_set_pos(player_artist_, 68, 32);
-    lv_obj_set_style_text_font(player_artist_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(player_artist_, jetson::BuiltinTextFaceAt(14), 0);
     lv_obj_set_style_text_color(player_artist_, Color(p.sub_text), 0);
     lv_label_set_long_mode(player_artist_, LV_LABEL_LONG_DOT);
 
@@ -372,13 +379,21 @@ void MusicView::LoadDiscovery() {
     std::thread([weak, result, generation]() {
         std::string error;
         bool ok = false;
-        try {
-            jetson::ZingMusicClient client;
-            ok = client.FetchDiscover(*result, error);
-        } catch (const std::exception &exception) {
-            error = std::string("Không thể đọc dữ liệu Zing: ") + exception.what();
-        } catch (...) {
-            error = "Không thể đọc dữ liệu Zing";
+        for (int attempt = 0; attempt < kMaxLoadAttempts && !ok; ++attempt) {
+            if (attempt > 0) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(kRetryDelayMs));
+                auto self = weak.lock();
+                if (!self || generation != self->request_generation_.load()) return;
+            }
+            try {
+                jetson::ZingMusicClient client;
+                ok = client.FetchDiscover(*result, error);
+            } catch (const std::exception &exception) {
+                error = std::string("Không thể đọc dữ liệu Zing: ") + exception.what();
+            } catch (...) {
+                error = "Không thể đọc dữ liệu Zing";
+            }
         }
         Application::GetInstance().Schedule([weak, result, ok, error, generation]() {
             auto self = weak.lock();
@@ -494,7 +509,7 @@ void MusicView::RenderSection(const char *title,
         auto *subtitle = lv_label_create(card);
         lv_obj_set_size(subtitle, kCardWidth - 10, 19);
         lv_obj_align(subtitle, LV_ALIGN_BOTTOM_MID, 0, -3);
-        lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(subtitle, jetson::BuiltinTextFaceAt(13), 0);
         lv_obj_set_style_text_color(subtitle, Color(p.sub_text), 0);
         lv_obj_set_style_text_align(subtitle, circular ? LV_TEXT_ALIGN_CENTER
                                                        : LV_TEXT_ALIGN_LEFT, 0);
@@ -619,13 +634,21 @@ void MusicView::LoadAlbum(const CatalogItem &item) {
     std::thread([weak, album, id = item.id, generation]() {
         std::string error;
         bool ok = false;
-        try {
-            jetson::ZingMusicClient client;
-            ok = client.FetchAlbum(id, *album, error);
-        } catch (const std::exception &exception) {
-            error = std::string("Không thể đọc album Zing: ") + exception.what();
-        } catch (...) {
-            error = "Không thể đọc album Zing";
+        for (int attempt = 0; attempt < kMaxLoadAttempts && !ok; ++attempt) {
+            if (attempt > 0) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(kRetryDelayMs));
+                auto self = weak.lock();
+                if (!self || generation != self->request_generation_.load()) return;
+            }
+            try {
+                jetson::ZingMusicClient client;
+                ok = client.FetchAlbum(id, *album, error);
+            } catch (const std::exception &exception) {
+                error = std::string("Không thể đọc album Zing: ") + exception.what();
+            } catch (...) {
+                error = "Không thể đọc album Zing";
+            }
         }
         Application::GetInstance().Schedule([weak, album, ok, generation]() {
             auto self = weak.lock();
@@ -727,7 +750,7 @@ void MusicView::RenderAlbum() {
         auto *label = lv_label_create(columns);
         lv_obj_set_pos(label, x, 4);
         lv_obj_set_size(label, w, 22);
-        lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(label, jetson::BuiltinTextFaceAt(14), 0);
         lv_obj_set_style_text_color(label, Color(p.sub_text), 0);
         lv_label_set_text(label, text);
     };
@@ -777,7 +800,7 @@ void MusicView::RenderAlbum() {
         auto *artist = lv_label_create(row);
         lv_obj_set_pos(artist, 104, 30);
         lv_obj_set_size(artist, 310, 20);
-        lv_obj_set_style_text_font(artist, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(artist, jetson::BuiltinTextFaceAt(14), 0);
         lv_obj_set_style_text_color(artist, Color(p.sub_text), 0);
         lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
         lv_label_set_text(artist, track.artist.c_str());
@@ -786,7 +809,7 @@ void MusicView::RenderAlbum() {
         auto *album_name = lv_label_create(row);
         lv_obj_set_pos(album_name, 430, 17);
         lv_obj_set_size(album_name, 205, 22);
-        lv_obj_set_style_text_font(album_name, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(album_name, jetson::BuiltinTextFaceAt(14), 0);
         lv_obj_set_style_text_color(album_name, Color(p.sub_text), 0);
         lv_label_set_long_mode(album_name, LV_LABEL_LONG_DOT);
         lv_label_set_text(album_name, album_.title.c_str());

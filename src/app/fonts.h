@@ -31,6 +31,14 @@ bool ApplyBuiltinFontFamily(const std::string &display_name,
 const std::string &BuiltinFontName();
 const std::string &BuiltinFontRegularPath();
 const std::string &BuiltinAssetsDir();
+
+/* A cached text face (current family, regular weight) at an explicit pixel
+ * size. Use for compact secondary labels that still need Vietnamese diacritics
+ * but want a smaller size than the body text -- e.g. the music view's artist /
+ * album / subtitle rows, which must NOT use lv_font_montserrat_* (those carry
+ * no Vietnamese glyphs). Falls back to a built-in font if the TTF is
+ * unavailable. The returned pointer is stable for the process lifetime. */
+const lv_font_t *BuiltinTextFaceAt(int size_px);
 } // namespace jetson
 
 /* The DS-02 UI references &BUILTIN_TEXT_FONT / &BUILTIN_ICON_FONT as
