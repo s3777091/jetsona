@@ -99,15 +99,14 @@ OptimizeWidget::OptimizeWidget(lv_obj_t *parent) {
     lv_obj_add_flag(button_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(button_, OnOptimizeClicked, LV_EVENT_CLICKED, this);
 
+    // 40px and shadow-free: a 44px circle plus its glow reached past the
+    // capsule's rounded end and looked detached from the widget.
     auto *circle = lv_obj_create(button_);
     lv_obj_remove_style_all(circle);
-    lv_obj_set_size(circle, 44, 44);
+    lv_obj_set_size(circle, 40, 40);
     lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(circle, Color(kAccentBlue), 0);
     lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
-    lv_obj_set_style_shadow_color(circle, Color(kAccentBlue), 0);
-    lv_obj_set_style_shadow_width(circle, 10, 0);
-    lv_obj_set_style_shadow_opa(circle, LV_OPA_30, 0);
     lv_obj_clear_flag(circle, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     lv_obj_center(circle);
 

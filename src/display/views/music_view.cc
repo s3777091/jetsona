@@ -94,6 +94,24 @@ lv_obj_t *MakeIconButton(lv_obj_t *parent, const char *symbol,
     return button;
 }
 
+lv_obj_t *CreatePremiumBadge(lv_obj_t *parent) {
+    auto *badge = lv_label_create(parent);
+    lv_label_set_text(badge, "PREMIUM");
+    lv_obj_set_style_text_font(badge, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(badge, Color(0xfff7ed), 0);
+    lv_obj_set_style_bg_color(badge, Color(0x7c3aed), 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(badge, 1, 0);
+    lv_obj_set_style_border_color(badge, Color(0xc4b5fd), 0);
+    lv_obj_set_style_radius(badge, 6, 0);
+    lv_obj_set_style_pad_left(badge, 5, 0);
+    lv_obj_set_style_pad_right(badge, 5, 0);
+    lv_obj_set_style_pad_top(badge, 2, 0);
+    lv_obj_set_style_pad_bottom(badge, 2, 0);
+    RemoveInteraction(badge);
+    return badge;
+}
+
 std::string DurationText(int64_t duration_ms) {
     const int total = static_cast<int>(std::max<int64_t>(0, duration_ms) / 1000);
     char out[16];
@@ -317,9 +335,10 @@ void MusicView::BuildSkeleton() {
     ClearPage();
     const auto &p = jetson::UiTheme::Instance().Palette();
     static const char *titles[] = {
-        "Trending songs", "Popular artists", "Radio", "Top 100"
+        "Dành riêng cho bạn", "Mới phát hành", "Chill", "Top 100",
+        "Nghệ sĩ", "Radio"
     };
-    for (int section = 0; section < 4; ++section) {
+    for (int section = 0; section < 6; ++section) {
         auto *title = lv_label_create(page_);
         lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(title, Color(p.text), 0);
@@ -335,7 +354,8 @@ void MusicView::BuildSkeleton() {
                                               LV_OBJ_FLAG_SCROLL_CHAIN_VER));
         lv_obj_set_scroll_dir(rail, LV_DIR_HOR);
         lv_obj_set_scrollbar_mode(rail, LV_SCROLLBAR_MODE_OFF);
-        for (int i = 0; i < 6; ++i) CreateSkeletonCard(rail, section == 1);
+        for (int i = 0; i < 6; ++i)
+            CreateSkeletonCard(rail, section == 4);
     }
 }
 
@@ -366,8 +386,10 @@ void MusicView::LoadDiscovery() {
             LvglLockGuard lock;
             if (generation != self->request_generation_.load()) return;
             self->loading_ = false;
-            if (!ok && result->trending.empty() && result->artists.empty() &&
-                result->radio.empty() && result->top100.empty()) {
+            if (!ok && result->personalized.empty() &&
+                result->new_releases.empty() && result->chill.empty() &&
+                result->top100.empty() && result->artists.empty() &&
+                result->radio.empty()) {
                 self->ClearPage();
                 const auto &p = jetson::UiTheme::Instance().Palette();
                 auto *message = lv_label_create(self->page_);
@@ -376,9 +398,7 @@ void MusicView::LoadDiscovery() {
                 lv_obj_set_style_text_color(message, Color(p.sub_text), 0);
                 lv_obj_set_style_text_align(message, LV_TEXT_ALIGN_CENTER, 0);
                 lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
-                const std::string text = error.empty()
-                    ? "Không tải được thư viện nhạc."
-                    : "Không tải được thư viện nhạc\n" + error;
+                const std::string text = "zing api đang lỗi";
                 lv_label_set_text(message, text.c_str());
                 auto *retry = MakeIconButton(self->page_, LV_SYMBOL_REFRESH, 46,
                                              OnRetry, self.get());
@@ -429,35 +449,42 @@ void MusicView::RenderSection(const char *title,
 
         auto *art = CreateArtwork(card, item.thumbnail_path, kCoverSize, circular);
         lv_obj_align(art, LV_ALIGN_TOP_MID, 0, 0);
-
-        auto *hover = lv_obj_create(art);
-        lv_obj_remove_style_all(hover);
-        lv_obj_set_size(hover, lv_pct(100), lv_pct(100));
-        lv_obj_set_style_bg_color(hover, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(hover, LV_OPA_50, 0);
-        lv_obj_set_style_radius(hover, circular ? LV_RADIUS_CIRCLE : 10, 0);
-        RemoveInteraction(hover);
-        auto *play = lv_obj_create(hover);
-        lv_obj_remove_style_all(play);
-        lv_obj_set_size(play, 44, 44);
-        lv_obj_set_style_radius(play, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(play, Color(0x22d3ee), 0);
-        lv_obj_set_style_bg_opa(play, LV_OPA_COVER, 0);
-        lv_obj_center(play);
-        auto *play_icon = lv_label_create(play);
-        lv_obj_set_style_text_font(play_icon, &BUILTIN_ICON_FONT, 0);
-        lv_obj_set_style_text_color(play_icon, lv_color_white(), 0);
-        lv_label_set_text(play_icon, LV_SYMBOL_PLAY);
-        lv_obj_center(play_icon);
-        RemoveInteraction(play);
-        RemoveInteraction(play_icon);
-        lv_obj_add_flag(hover, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t *hover = nullptr;
+        if (item.premium) {
+            lv_obj_set_style_opa(art, LV_OPA_50, 0);
+            auto *badge = CreatePremiumBadge(card);
+            lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, -8, 8);
+        } else {
+            hover = lv_obj_create(art);
+            lv_obj_remove_style_all(hover);
+            lv_obj_set_size(hover, lv_pct(100), lv_pct(100));
+            lv_obj_set_style_bg_color(hover, lv_color_black(), 0);
+            lv_obj_set_style_bg_opa(hover, LV_OPA_50, 0);
+            lv_obj_set_style_radius(hover, circular ? LV_RADIUS_CIRCLE : 10, 0);
+            RemoveInteraction(hover);
+            auto *play = lv_obj_create(hover);
+            lv_obj_remove_style_all(play);
+            lv_obj_set_size(play, 44, 44);
+            lv_obj_set_style_radius(play, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(play, Color(0x22d3ee), 0);
+            lv_obj_set_style_bg_opa(play, LV_OPA_COVER, 0);
+            lv_obj_center(play);
+            auto *play_icon = lv_label_create(play);
+            lv_obj_set_style_text_font(play_icon, &BUILTIN_ICON_FONT, 0);
+            lv_obj_set_style_text_color(play_icon, lv_color_white(), 0);
+            lv_label_set_text(play_icon, LV_SYMBOL_PLAY);
+            lv_obj_center(play_icon);
+            RemoveInteraction(play);
+            RemoveInteraction(play_icon);
+            lv_obj_add_flag(hover, LV_OBJ_FLAG_HIDDEN);
+        }
 
         auto *name = lv_label_create(card);
         lv_obj_set_size(name, kCardWidth - 10, 23);
         lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -23);
         lv_obj_set_style_text_font(name, &BUILTIN_SMALL_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(name, Color(p.text), 0);
+        lv_obj_set_style_text_color(name,
+                                    Color(item.premium ? p.sub_text : p.text), 0);
         lv_obj_set_style_text_align(name, circular ? LV_TEXT_ALIGN_CENTER
                                                    : LV_TEXT_ALIGN_LEFT, 0);
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
@@ -474,6 +501,7 @@ void MusicView::RenderSection(const char *title,
         lv_label_set_long_mode(subtitle, LV_LABEL_LONG_DOT);
         lv_label_set_text(subtitle,
             circular ? "Artist" : item.subtitle.c_str());
+        if (item.premium) lv_obj_set_style_opa(subtitle, LV_OPA_60, 0);
         RemoveInteraction(subtitle);
 
         auto *ctx = new CardCtx{this, item, hover};
@@ -485,26 +513,43 @@ void MusicView::RenderSection(const char *title,
 void MusicView::RenderDiscovery() {
     album_mode_ = false;
     ClearPage();
-    RenderSection("Trending songs", discovery_.trending, false);
-    RenderSection("Popular artists", discovery_.artists, true);
-    RenderSection("Radio", discovery_.radio, false);
+    RenderSection("Dành riêng cho bạn", discovery_.personalized, false);
+    RenderSection("Mới phát hành", discovery_.new_releases, false);
+    RenderSection("Chill", discovery_.chill, false);
     RenderSection("Top 100", discovery_.top100, false);
+    RenderSection("Nghệ sĩ", discovery_.artists, true);
+    RenderSection("Radio", discovery_.radio, false);
     lv_obj_scroll_to_y(page_, 0, LV_ANIM_OFF);
 }
 
 void MusicView::OpenItem(const CatalogItem &item) {
+    if (item.premium) {
+        Notify("Bài hát này cần tài khoản Zing MP3 Premium");
+        return;
+    }
     if (item.kind == CatalogKind::Song) {
-        if (item.premium) {
-            Notify("Bài hát này cần tài khoản Zing MP3 Premium");
-            return;
+        const std::vector<CatalogItem> *source = nullptr;
+        const std::vector<CatalogItem> *groups[] = {
+            &discovery_.personalized,
+            &discovery_.new_releases,
+            &discovery_.chill,
+            &discovery_.top100,
+        };
+        for (const auto *group : groups) {
+            const auto found = std::find_if(group->begin(), group->end(),
+                [&](const CatalogItem &candidate) {
+                    return candidate.id == item.id;
+                });
+            if (found != group->end()) {
+                source = group;
+                break;
+            }
         }
-        if (item.id.rfind("demo:", 0) == 0) {
-            Notify("Zing đang từ chối phiên hiện tại; hãy cập nhật ZING_COOKIES rồi thử lại");
-            return;
-        }
+        if (!source) return;
+
         std::vector<Track> queue;
         size_t selected = 0;
-        for (const auto &candidate : discovery_.trending) {
+        for (const auto &candidate : *source) {
             if (candidate.kind != CatalogKind::Song || candidate.premium) continue;
             if (candidate.id == item.id) selected = queue.size();
             Track track;
@@ -520,20 +565,13 @@ void MusicView::OpenItem(const CatalogItem &item) {
         return;
     }
     if (item.kind == CatalogKind::Radio) {
-        if (item.premium) {
-            Notify("Kênh Radio này cần tài khoản Zing MP3 Premium");
-            return;
-        }
-        if (item.id.rfind("demo:", 0) == 0) {
-            Notify("Radio mẫu không thể phát; hãy cập nhật ZING_COOKIES rồi thử lại");
-            return;
-        }
         Track station;
         station.id = item.id;
         station.title = item.title;
         station.artist = item.subtitle.empty() ? "Zing Radio" : item.subtitle;
         station.artwork_url = item.thumbnail_url;
         station.artwork_path = item.thumbnail_path;
+        station.streaming_url = item.streaming_url;
         PlayerController::Instance().PlayQueue({std::move(station)}, 0);
         return;
     }
@@ -589,7 +627,7 @@ void MusicView::LoadAlbum(const CatalogItem &item) {
         } catch (...) {
             error = "Không thể đọc album Zing";
         }
-        Application::GetInstance().Schedule([weak, album, ok, error, generation]() {
+        Application::GetInstance().Schedule([weak, album, ok, generation]() {
             auto self = weak.lock();
             if (!self) return;
             LvglLockGuard lock;
@@ -610,12 +648,12 @@ void MusicView::LoadAlbum(const CatalogItem &item) {
                 lv_obj_set_style_text_color(message, Color(p.sub_text), 0);
                 lv_obj_set_style_text_align(message, LV_TEXT_ALIGN_CENTER, 0);
                 lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
-                lv_label_set_text(message, error.empty()
-                    ? "Không tải được album." : error.c_str());
+                constexpr char kZingApiError[] = "zing api đang lỗi";
+                lv_label_set_text(message, kZingApiError);
                 auto *retry = MakeIconButton(self->page_, LV_SYMBOL_REFRESH, 46,
                                              OnRetry, self.get());
                 lv_obj_set_style_align(retry, LV_ALIGN_CENTER, 0);
-                self->Notify(error.empty() ? "Không tải được album" : error);
+                self->Notify(kZingApiError);
                 return;
             }
             self->album_ = std::move(*album);
@@ -726,11 +764,13 @@ void MusicView::RenderAlbum() {
 
         auto *art = CreateArtwork(row, track.artwork_path, 40, false);
         lv_obj_set_pos(art, 52, 8);
+        if (track.premium) lv_obj_set_style_opa(art, LV_OPA_50, 0);
         auto *song = lv_label_create(row);
         lv_obj_set_pos(song, 104, 6);
         lv_obj_set_size(song, 310, 24);
         lv_obj_set_style_text_font(song, &BUILTIN_SMALL_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(song, Color(p.text), 0);
+        lv_obj_set_style_text_color(song,
+                                    Color(track.premium ? p.sub_text : p.text), 0);
         lv_label_set_long_mode(song, LV_LABEL_LONG_DOT);
         lv_label_set_text(song, track.title.c_str());
         RemoveInteraction(song);
@@ -741,6 +781,7 @@ void MusicView::RenderAlbum() {
         lv_obj_set_style_text_color(artist, Color(p.sub_text), 0);
         lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
         lv_label_set_text(artist, track.artist.c_str());
+        if (track.premium) lv_obj_set_style_opa(artist, LV_OPA_60, 0);
         RemoveInteraction(artist);
         auto *album_name = lv_label_create(row);
         lv_obj_set_pos(album_name, 430, 17);
@@ -749,6 +790,7 @@ void MusicView::RenderAlbum() {
         lv_obj_set_style_text_color(album_name, Color(p.sub_text), 0);
         lv_label_set_long_mode(album_name, LV_LABEL_LONG_DOT);
         lv_label_set_text(album_name, album_.title.c_str());
+        if (track.premium) lv_obj_set_style_opa(album_name, LV_OPA_60, 0);
         RemoveInteraction(album_name);
         auto *duration = lv_label_create(row);
         lv_obj_set_size(duration, 54, 22);
@@ -758,15 +800,22 @@ void MusicView::RenderAlbum() {
         lv_obj_set_style_text_align(duration, LV_TEXT_ALIGN_RIGHT, 0);
         const std::string duration_text = DurationText(track.duration_ms);
         lv_label_set_text(duration, duration_text.c_str());
+        if (track.premium) lv_obj_set_style_opa(duration, LV_OPA_60, 0);
         RemoveInteraction(duration);
-        auto *action = lv_label_create(row);
-        lv_obj_set_size(action, 24, 24);
-        lv_obj_align(action, LV_ALIGN_RIGHT_MID, -76, 0);
-        lv_obj_set_style_text_font(action, &BUILTIN_ICON_FONT, 0);
-        lv_obj_set_style_text_color(action, Color(p.text), 0);
-        lv_label_set_text(action, LV_SYMBOL_PLUS);
-        lv_obj_add_flag(action, LV_OBJ_FLAG_HIDDEN);
-        RemoveInteraction(action);
+        lv_obj_t *action = nullptr;
+        if (track.premium) {
+            auto *badge = CreatePremiumBadge(row);
+            lv_obj_align(badge, LV_ALIGN_RIGHT_MID, -76, 0);
+        } else {
+            action = lv_label_create(row);
+            lv_obj_set_size(action, 24, 24);
+            lv_obj_align(action, LV_ALIGN_RIGHT_MID, -76, 0);
+            lv_obj_set_style_text_font(action, &BUILTIN_ICON_FONT, 0);
+            lv_obj_set_style_text_color(action, Color(p.text), 0);
+            lv_label_set_text(action, LV_SYMBOL_PLUS);
+            lv_obj_add_flag(action, LV_OBJ_FLAG_HIDDEN);
+            RemoveInteraction(action);
+        }
 
         auto *ctx = new TrackCtx{this, i, row, action};
         track_rows_.push_back(ctx);
@@ -782,8 +831,9 @@ void MusicView::ShowDiscovery() {
         request_generation_.fetch_add(1);
         loading_ = false;
     }
-    if (discovery_.trending.empty() && discovery_.artists.empty() &&
-        discovery_.radio.empty() && discovery_.top100.empty()) {
+    if (discovery_.personalized.empty() && discovery_.new_releases.empty() &&
+        discovery_.chill.empty() && discovery_.top100.empty() &&
+        discovery_.artists.empty() && discovery_.radio.empty()) {
         LoadDiscovery();
         return;
     }
@@ -794,11 +844,6 @@ void MusicView::PlayTrack(size_t index) {
     if (index >= album_.tracks.size()) return;
     if (album_.tracks[index].premium) {
         Notify("Bài hát này cần tài khoản Zing MP3 Premium");
-        return;
-    }
-    if (album_.tracks[index].id.rfind("demo:", 0) == 0 ||
-        album_.tracks[index].id.find(":track:") != std::string::npos) {
-        Notify("Đây là dữ liệu mẫu ngoại tuyến; cần ZING_COOKIES hợp lệ để phát nhạc");
         return;
     }
     std::vector<Track> playable;
@@ -820,11 +865,6 @@ void MusicView::PlayAll() {
     }
     if (playable.empty()) {
         Notify("Album này không có bài hát miễn phí");
-        return;
-    }
-    if (playable.front().id.rfind("demo:", 0) == 0 ||
-        playable.front().id.find(":track:") != std::string::npos) {
-        Notify("Đây là dữ liệu mẫu ngoại tuyến; cần ZING_COOKIES hợp lệ để phát nhạc");
         return;
     }
     PlayerController::Instance().PlayQueue(std::move(playable), 0);

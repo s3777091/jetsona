@@ -9,9 +9,11 @@
  *  1. The top bar. A 42px strip that mirrors the firmware's StatusBar
  *     (src/display/widgets/status_bar.cc): clock + date on the left, Wi-Fi +
  *     battery on the right, and the black island pill in the center.
- *     Double-clicking the pill exits this process; launch_chromium.sh treats
- *     that as "leave the browser" and tears the session down, which returns
- *     the panel to the firmware.
+ *     Holding the pill drops the app rail; its last slot is a red power
+ *     button that exits this process. launch_chromium.sh treats the exit as
+ *     "leave the browser" and tears the session down, which returns the
+ *     panel to the firmware. (The old double-click-to-exit gesture was too
+ *     easy to trigger while cycling windows, so it is gone.)
  *
  *  2. Micro-WM duties. Without a window manager Chromium never receives X
  *     input focus, so the mouse works but every keystroke is ignored. On each
@@ -26,6 +28,9 @@
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <X11/cursorfont.h>
+#ifdef KIOSK_HAVE_SHAPE
+#include <X11/extensions/shape.h> /* rounded window corners (libXext) */
+#endif
 
 #include <ctype.h>
 #include <dirent.h>
@@ -44,13 +49,14 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "kiosk_icons.h" /* generated 48x48 RGBA minis of the drawer icons */
+
 #define BAR_H       42
 #define PILL_W      172
 #define PILL_H      36
 #define PILL_Y      3
 #define PILL_HIT    8     /* extra click slack around the pill, like the
                            * firmware's lv_obj_set_ext_click_area(pill_, 6) */
-#define DBLCLICK_MS 450
 
 /* Palette lifted from the firmware status bar. */
 #define COL_BAR_BG    0x000000
@@ -71,7 +77,7 @@ static Atom atom_net_wm_name, atom_utf8;
 
 /* Switcher list: browser-sized top-level windows. A single click on the
  * island pill cycles through them (the firmware island opens its app switcher
- * the same way); a double-click still exits the kiosk. */
+ * the same way); leaving the kiosk is the app rail's power button. */
 #define MAX_WINS 16
 static Window wins[MAX_WINS];
 static int win_app[MAX_WINS]; /* launcher entry that opened wins[i], -1 */
@@ -95,28 +101,40 @@ static long queue_anim_start = 0;
 #define MENU_ICON    42
 #define MENU_STEP    52
 #define MENU_PAD     8
+#define MENU_RADIUS  18   /* all four corners, like the firmware pill */
 #define LONGPRESS_MS 600
 #define MENU_AUTOCLOSE_S 8
 static struct { char name[40]; char url[512]; } apps[MAX_APPS];
 static int napps = 0;
 static Window menu = None;
+static Pixmap menu_buffer = None; /* menu_w x MENU_H back buffer */
 static int menu_open = 0, menu_hover = -1, menu_ticks = 0;
 static int menu_w = 0, menu_visible = 0, menu_scroll = 0;
 static long menu_anim_start = 0;
 static int pending_app[8]; /* spawned entries awaiting their MapNotify */
 static int npending = 0;
 
+/* The rail shows one slot per launcher entry plus the trailing power button
+ * that leaves the kiosk (replaces the accident-prone double-click gesture). */
+static int menu_total(void) { return napps + 1; }
+
 /* Small override-redirect surfaces used for the macOS-like drop transition
  * and for notifications that bloom out of the island. They deliberately stay
  * compact instead of covering the whole web page. */
 static Window transition = None, transition_target = None;
+static Pixmap transition_buffer = None;
 static long transition_start = 0;
 static int transition_switched = 0;
 static int transition_rotate = 0;
 static Window toast = None, toast_target = None;
+static Pixmap toast_buffer = None;
 static int toast_app = -1;
 static long toast_start = 0, toast_until = 0;
 static char toast_message[96];
+#define TRANSITION_MAX_W (PILL_W + 68)
+#define TRANSITION_MAX_H 46
+#define TOAST_MAX_W 318
+#define TOAST_MAX_H 68
 
 static void fetch_window_title(Window w, char *out, size_t cap);
 static void redraw(int bat_level, int bat_charging, int wifi_signal);
@@ -332,18 +350,26 @@ static void draw_string(Drawable d, XFontStruct *fs, int x, int baseline,
     XDrawString(dpy, d, gc, x, baseline, s, (int)strlen(s));
 }
 
+static void fill_round_rect_gc(Drawable d, GC g, int x, int y, int w, int h,
+                               int r)
+{
+    if (r * 2 > h) r = h / 2;
+    if (r * 2 > w) r = w / 2;
+    XFillArc(dpy, d, g, x, y, 2 * r, 2 * r, 90 * 64, 90 * 64);
+    XFillArc(dpy, d, g, x + w - 2 * r, y, 2 * r, 2 * r, 0, 90 * 64);
+    XFillArc(dpy, d, g, x, y + h - 2 * r, 2 * r, 2 * r, 180 * 64, 90 * 64);
+    XFillArc(dpy, d, g, x + w - 2 * r, y + h - 2 * r, 2 * r, 2 * r, 270 * 64, 90 * 64);
+    XFillRectangle(dpy, d, g, x + r, y, w - 2 * r, h);
+    XFillRectangle(dpy, d, g, x, y + r, w, h - 2 * r);
+}
+
 static void fill_round_rect(Drawable d, int x, int y, int w, int h, int r,
                             int fill)
 {
     if (r * 2 > h) r = h / 2;
     if (r * 2 > w) r = w / 2;
     if (fill) {
-        XFillArc(dpy, d, gc, x, y, 2 * r, 2 * r, 90 * 64, 90 * 64);
-        XFillArc(dpy, d, gc, x + w - 2 * r, y, 2 * r, 2 * r, 0, 90 * 64);
-        XFillArc(dpy, d, gc, x, y + h - 2 * r, 2 * r, 2 * r, 180 * 64, 90 * 64);
-        XFillArc(dpy, d, gc, x + w - 2 * r, y + h - 2 * r, 2 * r, 2 * r, 270 * 64, 90 * 64);
-        XFillRectangle(dpy, d, gc, x + r, y, w - 2 * r, h);
-        XFillRectangle(dpy, d, gc, x, y + r, w, h - 2 * r);
+        fill_round_rect_gc(d, gc, x, y, w, h, r);
     } else {
         XDrawArc(dpy, d, gc, x, y, 2 * r, 2 * r, 90 * 64, 90 * 64);
         XDrawArc(dpy, d, gc, x + w - 2 * r - 1, y, 2 * r, 2 * r, 0, 90 * 64);
@@ -354,6 +380,91 @@ static void fill_round_rect(Drawable d, int x, int y, int w, int h, int r,
         XDrawLine(dpy, d, gc, x, y + r, x, y + h - r - 1);
         XDrawLine(dpy, d, gc, x + w - 1, y + r, x + w - 1, y + h - r - 1);
     }
+}
+
+/* Round every corner of a popup window (the app rail, toasts, the switch
+ * pill) so nothing shows up as a hard black rectangle over the web page.
+ * Without the shape extension the windows still work, just square. */
+static void shape_round_corners(Window win, int w, int h, int r)
+{
+#ifdef KIOSK_HAVE_SHAPE
+    static int shape_ok = -1;
+    if (shape_ok < 0) {
+        int ev, err;
+        shape_ok = XShapeQueryExtension(dpy, &ev, &err) ? 1 : 0;
+    }
+    if (!shape_ok || w < 2 || h < 2) return;
+    if (r * 2 > h) r = h / 2;
+    if (r * 2 > w) r = w / 2;
+    Pixmap mask = XCreatePixmap(dpy, win, (unsigned)w, (unsigned)h, 1);
+    GC mgc = XCreateGC(dpy, mask, 0, NULL);
+    XSetForeground(dpy, mgc, 0);
+    XFillRectangle(dpy, mask, mgc, 0, 0, (unsigned)w, (unsigned)h);
+    XSetForeground(dpy, mgc, 1);
+    fill_round_rect_gc(mask, mgc, 0, 0, w, h, r);
+    XShapeCombineMask(dpy, win, ShapeBounding, 0, 0, mask, ShapeSet);
+    XFreeGC(dpy, mgc);
+    XFreePixmap(dpy, mask);
+#else
+    (void)win; (void)w; (void)h; (void)r;
+#endif
+}
+
+/* ---------------------------------------------------------- real app icons */
+
+/* Size-specific XImages produced once from the embedded 48x48 RGBA minis
+ * (kiosk_icons.h, generated from assets/icons/drawer -- only the apps that
+ * can run inside Chromium). Every surface an icon lands on (pill, rail,
+ * toast) is black, so alpha is resolved at scale time by blending over
+ * black; XPutImage then needs no mask and no per-frame math. */
+#define ICON_CACHE_MAX 64
+static struct { int icon, size; XImage *img; } icon_ximages[ICON_CACHE_MAX];
+static int nicon_ximages = 0;
+
+static XImage *icon_ximage(int icon, int size)
+{
+    if (icon < 0 || size < 4) return NULL;
+    for (int i = 0; i < nicon_ximages; i++)
+        if (icon_ximages[i].icon == icon && icon_ximages[i].size == size)
+            return icon_ximages[i].img;
+    if (nicon_ximages >= ICON_CACHE_MAX) return NULL;
+
+    char *data = malloc((size_t)size * size * 4);
+    if (!data) return NULL;
+    const unsigned char *src = kiosk_icons[icon].rgba;
+    /* Alpha-weighted box filter 48 -> size, composited over black. */
+    for (int y = 0; y < size; y++) {
+        int sy0 = y * KIOSK_ICON_PX / size, sy1 = (y + 1) * KIOSK_ICON_PX / size;
+        if (sy1 <= sy0) sy1 = sy0 + 1;
+        for (int x = 0; x < size; x++) {
+            int sx0 = x * KIOSK_ICON_PX / size, sx1 = (x + 1) * KIOSK_ICON_PX / size;
+            if (sx1 <= sx0) sx1 = sx0 + 1;
+            unsigned r = 0, g = 0, b = 0, n = 0;
+            for (int sy = sy0; sy < sy1; sy++)
+                for (int sx = sx0; sx < sx1; sx++) {
+                    const unsigned char *p =
+                        src + ((size_t)sy * KIOSK_ICON_PX + sx) * 4;
+                    r += (unsigned)p[0] * p[3];
+                    g += (unsigned)p[1] * p[3];
+                    b += (unsigned)p[2] * p[3];
+                    n++;
+                }
+            n *= 255;
+            /* Client and the tegra X server share the little-endian 24-bit
+             * TrueColor layout, so the pixel is the plain 0xRRGGBB triple. */
+            ((uint32_t *)data)[(size_t)y * size + x] =
+                ((r / n) << 16) | ((g / n) << 8) | (b / n);
+        }
+    }
+    XImage *img = XCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)), 24,
+                               ZPixmap, 0, data, (unsigned)size, (unsigned)size,
+                               32, 0);
+    if (!img) { free(data); return NULL; }
+    icon_ximages[nicon_ximages].icon = icon;
+    icon_ximages[nicon_ximages].size = size;
+    icon_ximages[nicon_ximages].img = img;
+    nicon_ximages++;
+    return img;
 }
 
 static void draw_wifi(Drawable d, int cx, int cy, int connected)
@@ -405,8 +516,46 @@ static unsigned long app_color(int app)
     return 0x4285f4;
 }
 
+/* Map a launcher entry onto one of the embedded mini icons: first by name
+ * ("YouTube" -> youtube), then by URL for entries with free-form names such
+ * as rented RunPod pods. -1 = no artwork, fall back to the letter disc. */
+static int app_icon[MAX_APPS];
+
+static int icon_for_entry(const char *name, const char *url)
+{
+    const int count = (int)(sizeof(kiosk_icons) / sizeof(kiosk_icons[0]));
+    for (int i = 0; i < count; i++)
+        if (contains_ci(name, kiosk_icons[i].name)) return i;
+    static const struct { const char *frag; const char *icon; } by_url[] = {
+        {"youtube.com", "youtube"},   {"github.com", "github"},
+        {"messenger.com", "messenger"}, {"facebook.com", "facebook"},
+        {"teams.microsoft", "teams"}, {"chatgpt.com", "chatgpt"},
+        {"chat.openai.com", "chatgpt"}, {"runpod", "pods"},
+    };
+    for (size_t u = 0; u < sizeof(by_url) / sizeof(by_url[0]); u++)
+        if (contains_ci(url, by_url[u].frag))
+            for (int i = 0; i < count; i++)
+                if (strcmp(kiosk_icons[i].name, by_url[u].icon) == 0) return i;
+    return -1;
+}
+
+static int icon_index(int app)
+{
+    if (app >= 0 && app < napps) return app_icon[app];
+    return icon_for_entry("Chromium", ""); /* untagged window */
+}
+
 static void draw_app_icon(Drawable d, int app, int cx, int cy, int size)
 {
+    XImage *img = icon_ximage(icon_index(app), size);
+    if (img) {
+        XPutImage(dpy, d, gc, img, 0, 0, cx - size / 2, cy - size / 2,
+                  (unsigned)size, (unsigned)size);
+        return;
+    }
+
+    /* Letter disc fallback for entries without embedded artwork (Gmail,
+     * unrecognised pods). */
     const char *n = (app >= 0 && app < napps) ? apps[app].name : "Chromium";
     int x = cx - size / 2, y = cy - size / 2;
     XSetForeground(dpy, gc, px(app_color(app)));
@@ -772,6 +921,7 @@ static void load_apps(void)
         apps[napps].name[o] = 0;
         if (o == 0) continue;
         snprintf(apps[napps].url, sizeof(apps[napps].url), "%s", url);
+        app_icon[napps] = icon_for_entry(apps[napps].name, apps[napps].url);
         napps++;
     }
     fclose(f);
@@ -823,24 +973,53 @@ static void open_app(int i)
         pending_app[npending++] = i;
 }
 
+/* The red rail-terminating power button: the only way out of the kiosk. */
+static void draw_power_icon(Drawable d, int cx, int cy, int size)
+{
+    int x = cx - size / 2, y = cy - size / 2;
+    XSetForeground(dpy, gc, px(0xff3b30));
+    XFillArc(dpy, d, gc, x, y, (unsigned)size, (unsigned)size, 0, 360 * 64);
+    XSetForeground(dpy, gc, px(0xffffff));
+    XSetLineAttributes(dpy, gc, 2, LineSolid, CapRound, JoinRound);
+    int r = size * 9 / 42;
+    if (r < 5) r = 5;
+    /* Broken ring with the stem through the top gap. */
+    XDrawArc(dpy, d, gc, cx - r, cy - r + 2, 2 * r, 2 * r, 125 * 64, 290 * 64);
+    XDrawLine(dpy, d, gc, cx, cy - r - 3, cx, cy + 1);
+    XSetLineAttributes(dpy, gc, 0, LineSolid, CapButt, JoinMiter);
+}
+
+/* Copy the finished back buffer onto the (possibly mid-animation, shorter)
+ * menu window. XCopyArea clips at the window edge, so the drop animation
+ * reveals a fully drawn rail instead of re-rendering icons every frame. */
+static void menu_present(void)
+{
+    if (menu == None || menu_buffer == None) return;
+    XCopyArea(dpy, menu_buffer, menu, gc, 0, 0, (unsigned)menu_w, MENU_H, 0, 0);
+    XFlush(dpy);
+}
+
 static void draw_menu(void)
 {
-    if (!menu_open) return;
+    if (!menu_open || menu_buffer == None) return;
+    Drawable d = menu_buffer;
     XSetForeground(dpy, gc, px(COL_BAR_BG));
-    XFillRectangle(dpy, menu, gc, 0, 0, (unsigned)menu_w, MENU_H);
+    XFillRectangle(dpy, d, gc, 0, 0, (unsigned)menu_w, MENU_H);
     XSetForeground(dpy, gc, px(COL_PILL_EDGE));
-    fill_round_rect(menu, 0, 0, menu_w, MENU_H, 18, 0);
+    fill_round_rect(d, 0, 0, menu_w, MENU_H, MENU_RADIUS, 0);
+    int total = menu_total();
     for (int slot = 0; slot < menu_visible; slot++) {
         int i = menu_scroll + slot;
-        if (i >= napps) break;
+        if (i >= total) break;
         int cx = MENU_PAD + MENU_ICON / 2 + slot * MENU_STEP;
         if (i == menu_hover) {
             XSetForeground(dpy, gc, px(0xffffff));
-            XDrawArc(dpy, menu, gc, cx - 24, 8, 48, 48, 0, 360 * 64);
+            XDrawArc(dpy, d, gc, cx - 24, MENU_H / 2 - 24, 48, 48, 0, 360 * 64);
         }
-        draw_app_icon(menu, i, cx, MENU_H / 2, MENU_ICON);
+        if (i == napps) draw_power_icon(d, cx, MENU_H / 2, MENU_ICON);
+        else draw_app_icon(d, i, cx, MENU_H / 2, MENU_ICON);
     }
-    XFlush(dpy);
+    menu_present();
 }
 
 static void close_menu(void)
@@ -854,10 +1033,12 @@ static void close_menu(void)
 static void open_menu(void)
 {
     load_apps(); /* fresh every open: picks up newly rented pods */
-    if (napps == 0) return;
+    /* Even with no readable apps file the rail still opens: the power slot
+     * is the kiosk's only exit gesture. */
+    int total = menu_total();
     menu_visible = (sw - 2 * MENU_PAD - 28) / MENU_STEP;
     if (menu_visible < 1) menu_visible = 1;
-    if (menu_visible > napps) menu_visible = napps;
+    if (menu_visible > total) menu_visible = total;
     menu_w = MENU_PAD * 2 + MENU_ICON + (menu_visible - 1) * MENU_STEP;
     menu_scroll = 0;
     if (menu == None) {
@@ -872,6 +1053,10 @@ static void open_menu(void)
                              &ma);
         XDefineCursor(dpy, menu, XCreateFontCursor(dpy, XC_left_ptr));
     }
+    /* The back buffer width follows the entry count; rebuild per open. */
+    if (menu_buffer != None) XFreePixmap(dpy, menu_buffer);
+    menu_buffer = XCreatePixmap(dpy, menu, (unsigned)menu_w, MENU_H,
+                                (unsigned)DefaultDepth(dpy, DefaultScreen(dpy)));
     XMoveResizeWindow(dpy, menu, (sw - menu_w) / 2, BAR_H - 3,
                       (unsigned)menu_w, 1);
     XMapRaised(dpy, menu);
@@ -879,6 +1064,7 @@ static void open_menu(void)
     menu_hover = -1;
     menu_ticks = 0;
     menu_anim_start = now_ms();
+    draw_menu(); /* render once into the buffer; frames only copy from it */
 }
 
 /* Window title folded to the printable-ASCII subset supported by core X fonts. */
@@ -922,16 +1108,20 @@ static int title_badge(const char *title)
 
 static void draw_transition(void)
 {
-    if (transition == None || !transition_start) return;
+    if (transition == None || !transition_start || transition_buffer == None)
+        return;
     XWindowAttributes a;
     if (!XGetWindowAttributes(dpy, transition, &a)) return;
+    Drawable d = transition_buffer;
     XSetForeground(dpy, gc, px(COL_PILL_BG));
-    XFillRectangle(dpy, transition, gc, 0, 0, (unsigned)a.width, (unsigned)a.height);
+    XFillRectangle(dpy, d, gc, 0, 0, (unsigned)a.width, (unsigned)a.height);
     XSetForeground(dpy, gc, px(COL_PILL_EDGE));
-    fill_round_rect(transition, 0, 0, a.width, a.height, 18, 0);
+    fill_round_rect(d, 0, 0, a.width, a.height, a.height / 2, 0);
     int i = win_index(transition_target);
-    draw_app_icon(transition, effective_app(i), a.width / 2, a.height / 2,
+    draw_app_icon(d, effective_app(i), a.width / 2, a.height / 2,
                   a.height > 30 ? 26 : (a.height > 8 ? a.height - 4 : 4));
+    XCopyArea(dpy, transition_buffer, transition, gc, 0, 0,
+              (unsigned)a.width, (unsigned)a.height, 0, 0);
 }
 
 static void start_switch(Window target)
@@ -945,6 +1135,9 @@ static void start_switch(Window target)
         transition = XCreateWindow(dpy, root, 0, BAR_H - 2, 1, 1, 0,
                                    CopyFromParent, InputOutput, CopyFromParent,
                                    CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
+        transition_buffer = XCreatePixmap(dpy, transition, TRANSITION_MAX_W,
+                                          TRANSITION_MAX_H,
+                                          (unsigned)DefaultDepth(dpy, DefaultScreen(dpy)));
     }
     transition_target = target;
     transition_rotate = 0;
@@ -978,6 +1171,7 @@ static void update_transition(long now)
     int h = 2 + (int)(44.0 * ease);
     XMoveResizeWindow(dpy, transition, (sw - w) / 2, BAR_H - 3,
                       (unsigned)w, (unsigned)h);
+    shape_round_corners(transition, w, h, h / 2);
     if (!transition_switched && t >= 0.44) {
         int i = win_index(transition_target);
         if (i >= 0) {
@@ -993,22 +1187,25 @@ static void update_transition(long now)
 
 static void draw_toast(long now)
 {
-    if (toast == None || !toast_start) return;
+    if (toast == None || !toast_start || toast_buffer == None) return;
     XWindowAttributes a;
     if (!XGetWindowAttributes(dpy, toast, &a)) return;
+    Drawable d = toast_buffer;
     XSetForeground(dpy, gc, px(COL_PILL_BG));
-    XFillRectangle(dpy, toast, gc, 0, 0, (unsigned)a.width, (unsigned)a.height);
+    XFillRectangle(dpy, d, gc, 0, 0, (unsigned)a.width, (unsigned)a.height);
     XSetForeground(dpy, gc, px(app_color(toast_app)));
-    fill_round_rect(toast, 0, 0, a.width, a.height, 22, 0);
+    fill_round_rect(d, 0, 0, a.width, a.height, 22, 0);
     /* Ease-in/out pulse: the app icon floats a few pixels without flashing. */
     int phase = (int)((now - toast_start) % 900);
     int lift = phase < 450 ? phase * 4 / 450 : (900 - phase) * 4 / 450;
-    draw_app_icon(toast, toast_app, 34, a.height / 2 - lift, 38);
+    draw_app_icon(d, toast_app, 34, a.height / 2 - lift, 38);
     const char *name = (toast_app >= 0 && toast_app < napps) ? apps[toast_app].name : "Chromium";
     XSetForeground(dpy, gc, px(app_color(toast_app)));
-    draw_string(toast, font_small, 64, 23, name);
+    draw_string(d, font_small, 64, 23, name);
     XSetForeground(dpy, gc, px(COL_TEXT));
-    draw_string(toast, font_big, 64, 46, toast_message);
+    draw_string(d, font_big, 64, 46, toast_message);
+    XCopyArea(dpy, toast_buffer, toast, gc, 0, 0,
+              (unsigned)a.width, (unsigned)a.height, 0, 0);
 }
 
 static void show_notification(Window target, int app, const char *message)
@@ -1025,6 +1222,8 @@ static void show_notification(Window target, int app, const char *message)
                               InputOutput, CopyFromParent,
                               CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
         XDefineCursor(dpy, toast, XCreateFontCursor(dpy, XC_left_ptr));
+        toast_buffer = XCreatePixmap(dpy, toast, TOAST_MAX_W, TOAST_MAX_H,
+                                     (unsigned)DefaultDepth(dpy, DefaultScreen(dpy)));
     }
     toast_target = target;
     toast_app = app;
@@ -1048,9 +1247,10 @@ static void update_toast(long now)
     if (t > 1.0) t = 1.0;
     if (t < 0.0) t = 0.0;
     double ease = t * t * (3.0 - 2.0 * t);
-    int w = PILL_W + (int)((318 - PILL_W) * ease);
-    int h = PILL_H + (int)((68 - PILL_H) * ease);
+    int w = PILL_W + (int)((TOAST_MAX_W - PILL_W) * ease);
+    int h = PILL_H + (int)((TOAST_MAX_H - PILL_H) * ease);
     XMoveResizeWindow(dpy, toast, (sw - w) / 2, PILL_Y, (unsigned)w, (unsigned)h);
+    shape_round_corners(toast, w, h, 22);
     XRaiseWindow(dpy, toast);
     draw_toast(now);
 }
@@ -1098,11 +1298,12 @@ static void update_menu_animation(long now)
     double ease = 1.0 + 2.70158 * q * q * q + 1.70158 * q * q;
     int h = 1 + (int)((MENU_H - 1) * ease);
     if (h < 1) h = 1;
-    if (h > MENU_H + 5) h = MENU_H + 5;
+    if (h > MENU_H) h = MENU_H; /* overshoot would tear the rounded mask */
     XMoveResizeWindow(dpy, menu, (sw - menu_w) / 2, BAR_H - 3,
                       (unsigned)menu_w, (unsigned)h);
+    shape_round_corners(menu, menu_w, h, MENU_RADIUS);
     XRaiseWindow(dpy, menu);
-    draw_menu();
+    menu_present();
 }
 
 static void manage_existing(void)
@@ -1177,7 +1378,6 @@ int main(void)
     battery_read(&bat_level, &bat_charging);
     wifi = wifi_signal();
 
-    Time last_click = 0;
     long press_start = 0; /* monotonic ms of a pill ButtonPress, 0 = idle */
     int ticks = 0;
     long last_status = now_ms();
@@ -1228,7 +1428,7 @@ int main(void)
                     int slot = ev.xmotion.x < MENU_PAD ? -1 :
                                (ev.xmotion.x - MENU_PAD) / MENU_STEP;
                     int item = (slot >= 0 && slot < menu_visible) ? menu_scroll + slot : -1;
-                    if (item < 0 || item >= napps) item = -1;
+                    if (item < 0 || item >= menu_total()) item = -1;
                     if (item != menu_hover) {
                         menu_hover = item;
                         draw_menu();
@@ -1248,7 +1448,8 @@ int main(void)
                         draw_menu();
                         break;
                     }
-                    if (ev.xbutton.button == Button5 && menu_scroll + menu_visible < napps) {
+                    if (ev.xbutton.button == Button5 &&
+                        menu_scroll + menu_visible < menu_total()) {
                         menu_scroll++;
                         draw_menu();
                         break;
@@ -1257,6 +1458,14 @@ int main(void)
                                (ev.xbutton.x - MENU_PAD) / MENU_STEP;
                     int item = (slot >= 0 && slot < menu_visible) ? menu_scroll + slot : -1;
                     close_menu();
+                    if (item == napps) {
+                        /* The rail's trailing power button: leave the kiosk.
+                         * The launcher script kills Chromium when we exit,
+                         * which ends the X session and restarts the
+                         * firmware. */
+                        XCloseDisplay(dpy);
+                        return 0;
+                    }
                     open_app(item >= 0 && item < napps ? item : -1);
                     dirty = 1;
                 } else if (ev.xbutton.window == toast) {
@@ -1285,18 +1494,10 @@ int main(void)
                     close_menu(); /* short pill tap dismisses an open menu */
                     break;
                 }
-                if (ev.xbutton.time - last_click < DBLCLICK_MS) {
-                    /* Double-click on the island: leave the kiosk. The
-                     * launcher script kills Chromium when we exit, which
-                     * ends the X session and restarts the firmware. */
-                    XCloseDisplay(dpy);
-                    return 0;
-                }
-                last_click = ev.xbutton.time;
                 /* Single click: cycle to the next window, app-switcher
-                 * style. (The first click of a double-click cycles once
-                 * before the exit lands -- harmless, the session is torn
-                 * down anyway.) */
+                 * style. Exiting the kiosk moved to the rail's power button
+                 * (long-press, last icon) -- the old double-click was one
+                 * mistimed switcher click away from killing the session. */
                 if (nwins > 1) {
                     /* Index 0 is active; the next icon blooms down from the
                      * island and is promoted at the transition midpoint. */
@@ -1314,9 +1515,12 @@ int main(void)
         if (queue_anim_start) dirty = 1;
         if (dirty) redraw(bat_level, bat_charging, wifi);
         /* Short poll while the pill is held so the launcher can drop at the
-         * long-press threshold instead of waiting for the release. */
+         * long-press threshold instead of waiting for the release. 16 ms
+         * animation frames (~60 fps) keep the drop/switch/toast motion
+         * smooth; everything is double-buffered so the extra frames only
+         * cost XCopyArea calls, not full redraws. */
         int animating = menu_anim_start || transition_start || toast_start || queue_anim_start;
-        int timeout = press_start ? 50 : (animating ? 33 : 250);
+        int timeout = press_start ? 30 : (animating ? 16 : 250);
         if (poll(&pfd, 1, timeout) == 0) {
             if (press_start) {
                 if (now_ms() - press_start >= LONGPRESS_MS) {

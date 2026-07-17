@@ -10,10 +10,10 @@ namespace jetson {
  *
  * Every public request performs network and disk I/O; callers must run it on a
  * worker thread.  API credentials and cookies are read from the process
- * environment by ReloadConfig().  The compatibility key/secret defaults mirror
- * the Strawberry reference implementation, but Zing rotates/rejects them from
- * time to time, so deployments can override all authentication inputs without
- * rebuilding the firmware.
+ * environment by ReloadConfig(). The compatibility key/secret defaults mirror
+ * the Strawberry reference implementation; anonymous requests establish their
+ * own in-memory Zing session, while deployments may still provide account
+ * cookies or override rotated credentials without rebuilding the firmware.
  */
 class ZingMusicClient {
 public:

@@ -546,7 +546,12 @@ private:
         std::string error;
         bool resolved = false;
         try {
-            resolved = zing_.FetchStreamingUrl(track.id, url, error);
+            if (!track.streaming_url.empty()) {
+                url = track.streaming_url;
+                resolved = true;
+            } else {
+                resolved = zing_.FetchStreamingUrl(track.id, url, error);
+            }
         } catch (const std::exception &exception) {
             error = std::string("Lỗi khi lấy luồng Zing: ") + exception.what();
         } catch (...) {

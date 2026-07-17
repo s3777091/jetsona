@@ -209,6 +209,18 @@ if(X11_LIBRARY AND X11_INCLUDE_DIR)
     add_executable(jetson_kiosk_bar tools/kiosk_bar/kiosk_bar.c)
     target_include_directories(jetson_kiosk_bar PRIVATE ${X11_INCLUDE_DIR})
     target_link_libraries(jetson_kiosk_bar PRIVATE ${X11_LIBRARY})
+    # Optional: libXext's shape extension rounds the corners of the app rail
+    # and toast popups. Without it (apt install libxext-dev) they stay square.
+    find_library(XEXT_LIBRARY Xext)
+    find_path(XEXT_INCLUDE_DIR X11/extensions/shape.h)
+    if(XEXT_LIBRARY AND XEXT_INCLUDE_DIR)
+        target_compile_definitions(jetson_kiosk_bar PRIVATE KIOSK_HAVE_SHAPE=1)
+        target_include_directories(jetson_kiosk_bar PRIVATE ${XEXT_INCLUDE_DIR})
+        target_link_libraries(jetson_kiosk_bar PRIVATE ${XEXT_LIBRARY})
+    else()
+        message(STATUS "libXext dev files not found; kiosk bar popups keep "
+            "square corners (apt install libxext-dev for rounded ones).")
+    endif()
     install(TARGETS jetson_kiosk_bar RUNTIME DESTINATION /opt/jetson-fw)
 else()
     message(WARNING "libX11 dev files not found; jetson_kiosk_bar will not be "

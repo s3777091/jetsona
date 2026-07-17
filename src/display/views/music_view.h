@@ -16,11 +16,12 @@ namespace home {
 
 /* Native music browser/player for the 800x480 desktop.
  *
- * Discovery is one vertically scrolling page containing four horizontally
- * scrolling rails (Trending songs, Popular artists, Radio, Top 100). Album
- * details replace that page in-place, so Music remains one warm multitasking
- * app. Zing requests and artwork downloads always run off the LVGL thread;
- * PlayerController owns playback after the view is hidden or closed. */
+ * Discovery is one vertically scrolling page containing six horizontally
+ * scrolling rails (Dành riêng cho bạn, Mới phát hành, Chill, Top 100,
+ * Nghệ sĩ, Radio). Album details replace that page in-place, so Music remains
+ * one warm multitasking app. Zing requests and artwork downloads always run
+ * off the LVGL thread; PlayerController owns playback after the view is hidden
+ * or closed. */
 class MusicView : public OverlayView {
 public:
     using NotifyCb = std::function<void(const char *)>;

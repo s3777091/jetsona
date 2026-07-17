@@ -51,10 +51,8 @@ constexpr char kDefaultBaseUrl[] = "https://zingmp3.vn";
 constexpr char kHomeEndpoint[] = "/api/v2/page/get/home";
 constexpr char kPlaylistEndpoint[] = "/api/v2/page/get/playlist";
 constexpr char kStreamingEndpoint[] = "/api/v2/song/get/streaming";
-constexpr char kRadioEndpoint[] = "/api/v2/page/get/radio";
 constexpr char kTop100Endpoint[] = "/api/v2/page/get/top-100";
-constexpr char kRealtimeChartEndpoint[] = "/api/v2/page/get/rt-chart";
-constexpr char kChartHomeEndpoint[] = "/api/v2/page/get/chart-home";
+constexpr char kRadioEndpoint[] = "/api/v2/page/get/radio";
 
 constexpr size_t kMaxJsonBytes = 8 * 1024 * 1024;
 constexpr size_t kMaxArtworkBytes = 12 * 1024 * 1024;
@@ -245,15 +243,39 @@ void AddCommonHeaders(const ClientConfig &config,
     *headers = curl_slist_append(*headers, origin.c_str());
 }
 
-HttpResult HttpGetJson(const ClientConfig &config, const std::string &url,
-                       const std::string &cookies) {
-    EnsureCurlInit();
+class CurlEasySession {
+public:
+    CurlEasySession() {
+        EnsureCurlInit();
+        handle_ = curl_easy_init();
+    }
+
+    ~CurlEasySession() {
+        if (handle_) curl_easy_cleanup(handle_);
+    }
+
+    CurlEasySession(const CurlEasySession &) = delete;
+    CurlEasySession &operator=(const CurlEasySession &) = delete;
+
+    CURL *get() const { return handle_; }
+
+private:
+    CURL *handle_ = nullptr;
+};
+
+HttpResult HttpGetJson(CURL *curl, const ClientConfig &config,
+                       const std::string &url, const std::string &cookies) {
     HttpResult result;
-    CURL *curl = curl_easy_init();
     if (!curl) {
         result.error = "curl_easy_init failed";
         return result;
     }
+
+    // Reset request options while retaining this easy handle's connection and
+    // in-memory cookie store. Zing responds to a fresh anonymous request with
+    // zmp3_rqid and expects it back when the supplied URL is fetched again.
+    curl_easy_reset(curl);
+    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, "");
 
     StringSink sink;
     sink.limit = kMaxJsonBytes;
@@ -270,7 +292,7 @@ HttpResult HttpGetJson(const ClientConfig &config, const std::string &url,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteString);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sink);
     // Signed API responses are expected to be JSON. Do not follow transport
-    // redirects while a Cookie header is attached; Zing's JSON fallback URL is
+    // redirects while a Cookie header is attached; Zing's JSON retry URL is
     // validated separately below before it is requested.
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
@@ -281,8 +303,8 @@ HttpResult HttpGetJson(const ClientConfig &config, const std::string &url,
 
     const CURLcode code = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &result.status);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, nullptr);
     curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
 
     result.body = std::move(sink.data);
     if (code != CURLE_OK) {
@@ -381,7 +403,7 @@ bool HostMatches(const std::string &host, const std::string &suffix) {
            host[host.size() - suffix.size() - 1] == '.';
 }
 
-bool IsSafeApiFallback(const ClientConfig &config, const std::string &url) {
+bool IsSafeApiRetry(const ClientConfig &config, const std::string &url) {
     if (!url.empty() && url.front() == '/' && url.rfind("//", 0) != 0)
         return true;
     std::string host;
@@ -413,10 +435,10 @@ std::string ExplainZingError(int code) {
 }
 
 bool ParseEnvelope(const json &root, json &data, int &code, std::string &message,
-                   std::string &fallback_url) {
+                   std::string &retry_url) {
     code = 0;
     message.clear();
-    fallback_url.clear();
+    retry_url.clear();
     if (!root.is_object()) {
         message = "JSON root is not an object";
         return false;
@@ -426,7 +448,7 @@ bool ParseEnvelope(const json &root, json &data, int &code, std::string &message
     const bool has_err = err_it != root.end();
     if (has_err) code = JsonInt(*err_it, -1);
     message = JsonString(root, {"msg", "message", "error"});
-    fallback_url = JsonString(root, {"url"});
+    retry_url = JsonString(root, {"url"});
 
     if (has_err && code != 0) return false;
     auto data_it = root.find("data");
@@ -449,10 +471,16 @@ bool RequestApi(const ClientConfig &config, const std::string &endpoint,
                 const std::map<std::string, std::string> &params, json &out,
                 std::string &err) {
     std::vector<std::string> diagnostics;
+    CurlEasySession session;
+    if (!session.get()) {
+        err = "curl_easy_init failed";
+        return false;
+    }
 
     // With configured cookies, retry anonymously to distinguish stale-cookie
-    // failures from signature failures.  Without cookies, the second anonymous
-    // attempt still covers transient network/upstream errors with a fresh URL.
+    // failures from signature failures. Without configured cookies, the first
+    // response bootstraps Zing's in-memory session and the next request on the
+    // same easy handle automatically sends the server-issued zmp3_rqid.
     for (int attempt = 0; attempt < 2; ++attempt) {
         const bool use_cookie = attempt == 0 && !config.cookies.empty();
         const std::string variant = use_cookie ? "cookie" : "anonymous";
@@ -464,7 +492,8 @@ bool RequestApi(const ClientConfig &config, const std::string &endpoint,
         }
 
         HttpResult response = HttpGetJson(
-            config, signed_url, use_cookie ? config.cookies : std::string());
+            session.get(), config, signed_url,
+            use_cookie ? config.cookies : std::string());
         if (!response.ok) {
             diagnostics.push_back(variant + " attempt " + std::to_string(attempt + 1) +
                                   ": " + response.error);
@@ -481,8 +510,8 @@ bool RequestApi(const ClientConfig &config, const std::string &endpoint,
         json data;
         int zing_code = 0;
         std::string message;
-        std::string fallback_url;
-        if (ParseEnvelope(root, data, zing_code, message, fallback_url)) {
+        std::string retry_url;
+        if (ParseEnvelope(root, data, zing_code, message, retry_url)) {
             out = std::move(data);
             err.clear();
             return true;
@@ -491,52 +520,48 @@ bool RequestApi(const ClientConfig &config, const std::string &endpoint,
         std::string detail = ExplainZingError(zing_code);
         if (!message.empty()) detail += " (" + message + ")";
 
-        // Strawberry follows the URL supplied with -201.  Preserve that
-        // behavior, but validate the second envelope instead of assuming the
-        // redirect fixed authentication.
-        if (!fallback_url.empty() && IsSafeApiFallback(config, fallback_url)) {
-            HttpResult fallback = HttpGetJson(
-                config, ResolveUrl(config, fallback_url),
+        // Follow the retry URL supplied with -201 on the same in-memory
+        // session that received zmp3_rqid. Validate the second envelope
+        // instead of assuming the retry fixed authentication.
+        if (!retry_url.empty() && IsSafeApiRetry(config, retry_url)) {
+            HttpResult retry = HttpGetJson(
+                session.get(), config, ResolveUrl(config, retry_url),
                 use_cookie ? config.cookies : std::string());
-            if (fallback.ok) {
-                json fallback_root = json::parse(fallback.body, nullptr, false);
-                json fallback_data;
-                int fallback_code = 0;
-                std::string fallback_message;
+            if (retry.ok) {
+                json retry_root = json::parse(retry.body, nullptr, false);
+                json retry_data;
+                int retry_code = 0;
+                std::string retry_message;
                 std::string ignored_url;
-                if (!fallback_root.is_discarded() &&
-                    ParseEnvelope(fallback_root, fallback_data, fallback_code,
-                                  fallback_message, ignored_url)) {
-                    out = std::move(fallback_data);
+                if (!retry_root.is_discarded() &&
+                    ParseEnvelope(retry_root, retry_data, retry_code,
+                                  retry_message, ignored_url)) {
+                    out = std::move(retry_data);
                     err.clear();
                     return true;
                 }
-                if (!fallback_root.is_discarded()) {
-                    detail += ", fallback: " + ExplainZingError(fallback_code);
-                    if (!fallback_message.empty())
-                        detail += " (" + fallback_message + ")";
+                if (!retry_root.is_discarded()) {
+                    detail += ", retry: " + ExplainZingError(retry_code);
+                    if (!retry_message.empty())
+                        detail += " (" + retry_message + ")";
                 } else {
-                    detail += ", fallback: invalid JSON";
+                    detail += ", retry: invalid JSON";
                 }
             } else {
-                detail += ", fallback: " + fallback.error;
+                detail += ", retry: " + retry.error;
             }
-        } else if (!fallback_url.empty()) {
-            detail += ", fallback URL rejected by host allowlist";
+        } else if (!retry_url.empty()) {
+            detail += ", retry URL rejected by host allowlist";
         }
 
         diagnostics.push_back(variant + " attempt " + std::to_string(attempt + 1) +
                               ": " + detail);
-        // A second request without a new cookie is the same signed operation
-        // and cannot repair a deterministic -201/-104 response. Network/HTTP
-        // failures above still get the second attempt.
-        if (config.cookies.empty()) break;
     }
 
     err = "Zing " + endpoint + " failed: " +
           JoinDiagnostics(diagnostics) +
-          ". Override ZING_API_VERSION/ZING_API_KEY/ZING_SECRET_KEY and "
-          "provide a current ZING_COOKIES value when Zing requires a session.";
+          ". Override ZING_API_VERSION/ZING_API_KEY/ZING_SECRET_KEY if Zing "
+          "rotates its compatibility credentials.";
     return false;
 }
 
@@ -575,7 +600,7 @@ bool LooksLikeRadio(const json &item) {
     const std::string type = JsonString(item, {"objectType", "type", "sectionType"});
     return ContainsAny(type, {"radio", "livestream", "live-stream"}) ||
            (item.is_object() && (item.contains("host") || item.contains("program")) &&
-            item.contains("livestream"));
+            (item.contains("livestream") || item.contains("streaming")));
 }
 
 bool IsCandidate(const json &item) {
@@ -621,7 +646,8 @@ std::string StripHtml(const std::string &input) {
 bool IsPremium(const json &item) {
     if (!item.is_object()) return false;
     auto premium = item.find("isPremium");
-    if (premium != item.end() && premium->is_boolean()) return premium->get<bool>();
+    if (premium != item.end() && premium->is_boolean() && premium->get<bool>())
+        return true;
     auto status = item.find("streamingStatus");
     return status != item.end() && JsonInt(*status) == 2;
 }
@@ -651,6 +677,14 @@ CatalogItem ParseCatalogItem(const json &item, CatalogKind hint) {
     result.subtitle = StripHtml(result.subtitle);
     result.thumbnail_url = JsonString(item,
         {"thumbnailM", "thumbnail", "thumbnailR", "thumbnailHasText"});
+    const std::string streaming_url = JsonString(
+        item, {"streaming", "streamingUrl", "streamUrl"});
+    std::string streaming_host;
+    if (ExtractHttpsHost(streaming_url, streaming_host) &&
+        (HostMatches(streaming_host, "zingmp3.vn") ||
+         HostMatches(streaming_host, "zmdcdn.me"))) {
+        result.streaming_url = streaming_url;
+    }
     if (item.is_object()) {
         auto duration = item.find("duration");
         if (duration != item.end()) result.duration_seconds = JsonInt(*duration);
@@ -671,25 +705,45 @@ void AddUnique(std::vector<CatalogItem> &items, CatalogItem item) {
         items.push_back(std::move(item));
 }
 
-void CollectArtistsFromSong(const json &song, std::vector<CatalogItem> &artists) {
+void CollectArtistsFromSong(const json &song,
+                            std::vector<CatalogItem> &artists) {
     if (!song.is_object()) return;
-    auto it = song.find("artists");
-    if (it == song.end() || !it->is_array()) return;
-    for (const auto &artist : *it)
-        AddUnique(artists, ParseCatalogItem(artist, CatalogKind::Artist));
+    auto entries = song.find("artists");
+    if (entries == song.end() || !entries->is_array()) return;
+    for (const auto &entry : *entries) {
+        // Artist IDs are not accepted by the playlist endpoint. Only expose
+        // artists that provide the playlistId used when their card is opened.
+        if (JsonString(entry, {"playlistId"}).empty()) continue;
+        CatalogItem artist = ParseCatalogItem(entry, CatalogKind::Artist);
+        artist.kind = CatalogKind::Artist;
+        AddUnique(artists, std::move(artist));
+    }
 }
 
-CatalogKind ClassifySection(const json &section) {
-    const std::string label = JsonString(section, {"title"}) + " " +
-                              JsonString(section, {"sectionType"}) + " " +
-                              JsonString(section, {"type"});
-    if (ContainsAny(label, {"top 100", "top100"})) return CatalogKind::Top100;
-    if (ContainsAny(label, {"radio", "livestream"})) return CatalogKind::Radio;
-    if (ContainsAny(label, {"artist", "nghệ sĩ", "nghe si"})) return CatalogKind::Artist;
-    if (ContainsAny(label, {"trending", "thịnh hành", "thinh hanh", "new-release",
-                            "mới", "moi", "song"}))
-        return CatalogKind::Song;
-    return CatalogKind::Playlist;
+enum class HomeSection {
+    Ignore,
+    Personalized,
+    NewRelease,
+    Chill,
+    Top100,
+};
+
+HomeSection ClassifyHomeSection(const json &section) {
+    const std::string id = LowerAscii(JsonString(section, {"sectionId"}));
+    const std::string type = LowerAscii(JsonString(section, {"sectionType"}));
+    const std::string title = LowerAscii(JsonString(section, {"title"}));
+
+    if (id == "hquickplay2" || type == "quickplay" ||
+        type == "songstation" ||
+        ContainsAny(title, {"dành riêng", "danh rieng", "gợi ý", "goi y"}))
+        return HomeSection::Personalized;
+    if (type == "new-release" ||
+        ContainsAny(title, {"mới phát hành", "moi phat hanh"}))
+        return HomeSection::NewRelease;
+    if (ContainsAny(title, {"chill"})) return HomeSection::Chill;
+    if (id == "h100" || ContainsAny(title, {"top 100", "top100"}))
+        return HomeSection::Top100;
+    return HomeSection::Ignore;
 }
 
 void ParseHomeData(const json &data, DiscoverData &out) {
@@ -701,38 +755,36 @@ void ParseHomeData(const json &data, DiscoverData &out) {
 
     if (sections->is_array()) {
         for (const auto &section : *sections) {
-            CatalogKind hint = ClassifySection(section);
-            const json *content = &section;
-            if (section.is_object()) {
-                auto items = section.find("items");
-                if (items != section.end()) content = &*items;
-            }
+            const HomeSection section_kind = ClassifyHomeSection(section);
+            if (section_kind == HomeSection::Ignore || !section.is_object())
+                continue;
+            auto items = section.find("items");
+            if (items == section.end()) continue;
+
             std::vector<const json *> candidates;
-            CollectCandidates(*content, candidates);
+            CollectCandidates(*items, candidates);
             for (const json *candidate : candidates) {
                 if (!candidate) continue;
-                if (LooksLikeArtist(*candidate) || hint == CatalogKind::Artist) {
-                    AddUnique(out.artists, ParseCatalogItem(*candidate, CatalogKind::Artist));
-                } else if (LooksLikeRadio(*candidate) || hint == CatalogKind::Radio) {
-                    AddUnique(out.radio, ParseCatalogItem(*candidate, CatalogKind::Radio));
-                } else if (hint == CatalogKind::Top100) {
-                    AddUnique(out.top100, ParseCatalogItem(*candidate, CatalogKind::Top100));
-                } else if (LooksLikeSong(*candidate) || hint == CatalogKind::Song) {
-                    AddUnique(out.trending, ParseCatalogItem(*candidate, CatalogKind::Song));
+                if (section_kind == HomeSection::NewRelease &&
+                    !LooksLikeSong(*candidate))
+                    continue;
+                if (section_kind == HomeSection::NewRelease)
                     CollectArtistsFromSong(*candidate, out.artists);
-                }
-            }
-        }
-    }
 
-    // Tolerate response shapes without section wrappers.
-    if (out.trending.empty()) {
-        std::vector<const json *> candidates;
-        CollectCandidates(data, candidates);
-        for (const json *candidate : candidates) {
-            if (LooksLikeSong(*candidate)) {
-                AddUnique(out.trending, ParseCatalogItem(*candidate, CatalogKind::Song));
-                CollectArtistsFromSong(*candidate, out.artists);
+                CatalogKind hint = CatalogKind::Playlist;
+                std::vector<CatalogItem> *target = &out.personalized;
+                if (section_kind == HomeSection::NewRelease) {
+                    hint = CatalogKind::Song;
+                    target = &out.new_releases;
+                } else if (section_kind == HomeSection::Chill) {
+                    target = &out.chill;
+                } else if (section_kind == HomeSection::Top100) {
+                    hint = CatalogKind::Top100;
+                    target = &out.top100;
+                }
+                CatalogItem item = ParseCatalogItem(*candidate, hint);
+                item.kind = LooksLikeSong(*candidate) ? CatalogKind::Song : hint;
+                AddUnique(*target, std::move(item));
             }
         }
     }
@@ -749,115 +801,30 @@ void ParseDedicatedSection(const json &data, CatalogKind kind,
     }
 }
 
-void ParseSongData(const json &data, DiscoverData &out) {
-    std::vector<const json *> candidates;
-    CollectCandidates(data, candidates);
-    for (const json *candidate : candidates) {
-        if (!candidate || !LooksLikeSong(*candidate)) continue;
-        CatalogItem item = ParseCatalogItem(*candidate, CatalogKind::Song);
-        item.kind = CatalogKind::Song;
-        AddUnique(out.trending, std::move(item));
-        CollectArtistsFromSong(*candidate, out.artists);
-    }
-}
-
-void ParseRadioNode(const json &node, CatalogKind context, DiscoverData &out,
-                    int depth = 0) {
-    if (depth > 10) return;
-    if (node.is_array()) {
-        for (const auto &child : node)
-            ParseRadioNode(child, context, out, depth + 1);
-        return;
-    }
-    if (!node.is_object()) return;
-
-    const CatalogKind section_kind = ClassifySection(node);
-    if (section_kind == CatalogKind::Artist) context = CatalogKind::Artist;
-    else if (section_kind == CatalogKind::Radio) context = CatalogKind::Radio;
-
-    if (IsCandidate(node)) {
-        const bool artist = context == CatalogKind::Artist || LooksLikeArtist(node);
-        CatalogItem item = ParseCatalogItem(
-            node, artist ? CatalogKind::Artist : CatalogKind::Radio);
-        item.kind = artist ? CatalogKind::Artist : CatalogKind::Radio;
-        AddUnique(artist ? out.artists : out.radio, std::move(item));
-        return;
-    }
-
-    for (auto it = node.begin(); it != node.end(); ++it) {
-        CatalogKind child_context = context;
-        if (ContainsAny(it.key(), {"artistspotlight", "artist_spotlight",
-                                   "artist spotlight"})) {
-            child_context = CatalogKind::Artist;
-        } else if (ContainsAny(it.key(), {"radio", "livestream", "live-stream"})) {
-            child_context = CatalogKind::Radio;
-        }
-        ParseRadioNode(it.value(), child_context, out, depth + 1);
-    }
-}
-
 void ParseRadioData(const json &data, DiscoverData &out) {
-    // The current /radio response mixes playable stations with an
-    // `artistSpotlight` collection. Keep those groups separate so circular
-    // artist cards never leak into the Radio row.
-    ParseRadioNode(data, CatalogKind::Radio, out);
-}
+    const json *sections = &data;
+    if (data.is_object()) {
+        auto items = data.find("items");
+        if (items != data.end()) sections = &*items;
+    }
+    if (!sections->is_array()) return;
 
-CatalogItem DemoItem(const char *id, CatalogKind kind, const char *title,
-                     const char *subtitle) {
-    CatalogItem item;
-    item.id = id;
-    item.kind = kind;
-    item.title = title;
-    item.subtitle = subtitle;
-    return item;
-}
+    for (const auto &section : *sections) {
+        if (!section.is_object()) continue;
+        const std::string type = JsonString(section, {"sectionType"});
+        if (!ContainsAny(type, {"radio", "livestream", "live-stream"}))
+            continue;
+        auto items = section.find("items");
+        if (items == section.end()) continue;
 
-void FillDemoMetadata(DiscoverData &out, std::vector<std::string> &warnings) {
-    constexpr char kDemoNote[] = "Dữ liệu mẫu — Zing tạm thời không khả dụng";
-    if (out.trending.empty()) {
-        warnings.push_back("Trending is using demo metadata");
-        out.trending = {
-            DemoItem("demo:song:daily", CatalogKind::Song,
-                     "Giai điệu nổi bật", kDemoNote),
-            DemoItem("demo:song:new", CatalogKind::Song,
-                     "Khám phá hôm nay", kDemoNote),
-            DemoItem("demo:song:vpop", CatalogKind::Song,
-                     "V-Pop tuyển chọn", kDemoNote),
-        };
-    }
-    if (out.artists.empty()) {
-        warnings.push_back("Popular artists is using demo metadata");
-        out.artists = {
-            DemoItem("demo:artist:sontung", CatalogKind::Artist,
-                     "Sơn Tùng M-TP", kDemoNote),
-            DemoItem("demo:artist:soobin", CatalogKind::Artist,
-                     "SOOBIN", kDemoNote),
-            DemoItem("demo:artist:hieuthuhai", CatalogKind::Artist,
-                     "HIEUTHUHAI", kDemoNote),
-        };
-    }
-    if (out.radio.empty()) {
-        warnings.push_back("Radio is using demo metadata");
-        out.radio = {
-            DemoItem("demo:radio:vpop", CatalogKind::Radio,
-                     "V-Pop Radio", kDemoNote),
-            DemoItem("demo:radio:acoustic", CatalogKind::Radio,
-                     "Acoustic Radio", kDemoNote),
-            DemoItem("demo:radio:chill", CatalogKind::Radio,
-                     "Chill Radio", kDemoNote),
-        };
-    }
-    if (out.top100.empty()) {
-        warnings.push_back("Top 100 is using demo metadata");
-        out.top100 = {
-            DemoItem("demo:top100:vietnam", CatalogKind::Top100,
-                     "Top 100 Nhạc Việt", kDemoNote),
-            DemoItem("demo:top100:pop", CatalogKind::Top100,
-                     "Top 100 Pop", kDemoNote),
-            DemoItem("demo:top100:asia", CatalogKind::Top100,
-                     "Top 100 Châu Á", kDemoNote),
-        };
+        std::vector<const json *> candidates;
+        CollectCandidates(*items, candidates);
+        for (const json *candidate : candidates) {
+            if (!candidate) continue;
+            CatalogItem item = ParseCatalogItem(*candidate, CatalogKind::Radio);
+            item.kind = CatalogKind::Radio;
+            AddUnique(out.radio, std::move(item));
+        }
     }
 }
 
@@ -985,10 +952,12 @@ void CacheDiscoverArtwork(ZingMusicClient &client, DiscoverData &data) {
             AddArtworkTarget(targets, indices, item.thumbnail_url,
                              &item.thumbnail_path);
     };
-    add_group(data.trending);
+    add_group(data.personalized);
+    add_group(data.new_releases);
+    add_group(data.chill);
+    add_group(data.top100);
     add_group(data.artists);
     add_group(data.radio);
-    add_group(data.top100);
     CacheArtworkTargets(client, targets);
 }
 
@@ -999,25 +968,6 @@ void CacheAlbumArtwork(ZingMusicClient &client, Album &album) {
     for (auto &track : album.tracks)
         AddArtworkTarget(targets, indices, track.artwork_url, &track.artwork_path);
     CacheArtworkTargets(client, targets);
-}
-
-void BuildDemoAlbum(const std::string &id, Album &album) {
-    album = {};
-    album.id = id;
-    album.title = ContainsAny(id, {"top100"}) ? "Top 100 — bản xem trước"
-                                               : "Tuyển chọn — bản xem trước";
-    album.creator = "Jetsona Music";
-    album.description =
-        "Metadata mẫu được hiển thị vì Zing đang từ chối bộ chữ ký hiện tại.";
-    for (int i = 0; i < 3; ++i) {
-        Track track;
-        track.id = id + ":track:" + std::to_string(i + 1);
-        track.title = "Bài hát mẫu " + std::to_string(i + 1);
-        track.artist = "Dữ liệu ngoại tuyến";
-        track.album = album.title;
-        track.duration_ms = (180 + i * 15) * 1000LL;
-        album.tracks.push_back(std::move(track));
-    }
 }
 
 std::string FindStreamingUrl(const json &data) {
@@ -1091,14 +1041,9 @@ bool ZingMusicClient::FetchDiscover(DiscoverData &out, std::string &err) {
         bool ok = false;
     };
     PendingRequest home{kHomeEndpoint, {{"count", "30"}, {"page", "1"}}};
-    PendingRequest chart{kRealtimeChartEndpoint,
-                         {{"count", "30"}, {"type", "song"}}};
-    PendingRequest chart_home{kChartHomeEndpoint, {}};
-    PendingRequest radio{kRadioEndpoint, {{"count", "30"}, {"page", "1"}}};
     PendingRequest top100{kTop100Endpoint, {}};
-    std::vector<PendingRequest *> requests = {
-        &home, &chart, &chart_home, &radio, &top100
-    };
+    PendingRequest radio{kRadioEndpoint, {{"count", "30"}, {"page", "1"}}};
+    std::vector<PendingRequest *> requests = {&home, &top100, &radio};
     std::vector<std::thread> workers;
     workers.reserve(requests.size());
     for (PendingRequest *request : requests) {
@@ -1122,44 +1067,38 @@ bool ZingMusicClient::FetchDiscover(DiscoverData &out, std::string &err) {
     if (home.ok) ParseHomeData(home.data, out);
     else warnings.push_back(home.error);
 
-    // Home layouts change frequently. Prefer it, then consume the two chart
-    // responses that were fetched in parallel so one unavailable endpoint
-    // cannot make the skeleton wait through several serial timeout windows.
-    if (out.trending.empty()) {
-        if (chart.ok) ParseSongData(chart.data, out);
-        else warnings.push_back(chart.error);
-    }
-    if (out.trending.empty()) {
-        if (chart_home.ok) ParseSongData(chart_home.data, out);
-        else warnings.push_back(chart_home.error);
-    }
-    if (radio.ok) ParseRadioData(radio.data, out);
-    else warnings.push_back(radio.error);
     if (top100.ok)
         ParseDedicatedSection(top100.data, CatalogKind::Top100, out.top100);
     else
         warnings.push_back(top100.error);
+    if (radio.ok) ParseRadioData(radio.data, out);
+    else warnings.push_back(radio.error);
 
-    const bool needs_demo = out.trending.empty() || out.artists.empty() ||
-                            out.radio.empty() || out.top100.empty();
-    const bool any_live = home.ok || chart.ok || chart_home.ok ||
-                          radio.ok || top100.ok;
-    FillDemoMetadata(out, warnings);
+    const bool has_required_sections = !out.personalized.empty() &&
+                                       !out.new_releases.empty() &&
+                                       !out.chill.empty() &&
+                                       !out.top100.empty() &&
+                                       !out.artists.empty() &&
+                                       !out.radio.empty();
     CacheDiscoverArtwork(*this, out);
 
     if (!warnings.empty()) {
         const std::string diagnostics = JoinDiagnostics(warnings, " | ");
         ESP_LOGW(TAG, "discover degraded: %s", diagnostics.c_str());
     }
-    if (!any_live) {
-        err = "Zing đang từ chối phiên hiện tại; đang hiển thị dữ liệu mẫu. "
-              "Hãy cập nhật ZING_COOKIES rồi khởi động lại ứng dụng.";
-    } else if (needs_demo) {
-        err = "Một số mục Zing chưa khả dụng nên đang dùng dữ liệu mẫu.";
-    } else {
-        err.clear();
+    if (!has_required_sections) {
+        ESP_LOGW(TAG,
+                 "required sections missing: personalized=%zu new=%zu chill=%zu "
+                 "top100=%zu artists=%zu radio=%zu",
+                 out.personalized.size(), out.new_releases.size(),
+                 out.chill.size(), out.top100.size(), out.artists.size(),
+                 out.radio.size());
+        out = {};
+        err = "zing api đang lỗi";
+        return false;
     }
-    return any_live;
+    err.clear();
+    return true;
 }
 
 bool ZingMusicClient::FetchAlbum(const std::string &id, Album &out,
@@ -1167,12 +1106,6 @@ bool ZingMusicClient::FetchAlbum(const std::string &id, Album &out,
     ReloadConfig();
     out = {};
     if (id.empty()) { err = "Zing album id is empty"; return false; }
-    if (id.rfind("demo:", 0) == 0) {
-        BuildDemoAlbum(id, out);
-        err = "Album metadata is an offline demo; streaming is unavailable.";
-        return true;
-    }
-
     ClientConfig config{version_, api_key_, secret_key_, base_url_, cookies_,
                         artwork_cache_dir_};
     json data;
@@ -1247,11 +1180,6 @@ bool ZingMusicClient::FetchStreamingUrl(const std::string &id, std::string &out,
     ReloadConfig();
     out.clear();
     if (id.empty()) { err = "Zing song id is empty"; return false; }
-    if (id.rfind("demo:", 0) == 0 || id.find(":track:") != std::string::npos) {
-        err = "This is offline demo metadata and has no streaming URL.";
-        return false;
-    }
-
     ClientConfig config{version_, api_key_, secret_key_, base_url_, cookies_,
                         artwork_cache_dir_};
     json data;

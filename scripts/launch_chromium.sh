@@ -71,7 +71,8 @@ if [ "${1:-}" = "--x-client" ]; then
     # With the kiosk bar available, run it next to Chromium. The bar draws the
     # Dynamic Island strip on top and acts as a micro-WM: it hands Chromium the
     # X input focus (without it the USB keyboard is dead in a WM-less session)
-    # and exits when the island pill is double-clicked. Whichever of the two
+    # and exits via the app rail's power button (long-press the island, last
+    # icon). Whichever of the two
     # dies first ends the session: bar exit -> user asked to leave the browser;
     # chromium exit -> nothing left to show. Either way xinit tears X down and
     # jetson_fw_run.sh restarts the firmware.
@@ -109,8 +110,9 @@ EOF
             ) &
         fi
 
-        # Session lifetime: bar exit = user double-clicked the island (leave
-        # the browser); chromium exit = nothing left to show. Poll instead of
+        # Session lifetime: bar exit = user pressed the rail's power button
+        # (leave the browser); chromium exit = nothing left to show. Poll
+        # instead of
         # `wait -n` so the extra-URL helper above can't end the session.
         trap 'kill "$BAR_PID" "$APP_PID" 2>/dev/null' EXIT INT TERM
         while kill -0 "$BAR_PID" 2>/dev/null && kill -0 "$APP_PID" 2>/dev/null; do
@@ -185,7 +187,8 @@ fi
 # non-installed path. When found, Chromium runs as a borderless --app window
 # tucked below the 42px strip instead of a full-screen --kiosk (which would
 # paint over the bar); the bar re-asserts that geometry anyway if a page goes
-# full-screen. Double-clicking the island pill exits back to the firmware.
+# full-screen. Long-press the island and tap the rail's trailing power
+# button to exit back to the firmware.
 BAR_H=42
 PANEL_W="${CHROMIUM_PANEL_WIDTH:-800}"
 PANEL_H="${CHROMIUM_PANEL_HEIGHT:-480}"

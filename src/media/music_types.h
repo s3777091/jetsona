@@ -22,15 +22,18 @@ struct CatalogItem {
     std::string subtitle;
     std::string thumbnail_url;
     std::string thumbnail_path;
+    std::string streaming_url;
     int duration_seconds = 0;
     bool premium = false;
 };
 
 struct DiscoverData {
-    std::vector<CatalogItem> trending;
+    std::vector<CatalogItem> personalized;
+    std::vector<CatalogItem> new_releases;
+    std::vector<CatalogItem> chill;
+    std::vector<CatalogItem> top100;
     std::vector<CatalogItem> artists;
     std::vector<CatalogItem> radio;
-    std::vector<CatalogItem> top100;
 };
 
 struct Track {
@@ -40,6 +43,7 @@ struct Track {
     std::string album;
     std::string artwork_url;
     std::string artwork_path;
+    std::string streaming_url;
     int64_t duration_ms = 0;
     bool premium = false;
 };

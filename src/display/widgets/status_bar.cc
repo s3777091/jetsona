@@ -265,6 +265,11 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_set_style_shadow_color(pill_, lv_color_black(), 0);
     lv_obj_set_style_shadow_width(pill_, 12, 0);
     lv_obj_set_style_shadow_opa(pill_, LV_OPA_30, 0);
+    // Children (notification icon circle, media rows) are laid out for the
+    // expanded pill; without corner clipping they poke out of the resting
+    // 132x36 pill and read as stray icons floating over whatever screen is
+    // open (the bar is global on lv_layer_top()).
+    lv_obj_set_style_clip_corner(pill_, true, 0);
     lv_obj_clear_flag(pill_, LV_OBJ_FLAG_SCROLLABLE);
     // With music active, a click expands/collapses now-playing. Long-press
     // retains the app-switcher gesture; without music, a normal click opens it.

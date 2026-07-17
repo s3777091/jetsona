@@ -10,7 +10,8 @@ JETSON_STUDIO_URL: ""
 
 # Native music browser. The checked-in version/key compatibility defaults are
 # not an availability guarantee: Zing can rotate signatures at any time. Put
-# ZING_API_KEY, ZING_SECRET_KEY and browser ZING_COOKIES only in .env.
+# key/secret overrides and optional account cookies only in .env; anonymous
+# requests bootstrap Zing's short-lived session cookie automatically.
 ZING_BASE_URL: "https://zingmp3.vn"
 ZING_API_VERSION: "1.19.3"
 ZING_ARTWORK_CACHE_DIR: ""
