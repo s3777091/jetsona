@@ -70,24 +70,27 @@ struct ControllerState {
 };
 
 ControllerState ReadControllerState() {
-    glob_t matches{};
     const char *patterns[] = {
         "/dev/input/js*",
         "/dev/input/by-id/*-joystick",
         "/dev/input/by-path/*-joystick",
     };
 
-    bool appended = false;
+    std::string path;
     for (const char *pattern : patterns) {
-        const int flags = appended ? GLOB_APPEND : 0;
-        const int result = glob(pattern, flags, nullptr, &matches);
-        if (result == 0) appended = true;
+        glob_t matches{};
+        const int result = glob(pattern, 0, nullptr, &matches);
+        if (result == 0 && matches.gl_pathc > 0 && matches.gl_pathv &&
+            matches.gl_pathv[0]) {
+            path = matches.gl_pathv[0];
+        }
+        globfree(&matches);
+        if (!path.empty()) break;
     }
 
     ControllerState state;
-    if (matches.gl_pathc > 0 && matches.gl_pathv && matches.gl_pathv[0]) {
+    if (!path.empty()) {
         state.connected = true;
-        std::string path = matches.gl_pathv[0];
         char resolved[PATH_MAX]{};
         if (realpath(path.c_str(), resolved)) path = resolved;
         const size_t slash = path.find_last_of('/');
@@ -99,7 +102,6 @@ ControllerState ReadControllerState() {
         }
         if (state.name.empty()) state.name = "Tay cầm";
     }
-    globfree(&matches);
     return state;
 }
 
