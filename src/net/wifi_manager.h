@@ -52,6 +52,9 @@ public:
     virtual bool IsEnabled() const = 0;
     virtual bool Enable(bool on) = 0;
     virtual std::string ActiveSsid() const = 0;
+    // Signal strength 0..100 of the in-use AP from NetworkManager's cached
+    // scan list (no rescan, cheap), or -1 when nothing is connected.
+    virtual int ActiveSignal() const { return -1; }
     virtual std::vector<WifiNetwork> Scan() = 0;
     // Potentially shells out several times and may reveal a stored password;
     // call only from a worker after the user explicitly opens WiFi details.
@@ -76,6 +79,9 @@ public:
 
     // SSID of the currently connected WiFi, or "" if none.
     std::string ActiveSsid() const override;
+
+    // Signal of the in-use AP from the cached list (`--rescan no`), -1 if none.
+    int ActiveSignal() const override;
 
     // Scan and return networks sorted by signal desc. Blocking (~1-2s).
     std::vector<WifiNetwork> Scan() override;

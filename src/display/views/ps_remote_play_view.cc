@@ -1,29 +1,22 @@
 #include "display/views/ps_remote_play_view.h"
 
-#include "application.h"
 #include "display/common/lvgl_utils.h"
+#include "display/core/app_icons.h"
 #include "display/theme/ui_theme.h"
 #include "fonts.h"
 #include "lvgl_runtime.h"
+#include "settings.h"
 
 #include <arpa/inet.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
-#include <sys/wait.h>
+#include <glob.h>
+#include <limits.h>
 #include <unistd.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cctype>
-#include <cerrno>
-#include <cstring>
-#include <map>
-#include <memory>
+#include <cstdlib>
+#include <fstream>
 #include <string>
-#include <thread>
-#include <utility>
-#include <vector>
 
 namespace home {
 
@@ -32,20 +25,9 @@ using jetson::ui::LvglLockGuard;
 
 namespace {
 
+constexpr uint32_t kBlue = 0x1677ff;
 constexpr uint32_t kGreen = 0x30d158;
-constexpr uint32_t kAmber = 0xff9f0a;
 constexpr uint32_t kRed = 0xff453a;
-constexpr uint32_t kBlue = 0x0a84ff;
-constexpr size_t kMaxHelperOutput = 16 * 1024;
-
-struct CommandResult {
-    int exit_code = 127;
-    bool timed_out = false;
-    bool helper_missing = false;
-    std::string output;
-};
-
-using Fields = std::map<std::string, std::string>;
 
 std::string Trim(std::string value) {
     auto blank = [](unsigned char c) { return std::isspace(c) != 0; };
@@ -57,955 +39,797 @@ std::string Trim(std::string value) {
     return value;
 }
 
-std::string Lower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return value;
-}
-
-std::string SafeUiText(std::string value, size_t max_len = 160) {
-    value = Trim(std::move(value));
-    value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char c) {
-                    return c < 0x20 && c != '\t';
-                }),
-                value.end());
-    if (value.size() > max_len) value.resize(max_len);
-    return value;
-}
-
-Fields ParseFields(const std::string &output) {
-    Fields fields;
-    size_t at = 0;
-    while (at < output.size()) {
-        const size_t end = output.find('\n', at);
-        const size_t len = (end == std::string::npos ? output.size() : end) - at;
-        std::string line = output.substr(at, len);
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        const size_t equal = line.find('=');
-        if (equal != std::string::npos) {
-            std::string key = Lower(Trim(line.substr(0, equal)));
-            std::string value = SafeUiText(line.substr(equal + 1));
-            if (!key.empty() && key.size() <= 32) fields[key] = std::move(value);
-        }
-        if (end == std::string::npos) break;
-        at = end + 1;
-    }
-    return fields;
-}
-
-bool FieldBool(const Fields &fields, const char *key, bool fallback) {
-    const auto it = fields.find(key);
-    if (it == fields.end()) return fallback;
-    const std::string value = Lower(it->second);
-    if (value == "1" || value == "true" || value == "yes" || value == "on" ||
-        value == "ok")
-        return true;
-    if (value == "0" || value == "false" || value == "no" || value == "off" ||
-        value == "missing")
-        return false;
-    return fallback;
-}
-
-std::string Field(const Fields &fields, const char *key,
-                  const std::string &fallback = "") {
-    const auto it = fields.find(key);
-    return it == fields.end() ? fallback : it->second;
-}
-
 bool CanonicalIpv4(const std::string &input, std::string &canonical) {
     const std::string value = Trim(input);
+    if (value.empty()) {
+        canonical.clear();
+        return true;
+    }
+
     in_addr address{};
-    if (value.empty() || inet_pton(AF_INET, value.c_str(), &address) != 1) return false;
-    // Broadcast/unspecified are syntactically IPv4 but cannot identify a PS5.
+    if (inet_pton(AF_INET, value.c_str(), &address) != 1) return false;
     const uint32_t host_order = ntohl(address.s_addr);
     if (host_order == 0 || host_order == 0xffffffffU) return false;
-    char out[INET_ADDRSTRLEN]{};
-    if (!inet_ntop(AF_INET, &address, out, sizeof(out))) return false;
-    canonical = out;
+
+    char output[INET_ADDRSTRLEN]{};
+    if (!inet_ntop(AF_INET, &address, output, sizeof(output))) return false;
+    canonical = output;
     return true;
 }
 
-const char *FindHelper() {
-    static constexpr const char *kInstalled =
-        "/opt/jetson-fw/scripts/ps_remote_play_ctl.sh";
-    static constexpr const char *kDevelopment =
-        "scripts/ps_remote_play_ctl.sh";
-    if (::access(kInstalled, R_OK) == 0) return kInstalled;
-    if (::access(kDevelopment, R_OK) == 0) return kDevelopment;
-    return nullptr;
+std::string ReadOneLine(const std::string &path) {
+    std::ifstream input(path);
+    std::string value;
+    std::getline(input, value);
+    return Trim(std::move(value));
 }
 
-/* Execute bash with an argv vector, never a shell command string. This is the
- * equivalent of strict shell quoting but stronger: a host such as
- * "1.2.3.4;..." remains one inert argument (and is rejected as IPv4 anyway).
- * Output is captured only for the key=value protocol and is never logged. */
-CommandResult RunHelper(const std::vector<std::string> &args, int timeout_seconds) {
-    CommandResult result;
-    const char *helper = FindHelper();
-    if (!helper) {
-        result.helper_missing = true;
-        return result;
+struct ControllerState {
+    bool connected = false;
+    std::string name;
+};
+
+ControllerState ReadControllerState() {
+    glob_t matches{};
+    const char *patterns[] = {
+        "/dev/input/js*",
+        "/dev/input/by-id/*-joystick",
+        "/dev/input/by-path/*-joystick",
+    };
+
+    bool appended = false;
+    for (const char *pattern : patterns) {
+        const int flags = appended ? GLOB_APPEND : 0;
+        const int result = glob(pattern, flags, nullptr, &matches);
+        if (result == 0) appended = true;
     }
 
-    // Prepare argv before fork. The firmware is multi-threaded, so the child
-    // must avoid heap allocation (and its possibly inherited locked mutexes)
-    // between fork and exec.
-    std::vector<std::string> owned;
-    owned.reserve(args.size() + 2);
-    owned.emplace_back("bash");
-    owned.emplace_back(helper);
-    owned.insert(owned.end(), args.begin(), args.end());
-    std::vector<char *> argv;
-    argv.reserve(owned.size() + 1);
-    for (auto &item : owned) argv.push_back(item.data());
-    argv.push_back(nullptr);
-
-    int pipe_fd[2] = {-1, -1};
-    if (::pipe(pipe_fd) != 0) return result;
-
-    const pid_t pid = ::fork();
-    if (pid < 0) {
-        ::close(pipe_fd[0]);
-        ::close(pipe_fd[1]);
-        return result;
-    }
-    if (pid == 0) {
-        (void)::setpgid(0, 0); // timeout can terminate bash and any CLI child
-        ::close(pipe_fd[0]);
-        ::dup2(pipe_fd[1], STDOUT_FILENO);
-        ::dup2(pipe_fd[1], STDERR_FILENO);
-        ::close(pipe_fd[1]);
-        ::execv("/bin/bash", argv.data());
-        _exit(127);
-    }
-
-    ::close(pipe_fd[1]);
-    (void)::setpgid(pid, pid); // harmless if the child already exec'd/exited
-    const int old_flags = ::fcntl(pipe_fd[0], F_GETFL, 0);
-    if (old_flags >= 0) ::fcntl(pipe_fd[0], F_SETFL, old_flags | O_NONBLOCK);
-
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::seconds(std::max(1, timeout_seconds));
-    bool child_done = false;
-    bool eof = false;
-    int status = 0;
-
-    while (!child_done || !eof) {
-        for (;;) {
-            char buffer[1024];
-            const ssize_t count = ::read(pipe_fd[0], buffer, sizeof(buffer));
-            if (count > 0) {
-                if (result.output.size() < kMaxHelperOutput) {
-                    const size_t room = kMaxHelperOutput - result.output.size();
-                    result.output.append(buffer, std::min(room, static_cast<size_t>(count)));
-                }
-                continue;
-            }
-            if (count == 0) eof = true;
-            if (count < 0 && errno == EINTR) continue;
-            break;
+    ControllerState state;
+    if (matches.gl_pathc > 0 && matches.gl_pathv && matches.gl_pathv[0]) {
+        state.connected = true;
+        std::string path = matches.gl_pathv[0];
+        char resolved[PATH_MAX]{};
+        if (realpath(path.c_str(), resolved)) path = resolved;
+        const size_t slash = path.find_last_of('/');
+        const std::string device = slash == std::string::npos
+                                       ? path
+                                       : path.substr(slash + 1);
+        if (device.rfind("js", 0) == 0) {
+            state.name = ReadOneLine("/sys/class/input/" + device + "/device/name");
         }
-
-        if (!child_done) {
-            const pid_t waited = ::waitpid(pid, &status, WNOHANG);
-            if (waited == pid) child_done = true;
-        }
-        if (child_done && eof) break;
-
-        if (std::chrono::steady_clock::now() >= deadline) {
-            result.timed_out = true;
-            ::kill(-pid, SIGKILL);
-            ::kill(pid, SIGKILL);
-            while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-            child_done = true;
-            break;
-        }
-
-        pollfd descriptor{pipe_fd[0], POLLIN | POLLHUP, 0};
-        (void)::poll(&descriptor, 1, 50);
+        if (state.name.empty()) state.name = "Tay cầm";
     }
-
-    // One final non-blocking drain after the child exits.
-    for (;;) {
-        char buffer[1024];
-        const ssize_t count = ::read(pipe_fd[0], buffer, sizeof(buffer));
-        if (count <= 0) break;
-        if (result.output.size() < kMaxHelperOutput) {
-            const size_t room = kMaxHelperOutput - result.output.size();
-            result.output.append(buffer, std::min(room, static_cast<size_t>(count)));
-        }
-    }
-    ::close(pipe_fd[0]);
-    if (!child_done) {
-        while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-    }
-
-    if (!result.timed_out && WIFEXITED(status)) result.exit_code = WEXITSTATUS(status);
-    else if (!result.timed_out && WIFSIGNALED(status)) result.exit_code = 128 + WTERMSIG(status);
-    return result;
+    globfree(&matches);
+    return state;
 }
 
-void StylePanel(lv_obj_t *obj, uint32_t color, uint32_t border) {
+void RemoveInteraction(lv_obj_t *obj) {
+    lv_obj_clear_flag(obj, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                           LV_OBJ_FLAG_CLICKABLE));
+}
+
+void StyleSurface(lv_obj_t *obj, uint32_t background, uint32_t border,
+                  int radius) {
     lv_obj_remove_style_all(obj);
-    lv_obj_set_style_bg_color(obj, Color(color), 0);
+    lv_obj_set_style_bg_color(obj, Color(background), 0);
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(obj, 12, 0);
     lv_obj_set_style_border_color(obj, Color(border), 0);
     lv_obj_set_style_border_width(obj, 1, 0);
+    lv_obj_set_style_radius(obj, radius, 0);
     lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
 }
 
-lv_obj_t *MakeButton(lv_obj_t *parent, const char *text, uint32_t bg,
-                     lv_event_cb_t callback, void *user_data, int width,
-                     int height = 42) {
-    auto *button = lv_obj_create(parent);
-    lv_obj_remove_style_all(button);
-    lv_obj_set_size(button, width, height);
-    lv_obj_set_style_bg_color(button, Color(bg), 0);
+lv_obj_t *MakeLabel(lv_obj_t *parent, const char *text, const lv_font_t *font,
+                    uint32_t color) {
+    auto *label = lv_label_create(parent);
+    lv_obj_set_style_text_font(label, font, 0);
+    lv_obj_set_style_text_color(label, Color(color), 0);
+    lv_label_set_text(label, text ? text : "");
+    return label;
+}
+
+lv_obj_t *MakeRoundButton(lv_obj_t *parent, const char *symbol,
+                          uint32_t background, uint32_t foreground,
+                          lv_event_cb_t callback, void *user_data) {
+    auto *button = lv_button_create(parent);
+    lv_obj_set_size(button, 40, 40);
+    lv_obj_set_style_bg_color(button, Color(background), 0);
     lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(button, 10, 0);
-    lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
-    auto *label = lv_label_create(button);
-    lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(label, lv_color_white(), 0);
-    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(label, text);
-    lv_obj_center(label);
+    lv_obj_set_style_border_width(button, 0, 0);
+    lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_shadow_width(button, 0, 0);
+    lv_obj_set_style_pad_all(button, 0, 0);
     lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, user_data);
+
+    auto *icon = MakeLabel(button, symbol, &BUILTIN_ICON_FONT, foreground);
+    lv_obj_center(icon);
     return button;
 }
 
-void SetBadge(lv_obj_t *label, const char *text, uint32_t color) {
-    if (!label) return;
-    lv_label_set_text(label, text);
-    lv_obj_set_style_text_color(label, Color(color), 0);
-    lv_obj_set_style_bg_color(label, Color(color), 0);
-    lv_obj_set_style_bg_opa(label, LV_OPA_20, 0);
-    lv_obj_set_style_border_color(label, Color(color), 0);
-    lv_obj_set_style_border_width(label, 1, 0);
+lv_obj_t *MakeModalBackdrop(lv_obj_t *parent, int width, int height,
+                            uint32_t scrim, lv_event_cb_t dismiss,
+                            void *user_data) {
+    auto *modal = lv_obj_create(parent);
+    lv_obj_remove_style_all(modal);
+    lv_obj_set_size(modal, width, height);
+    lv_obj_set_pos(modal, 0, 0);
+    lv_obj_set_style_bg_color(modal, Color(scrim), 0);
+    lv_obj_set_style_bg_opa(modal, LV_OPA_70, 0);
+    lv_obj_add_flag(modal, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(modal, dismiss, LV_EVENT_CLICKED, user_data);
+    return modal;
 }
 
-std::string FriendlyState(const std::string &raw) {
-    const std::string state = Lower(raw);
-    if (state == "ready" || state == "online") return "PS5 đang bật";
-    if (state == "standby" || state == "rest") return "PS5 đang ở Chế độ nghỉ";
-    if (state == "offline") return "PS5 chưa phản hồi";
-    return "Chưa kiểm tra kết nối";
+lv_obj_t *MakeBottomSheet(lv_obj_t *backdrop, int width, int height,
+                          uint32_t panel) {
+    auto *card = lv_obj_create(backdrop);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, width, height);
+    lv_obj_align(card, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(card, Color(panel), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 24, 0);
+    lv_obj_set_style_shadow_color(card, lv_color_black(), 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_30, 0);
+    lv_obj_set_style_shadow_width(card, 24, 0);
+    lv_obj_set_style_pad_all(card, 14, 0);
+    lv_obj_set_style_pad_row(card, 7, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    return card;
 }
 
-std::string FriendlyHelperMessage(const std::string &raw) {
-    const std::string message = Lower(Trim(raw));
-    if (message == "chiaki not installed") return "Chưa cài chiaki-ng";
-    if (message == "open setup to register this ps5")
-        return "Mở Đăng ký / Thiết lập để ghép PS5";
-    if (message == "choose the ps5 address") return "Hãy nhập địa chỉ IPv4 của PS5";
-    if (message == "network is offline") return "Jetson chưa có kết nối mạng";
-    if (message == "ps5 not reachable") return "PS5 chưa phản hồi";
-    if (message == "invalid ps5 address") return "Địa chỉ PS5 không hợp lệ";
-    if (message == "ps5 is in rest mode") return "PS5 đang ở Chế độ nghỉ";
-    if (message == "ps5 is ready") return "PS5 đang bật và sẵn sàng";
-    // The helper protocol intentionally exposes only user-safe messages. Keep
-    // unknown output off-screen so a future helper cannot accidentally surface
-    // a registration key or passcode through a diagnostic string.
-    return "";
+void AddGrabber(lv_obj_t *card, uint32_t color) {
+    auto *grabber = lv_obj_create(card);
+    lv_obj_remove_style_all(grabber);
+    lv_obj_set_size(grabber, 48, 5);
+    lv_obj_set_style_bg_color(grabber, Color(color), 0);
+    lv_obj_set_style_bg_opa(grabber, LV_OPA_60, 0);
+    lv_obj_set_style_radius(grabber, LV_RADIUS_CIRCLE, 0);
+    RemoveInteraction(grabber);
 }
 
-std::string FriendlyController(const std::string &raw) {
-    const std::string value = Lower(raw);
-    if (value == "1" || value == "connected" || value == "ready") return "đã nhận";
-    if (value == "0" || value == "missing" || value == "disconnected") return "chưa nhận";
-    return "tự động";
+lv_obj_t *MakeSheetHeader(lv_obj_t *card, const char *title,
+                          lv_event_cb_t cancel, lv_event_cb_t save,
+                          void *user_data) {
+    const auto &palette = jetson::UiTheme::Instance().Palette();
+    auto *header = lv_obj_create(card);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 40);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    RemoveInteraction(header);
+
+    MakeRoundButton(header, LV_SYMBOL_CLOSE, palette.button, palette.text,
+                    cancel, user_data);
+    auto *heading = MakeLabel(header, title, &BUILTIN_TEXT_FONT, palette.text);
+    lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
+    MakeRoundButton(header, LV_SYMBOL_OK, palette.accent, 0xffffff,
+                    save, user_data);
+    return header;
 }
 
-std::string FriendlyNetwork(const std::string &raw) {
-    const std::string value = Lower(raw);
-    if (value == "ethernet" || value == "wired") return "Ethernet";
-    if (value == "wifi" || value == "wi-fi") return "Wi-Fi";
-    if (value == "offline") return "ngoại tuyến";
-    return "chưa rõ";
+void AnimateSheetIn(lv_obj_t *card, int height) {
+    lv_anim_t animation;
+    lv_anim_init(&animation);
+    lv_anim_set_var(&animation, card);
+    lv_anim_set_values(&animation, height + 16, 0);
+    lv_anim_set_time(&animation, 260);
+    lv_anim_set_exec_cb(&animation, [](void *object, int32_t value) {
+        lv_obj_set_style_translate_y(static_cast<lv_obj_t *>(object), value, 0);
+    });
+    lv_anim_set_path_cb(&animation, lv_anim_path_ease_out);
+    lv_anim_start(&animation);
+}
+
+void DrawController(lv_obj_t *root, bool connected) {
+    if (!root) return;
+    const auto &palette = jetson::UiTheme::Instance().Palette();
+    lv_obj_clean(root);
+
+    const uint32_t stroke = connected ? palette.accent : palette.sub_text;
+    auto *body = lv_obj_create(root);
+    lv_obj_remove_style_all(body);
+    lv_obj_set_size(body, 98, 54);
+    lv_obj_set_pos(body, 7, 11);
+    lv_obj_set_style_bg_color(body, Color(palette.panel), 0);
+    lv_obj_set_style_bg_opa(body, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(body, Color(stroke), 0);
+    lv_obj_set_style_border_width(body, 3, 0);
+    lv_obj_set_style_radius(body, 23, 0);
+    RemoveInteraction(body);
+
+    auto add_shape = [&](int x, int y, int width, int height, int radius) {
+        auto *shape = lv_obj_create(body);
+        lv_obj_remove_style_all(shape);
+        lv_obj_set_size(shape, width, height);
+        lv_obj_set_pos(shape, x, y);
+        lv_obj_set_style_bg_color(shape, Color(stroke), 0);
+        lv_obj_set_style_bg_opa(shape, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(shape, radius, 0);
+        RemoveInteraction(shape);
+        return shape;
+    };
+
+    // D-pad and face buttons make the state icon readable without relying on
+    // an emoji/font glyph that may be missing on the embedded image.
+    add_shape(20, 24, 22, 6, 3);
+    add_shape(28, 16, 6, 22, 3);
+    add_shape(68, 18, 8, 8, LV_RADIUS_CIRCLE);
+    add_shape(79, 29, 8, 8, LV_RADIUS_CIRCLE);
+
+    auto *badge = lv_obj_create(root);
+    lv_obj_remove_style_all(badge);
+    lv_obj_set_size(badge, 24, 24);
+    lv_obj_set_pos(badge, 84, 0);
+    lv_obj_set_style_bg_color(badge, Color(connected ? kGreen : palette.button), 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(badge, Color(palette.panel), 0);
+    lv_obj_set_style_border_width(badge, 3, 0);
+    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+    RemoveInteraction(badge);
+    auto *state = MakeLabel(badge, connected ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE,
+                            &BUILTIN_ICON_FONT,
+                            connected ? 0xffffff : palette.sub_text);
+    lv_obj_center(state);
+
+    if (!connected) {
+        static lv_point_precise_t slash_points[] = {{16, 67}, {99, 8}};
+        auto *slash = lv_line_create(root);
+        lv_line_set_points(slash, slash_points, 2);
+        lv_obj_set_style_line_color(slash, Color(kRed), 0);
+        lv_obj_set_style_line_width(slash, 5, 0);
+        lv_obj_set_style_line_rounded(slash, true, 0);
+        RemoveInteraction(slash);
+    }
 }
 
 } // namespace
 
 PsRemotePlayView::PsRemotePlayView(lv_obj_t *parent, int width, int height,
                                    ClosedCb on_closed)
-    : OverlayView(parent, width, height, "PS5 Remote Play", std::move(on_closed)) {
+    : OverlayView(parent, width, height, "Remote Play", std::move(on_closed)) {
+    LoadState();
     BuildBody();
+    SetRightButton(LV_SYMBOL_SETTINGS, [](OverlayView *view) {
+        static_cast<PsRemotePlayView *>(view)->OpenSettingsModal();
+    });
 }
 
-std::shared_ptr<PsRemotePlayView> PsRemotePlayView::Self() {
-    return std::static_pointer_cast<PsRemotePlayView>(shared_from_this());
+PsRemotePlayView::~PsRemotePlayView() {
+    if (controller_timer_) {
+        lv_timer_del(controller_timer_);
+        controller_timer_ = nullptr;
+    }
 }
 
 void PsRemotePlayView::OnStart() {
-    // Start() is invoked only after make_shared and while the home display owns
-    // the UI lock, so shared_from_this is safe and no nested lv_lock is needed.
-    RefreshStatus();
+    RefreshControllerState();
+    if (!controller_timer_) {
+        controller_timer_ = lv_timer_create(OnControllerPoll, 2000, this);
+    }
+}
+
+void PsRemotePlayView::LoadState() {
+    Settings settings("remote_play", false);
+    host_ = settings.GetString("ps5_ip", "");
+    ps5_name_ = settings.GetString("ps5_name", "");
+    preset_ = settings.GetString("preset", "performance") == "quality"
+                  ? Preset::Quality
+                  : Preset::Performance;
+    draft_preset_ = preset_;
 }
 
 void PsRemotePlayView::BuildBody() {
-    const auto &p = jetson::UiTheme::Instance().Palette();
-    lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(body_, 8, 0);
-    lv_obj_set_style_pad_row(body_, 6, 0);
+    const auto &palette = jetson::UiTheme::Instance().Palette();
+    lv_obj_set_style_pad_all(body_, 0, 0);
     lv_obj_clear_flag(body_, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ---- Explicit installation/registration banner -----------------------
-    auto *status = lv_obj_create(body_);
-    StylePanel(status, p.row, p.border);
-    lv_obj_set_width(status, lv_pct(100));
-    lv_obj_set_height(status, 60);
+    auto *title = MakeLabel(body_, "Chào mừng đến với Remote Play",
+                            &BUILTIN_TEXT_FONT, palette.text);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 34);
 
-    status_dot_ = lv_obj_create(status);
-    lv_obj_remove_style_all(status_dot_);
-    lv_obj_set_size(status_dot_, 11, 11);
-    lv_obj_set_pos(status_dot_, 12, 15);
-    lv_obj_set_style_radius(status_dot_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(status_dot_, LV_OPA_COVER, 0);
+    auto *subtitle = MakeLabel(
+        body_, "Chơi game PS5 của bạn từ thiết bị này.",
+        &BUILTIN_SMALL_TEXT_FONT, palette.sub_text);
+    lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 76);
 
-    status_summary_ = lv_label_create(status);
-    lv_obj_set_pos(status_summary_, 32, 7);
-    lv_obj_set_width(status_summary_, 380);
-    lv_obj_set_style_text_font(status_summary_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(status_summary_, Color(p.text), 0);
-    lv_label_set_long_mode(status_summary_, LV_LABEL_LONG_DOT);
+    controller_icon_ = lv_obj_create(body_);
+    lv_obj_remove_style_all(controller_icon_);
+    lv_obj_set_size(controller_icon_, 112, 76);
+    lv_obj_align(controller_icon_, LV_ALIGN_TOP_MID, 0, 116);
+    RemoveInteraction(controller_icon_);
+    DrawController(controller_icon_, false);
 
-    status_detail_ = lv_label_create(status);
-    lv_obj_set_pos(status_detail_, 32, 34);
-    lv_obj_set_width(status_detail_, 380);
-    lv_obj_set_style_text_font(status_detail_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(status_detail_, Color(p.sub_text), 0);
-    lv_label_set_long_mode(status_detail_, LV_LABEL_LONG_DOT);
+    controller_state_label_ = MakeLabel(
+        body_, "Chưa kết nối tay cầm", &BUILTIN_SMALL_TEXT_FONT,
+        palette.sub_text);
+    lv_obj_set_width(controller_state_label_, 360);
+    lv_obj_set_style_text_align(controller_state_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(controller_state_label_, LV_ALIGN_TOP_MID, 0, 208);
 
-    install_badge_ = lv_label_create(status);
-    lv_obj_set_size(install_badge_, 130, 26);
-    lv_obj_set_pos(install_badge_, 425, 17);
-    lv_obj_set_style_radius(install_badge_, 13, 0);
-    lv_obj_set_style_text_font(install_badge_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_align(install_badge_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(install_badge_, 4, 0);
-    lv_label_set_long_mode(install_badge_, LV_LABEL_LONG_DOT);
+    sign_in_btn_ = lv_button_create(body_);
+    lv_obj_set_size(sign_in_btn_, 190, 48);
+    lv_obj_align(sign_in_btn_, LV_ALIGN_BOTTOM_MID, 0, -38);
+    lv_obj_set_style_bg_color(sign_in_btn_, Color(kBlue), 0);
+    lv_obj_set_style_bg_opa(sign_in_btn_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sign_in_btn_, 0, 0);
+    lv_obj_set_style_radius(sign_in_btn_, 24, 0);
+    lv_obj_set_style_shadow_width(sign_in_btn_, 0, 0);
+    lv_obj_add_event_cb(sign_in_btn_, OnSignIn, LV_EVENT_CLICKED, this);
 
-    register_badge_ = lv_label_create(status);
-    lv_obj_set_size(register_badge_, 141, 26);
-    lv_obj_set_pos(register_badge_, 561, 17);
-    lv_obj_set_style_radius(register_badge_, 13, 0);
-    lv_obj_set_style_text_font(register_badge_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_align(register_badge_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(register_badge_, 4, 0);
-    lv_label_set_long_mode(register_badge_, LV_LABEL_LONG_DOT);
+    auto *sign_in_label = MakeLabel(sign_in_btn_, "Sign In to PSN",
+                                    &BUILTIN_SMALL_TEXT_FONT, 0xffffff);
+    lv_obj_center(sign_in_label);
+}
 
-    refresh_btn_ = MakeButton(status, LV_SYMBOL_REFRESH, p.button, OnRefresh, this, 42, 42);
-    lv_obj_set_style_text_font(lv_obj_get_child(refresh_btn_, 0), &BUILTIN_ICON_FONT, 0);
-    lv_obj_align(refresh_btn_, LV_ALIGN_RIGHT_MID, -8, 0);
+void PsRemotePlayView::RefreshControllerState() {
+    const ControllerState state = ReadControllerState();
+    const bool changed = state.connected != controller_connected_ ||
+                         state.name != controller_name_;
+    controller_connected_ = state.connected;
+    controller_name_ = state.name;
+    if (changed) UpdateWelcomeUi();
+    UpdateSettingsUi();
+}
 
-    // ---- Main two-column panel --------------------------------------------
-    auto *content = lv_obj_create(body_);
-    lv_obj_remove_style_all(content);
-    lv_obj_set_width(content, lv_pct(100));
-    lv_obj_set_flex_grow(content, 1);
-    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(content, 8, 0);
-    lv_obj_clear_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+void PsRemotePlayView::UpdateWelcomeUi() {
+    const auto &palette = jetson::UiTheme::Instance().Palette();
+    DrawController(controller_icon_, controller_connected_);
+    if (!controller_state_label_) return;
 
-    auto *left = lv_obj_create(content);
-    lv_obj_remove_style_all(left);
-    lv_obj_set_width(left, 315);
-    lv_obj_set_height(left, lv_pct(100));
-    lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(left, 6, 0);
-    lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
+    const std::string text = controller_connected_
+                                 ? "Đã kết nối · " + controller_name_
+                                 : "Chưa kết nối tay cầm";
+    lv_label_set_text(controller_state_label_, text.c_str());
+    lv_obj_set_style_text_color(
+        controller_state_label_,
+        Color(controller_connected_ ? kGreen : palette.sub_text), 0);
+}
 
-    auto *host_card = lv_obj_create(left);
-    StylePanel(host_card, p.row, p.border);
-    lv_obj_set_width(host_card, lv_pct(100));
-    lv_obj_set_height(host_card, 112);
-    lv_obj_set_style_pad_all(host_card, 10, 0);
+void PsRemotePlayView::UpdateSettingsUi() {
+    if (settings_controller_label_) {
+        const std::string state = controller_connected_
+                                      ? "Kết nối: " + controller_name_
+                                      : "Kết nối: Chưa kết nối";
+        lv_label_set_text(settings_controller_label_, state.c_str());
+    }
+    if (settings_ps5_name_label_) {
+        const std::string name = ps5_name_.empty()
+                                     ? "Tên PS5: Chưa kết nối PS5 nào"
+                                     : "Tên PS5: " + ps5_name_;
+        lv_label_set_text(settings_ps5_name_label_, name.c_str());
+    }
+}
 
-    auto *host_title = lv_label_create(host_card);
-    lv_obj_set_style_text_font(host_title, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(host_title, Color(p.sub_text), 0);
-    lv_label_set_text(host_title, "MÁY PS5 Ở NHÀ · IPv4");
-    lv_obj_set_pos(host_title, 0, 0);
+void PsRemotePlayView::Notify(const char *message) {
+    if (notify_cb_) notify_cb_(message ? message : "");
+}
 
-    host_label_ = lv_label_create(host_card);
-    lv_obj_set_style_text_font(host_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(host_label_, Color(p.text), 0);
-    lv_obj_set_pos(host_label_, 0, 28);
-    lv_obj_set_width(host_label_, 205);
-    lv_label_set_long_mode(host_label_, LV_LABEL_LONG_DOT);
-    lv_obj_add_flag(host_label_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(host_label_, OnEditHost, LV_EVENT_CLICKED, this);
+void PsRemotePlayView::OpenPinModal() {
+    if (pin_modal_) return;
+    const auto &palette = jetson::UiTheme::Instance().Palette();
 
-    edit_host_btn_ = MakeButton(host_card, "Sửa IP", p.button, OnEditHost, this, 72, 36);
-    lv_obj_align(edit_host_btn_, LV_ALIGN_TOP_RIGHT, 0, 20);
+    pin_modal_ = MakeModalBackdrop(overlay_, width_, height_, palette.scrim,
+                                   OnPinDismiss, this);
+    constexpr int kSheetHeight = 230;
+    auto *card = MakeBottomSheet(pin_modal_, 580, kSheetHeight, palette.panel);
+    AddGrabber(card, palette.sub_text);
+    MakeSheetHeader(card, "Đăng nhập mã PIN", OnPinCancel, OnPinSave, this);
 
-    probe_btn_ = MakeButton(host_card, "Kiểm tra kết nối", p.button,
-                            OnProbe, this, 157, 34);
-    lv_obj_align(probe_btn_, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    auto *hint = MakeLabel(card, "Nhập mã PIN đang hiển thị trên PS5 của bạn",
+                           &BUILTIN_SMALL_TEXT_FONT, palette.sub_text);
+    lv_obj_set_width(hint, lv_pct(100));
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
 
-    auto *rest_badge = lv_label_create(host_card);
-    lv_obj_set_style_text_font(rest_badge, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(rest_badge, Color(kGreen), 0);
-    lv_label_set_text(rest_badge, "Hỗ trợ Rest Mode");
-    lv_obj_align(rest_badge, LV_ALIGN_BOTTOM_RIGHT, 0, -7);
-
-    auto *help = lv_obj_create(left);
-    StylePanel(help, p.row, p.border);
-    lv_obj_set_width(help, lv_pct(100));
-    lv_obj_set_flex_grow(help, 1);
-    lv_obj_set_style_pad_all(help, 10, 0);
-    lv_obj_add_flag(help, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(help, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(help, LV_SCROLLBAR_MODE_AUTO);
-
-    auto *help_title = lv_label_create(help);
-    lv_obj_set_style_text_font(help_title, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(help_title, Color(p.text), 0);
-    lv_label_set_text(help_title, "TRÊN PS5");
-
-    auto *help_text = lv_label_create(help);
-    lv_obj_set_pos(help_text, 0, 25);
-    lv_obj_set_width(help_text, 293);
-    lv_obj_set_style_text_font(help_text, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(help_text, Color(p.sub_text), 0);
-    lv_label_set_long_mode(help_text, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(
-        help_text,
-        "1. Bật Chơi từ xa trong Cài đặt > Hệ thống.\n"
-        "2. Chế độ nghỉ: bật Kết nối Internet + Cho phép bật PS5 từ mạng.\n"
-        "3. PS5 và Jetson nên dùng Ethernet.");
-
-    auto *right = lv_obj_create(content);
-    lv_obj_remove_style_all(right);
-    lv_obj_set_flex_grow(right, 1);
-    lv_obj_set_height(right, lv_pct(100));
-    lv_obj_set_flex_flow(right, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(right, 6, 0);
-    lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
-
-    auto *preset_title = lv_label_create(right);
-    lv_obj_set_width(preset_title, lv_pct(100));
-    lv_obj_set_height(preset_title, 20);
-    lv_obj_set_style_text_font(preset_title, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(preset_title, Color(p.sub_text), 0);
-    lv_label_set_text(preset_title, "CHỌN CHẤT LƯỢNG CHO MÀN HÌNH 800×480");
-
-    auto *presets = lv_obj_create(right);
-    lv_obj_remove_style_all(presets);
-    lv_obj_set_width(presets, lv_pct(100));
-    lv_obj_set_height(presets, 124);
-    lv_obj_set_flex_flow(presets, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(presets, 8, 0);
-    lv_obj_clear_flag(presets, LV_OBJ_FLAG_SCROLLABLE);
-
-    auto make_preset = [&](lv_obj_t **out, const char *name, const char *resolution,
-                           const char *codec, const char *caption,
-                           lv_event_cb_t callback) {
-        auto *card = lv_obj_create(presets);
-        StylePanel(card, p.row, p.border);
-        lv_obj_set_flex_grow(card, 1);
-        lv_obj_set_height(card, lv_pct(100));
-        lv_obj_set_style_pad_all(card, 10, 0);
-        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(card, callback, LV_EVENT_CLICKED, this);
-
-        auto *name_label = lv_label_create(card);
-        lv_obj_set_style_text_font(name_label, &BUILTIN_SMALL_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(name_label, Color(p.accent), 0);
-        lv_label_set_text(name_label, name);
-
-        auto *resolution_label = lv_label_create(card);
-        lv_obj_set_pos(resolution_label, 0, 27);
-        lv_obj_set_style_text_font(resolution_label, &BUILTIN_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(resolution_label, Color(p.text), 0);
-        lv_label_set_text(resolution_label, resolution);
-
-        auto *codec_label = lv_label_create(card);
-        lv_obj_set_pos(codec_label, 0, 57);
-        lv_obj_set_style_text_font(codec_label, &BUILTIN_SMALL_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(codec_label, Color(p.sub_text), 0);
-        lv_label_set_text(codec_label, codec);
-
-        auto *caption_label = lv_label_create(card);
-        lv_obj_set_pos(caption_label, 0, 82);
-        lv_obj_set_style_text_font(caption_label, &BUILTIN_SMALL_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(caption_label, Color(p.sub_text), 0);
-        lv_label_set_text(caption_label, caption);
-        *out = card;
-    };
-
-    make_preset(&smooth_card_, "MƯỢT · THỬ NGHIỆM", "540p · 60 FPS",
-                "H.264 · 8 Mbps", "Cần thử trên Jetson Nano", OnSmooth);
-    make_preset(&quality_card_, "HÌNH ẢNH RÕ", "720p · 30 FPS",
-                "H.264 · 10 Mbps", "Chi tiết cao hơn", OnQuality);
-
-    auto *runtime = lv_obj_create(right);
-    StylePanel(runtime, p.row, p.border);
-    lv_obj_set_width(runtime, lv_pct(100));
-    lv_obj_set_flex_grow(runtime, 1);
-    lv_obj_set_style_pad_all(runtime, 10, 0);
-
-    auto *runtime_title = lv_label_create(runtime);
-    lv_obj_set_style_text_font(runtime_title, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(runtime_title, Color(p.text), 0);
-    lv_label_set_text(runtime_title, "TRẠNG THÁI PHÁT");
-
-    runtime_detail_ = lv_label_create(runtime);
-    lv_obj_set_pos(runtime_detail_, 0, 27);
-    lv_obj_set_width(runtime_detail_, lv_pct(100));
-    lv_obj_set_style_text_font(runtime_detail_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(runtime_detail_, Color(p.sub_text), 0);
-    lv_label_set_long_mode(runtime_detail_, LV_LABEL_LONG_WRAP);
-
-    // ---- Action footer -----------------------------------------------------
-    auto *actions = lv_obj_create(body_);
-    lv_obj_remove_style_all(actions);
-    lv_obj_set_width(actions, lv_pct(100));
-    lv_obj_set_height(actions, 54);
-    lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+    auto *form = lv_obj_create(card);
+    StyleSurface(form, palette.row, palette.border, 14);
+    lv_obj_set_size(form, lv_pct(100), 54);
+    lv_obj_set_style_pad_all(form, 5, 0);
+    lv_obj_set_style_pad_column(form, 6, 0);
+    lv_obj_set_flex_flow(form, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(form, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(actions, 8, 0);
-    lv_obj_clear_flag(actions, LV_OBJ_FLAG_SCROLLABLE);
 
-    action_status_ = lv_label_create(actions);
-    lv_obj_set_flex_grow(action_status_, 1);
-    lv_obj_set_style_text_font(action_status_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(action_status_, Color(p.sub_text), 0);
-    lv_label_set_long_mode(action_status_, LV_LABEL_LONG_DOT);
+    pin_input_ = lv_textarea_create(form);
+    lv_obj_set_size(pin_input_, 1, 44);
+    lv_obj_set_flex_grow(pin_input_, 1);
+    lv_obj_set_style_bg_opa(pin_input_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(pin_input_, 0, 0);
+    lv_obj_set_style_text_font(pin_input_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(pin_input_, Color(palette.text), 0);
+    lv_obj_set_style_text_color(pin_input_, Color(palette.sub_text),
+                                LV_PART_TEXTAREA_PLACEHOLDER);
+    lv_textarea_set_one_line(pin_input_, true);
+    lv_textarea_set_max_length(pin_input_, 8);
+    lv_textarea_set_accepted_chars(pin_input_, "0123456789");
+    lv_textarea_set_password_mode(pin_input_, true);
+    lv_textarea_set_placeholder_text(pin_input_, "Nhập mã PIN PS5 của bạn");
+    lv_obj_add_event_cb(pin_input_, OnPinSave, LV_EVENT_READY, this);
 
-    configure_btn_ = MakeButton(actions, "Đăng ký / Thiết lập", p.button,
-                                OnConfigure, this, 174, 46);
-    configure_btn_label_ = lv_obj_get_child(configure_btn_, 0);
-
-    play_btn_ = MakeButton(actions, "Chơi ngay", kBlue, OnPlay, this, 145, 46);
-
-    UpdateUi();
-}
-
-void PsRemotePlayView::SetActionStatus(const std::string &message, bool error) {
-    if (!action_status_) return;
-    const auto &p = jetson::UiTheme::Instance().Palette();
-    lv_label_set_text(action_status_, message.c_str());
-    lv_obj_set_style_text_color(action_status_, Color(error ? kRed : p.sub_text), 0);
-}
-
-void PsRemotePlayView::SetBusy(bool busy, const std::string &message) {
-    busy_ = busy;
-    lv_obj_t *controls[] = {refresh_btn_, edit_host_btn_, probe_btn_, smooth_card_,
-                            quality_card_, configure_btn_, play_btn_};
-    for (auto *control : controls) {
-        if (!control) continue;
-        if (busy) lv_obj_add_state(control, LV_STATE_DISABLED);
-        else lv_obj_clear_state(control, LV_STATE_DISABLED);
+    auto *submit = lv_button_create(form);
+    lv_obj_set_size(submit, 44, 44);
+    lv_obj_set_style_bg_color(submit, Color(palette.accent), 0);
+    lv_obj_set_style_bg_opa(submit, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(submit, 0, 0);
+    lv_obj_set_style_radius(submit, 11, 0);
+    lv_obj_set_style_shadow_width(submit, 0, 0);
+    lv_obj_set_style_pad_all(submit, 0, 0);
+    lv_obj_add_event_cb(submit, OnPinSave, LV_EVENT_CLICKED, this);
+    auto *enter = jetson::ui::CreateAppIcon(submit, "enter", 22);
+    if (enter) {
+        lv_obj_set_style_image_recolor(enter, lv_color_white(), 0);
+        lv_obj_set_style_image_recolor_opa(enter, LV_OPA_COVER, 0);
+    } else {
+        enter = MakeLabel(submit, LV_SYMBOL_OK, &BUILTIN_ICON_FONT, 0xffffff);
     }
-    if (!message.empty()) SetActionStatus(message);
-}
+    lv_obj_center(enter);
 
-void PsRemotePlayView::UpdatePresetCards() {
-    const auto &p = jetson::UiTheme::Instance().Palette();
-    const auto update = [&](lv_obj_t *card, bool selected) {
-        if (!card) return;
-        lv_obj_set_style_bg_color(card, Color(selected ? p.row_active : p.row), 0);
-        lv_obj_set_style_border_color(card, Color(selected ? p.accent : p.border), 0);
-        lv_obj_set_style_border_width(card, selected ? 2 : 1, 0);
-    };
-    update(smooth_card_, preset_ == Preset::Smooth);
-    update(quality_card_, preset_ == Preset::Quality);
-}
-
-void PsRemotePlayView::UpdateUi() {
-    const auto &p = jetson::UiTheme::Instance().Palette();
-    const uint32_t dot_color = !status_loaded_ ? kAmber
-                                : !installed_ ? kRed
-                                : !registered_ ? kAmber
-                                : (Lower(remote_state_) == "offline" ? kRed : kGreen);
-    if (status_dot_) lv_obj_set_style_bg_color(status_dot_, Color(dot_color), 0);
-
-    std::string summary;
-    if (!status_loaded_) summary = "Đang kiểm tra chiaki-ng và cấu hình PS5...";
-    else if (!installed_) summary = "Chưa cài chiaki-ng";
-    else if (!registered_) summary = "Chiaki-ng đã cài · PS5 chưa đăng ký";
-    else summary = "Sẵn sàng chơi PS5";
-    if (status_summary_) lv_label_set_text(status_summary_, summary.c_str());
-
-    std::string detail = nickname_.empty() ? "PS5 tại nhà" : nickname_;
-    detail += " · ";
-    detail += host_.empty() ? "chưa nhập IPv4" : host_;
-    detail += " · " + FriendlyState(remote_state_);
-    if (status_detail_) lv_label_set_text(status_detail_, detail.c_str());
-
-    SetBadge(install_badge_, installed_ ? "CHIAKI: ĐÃ CÀI" : "CHIAKI: CHƯA CÀI",
-             installed_ ? kGreen : kRed);
-    SetBadge(register_badge_, registered_ ? "PS5: ĐÃ ĐĂNG KÝ" : "PS5: CHƯA ĐĂNG KÝ",
-             registered_ ? kGreen : kAmber);
-
-    if (host_label_) lv_label_set_text(host_label_, host_.empty() ? "Chạm để nhập IP" : host_.c_str());
-
-    std::string runtime = "Tay cầm: " + FriendlyController(controller_) +
-                          " · Mạng: " + FriendlyNetwork(network_);
-    runtime += "\nLuồng: ";
-    runtime += preset_ == Preset::Smooth ? "540p60 · H.264 · 8 Mbps"
-                                         : "720p30 · H.264 · 10 Mbps";
-    runtime += " · hiển thị 800×450, viền 15 px";
-    runtime += "\nHiệu năng giải mã phần cứng cần được kiểm tra trên thiết bị.";
-    if (runtime_detail_) lv_label_set_text(runtime_detail_, runtime.c_str());
-
-    if (configure_btn_label_) {
-        const char *text = !installed_ ? "Cần cài Chiaki"
-                           : !registered_ ? "Đăng ký PS5"
-                                          : "Thiết lập lại";
-        lv_label_set_text(configure_btn_label_, text);
-    }
-    UpdatePresetCards();
-}
-
-void PsRemotePlayView::RefreshStatus() {
-    if (busy_) return;
-    SetBusy(true, "Đang đọc cấu hình Remote Play...");
-    std::weak_ptr<PsRemotePlayView> weak = Self();
-    std::thread([weak]() {
-        CommandResult result = RunHelper({"status"}, 15);
-        Application::GetInstance().Schedule([weak, result = std::move(result)]() mutable {
-            auto self = weak.lock();
-            if (!self) return;
-            LvglLockGuard lock;
-            self->status_loaded_ = true;
-            self->SetBusy(false);
-            if (result.helper_missing) {
-                self->installed_ = false;
-                self->registered_ = false;
-                self->UpdateUi();
-                self->SetActionStatus("Không tìm thấy ps_remote_play_ctl.sh", true);
-                return;
-            }
-            if (result.timed_out) {
-                self->UpdateUi();
-                self->SetActionStatus("Kiểm tra cấu hình quá thời gian", true);
-                return;
-            }
-            const Fields fields = ParseFields(result.output);
-            self->installed_ = FieldBool(fields, "installed", self->installed_);
-            self->registered_ = FieldBool(fields, "registered", self->registered_);
-            self->nickname_ = Field(fields, "nickname", self->nickname_);
-            const std::string saved_host = Field(fields, "host");
-            std::string canonical;
-            if (CanonicalIpv4(saved_host, canonical)) self->host_ = canonical;
-            const std::string saved_preset = Lower(Field(fields, "preset"));
-            if (saved_preset == "quality") self->preset_ = Preset::Quality;
-            else if (saved_preset == "smooth") self->preset_ = Preset::Smooth;
-            self->controller_ = Field(fields, "controller", self->controller_);
-            self->network_ = Field(fields, "network", self->network_);
-            self->remote_state_ = Field(fields, "state", self->remote_state_);
-            self->helper_message_ = FriendlyHelperMessage(Field(fields, "message"));
-            self->UpdateUi();
-            if (result.exit_code != 0) {
-                self->SetActionStatus(self->helper_message_.empty()
-                                          ? "Không đọc được trạng thái Remote Play"
-                                          : self->helper_message_,
-                                      true);
-            } else if (!self->helper_message_.empty()) {
-                self->SetActionStatus(self->helper_message_);
-            } else if (self->host_.empty()) {
-                self->SetActionStatus("Nhập IPv4 của PS5 để bắt đầu");
-            } else if (!self->registered_) {
-                self->SetActionStatus("Nhấn Đăng ký PS5 để ghép máy lần đầu");
-            } else {
-                self->SetActionStatus("Cấu hình đã sẵn sàng");
-            }
-        });
-    }).detach();
-}
-
-void PsRemotePlayView::ProbeHost() {
-    if (busy_) return;
-    std::string canonical;
-    if (!CanonicalIpv4(host_, canonical)) {
-        SetActionStatus("Hãy nhập IPv4 hợp lệ của PS5", true);
-        OpenHostModal();
-        return;
-    }
-    SetBusy(true, "Đang kiểm tra PS5 trong mạng...");
-    std::weak_ptr<PsRemotePlayView> weak = Self();
-    std::thread([weak, host = std::move(canonical)]() {
-        CommandResult result = RunHelper({"probe", "--host", host}, 12);
-        Application::GetInstance().Schedule(
-            [weak, result = std::move(result)]() mutable {
-                auto self = weak.lock();
-                if (!self) return;
-                LvglLockGuard lock;
-                self->SetBusy(false);
-                if (result.helper_missing) {
-                    self->SetActionStatus("Không tìm thấy công cụ kiểm tra PS5", true);
-                    return;
-                }
-                if (result.timed_out) {
-                    self->remote_state_ = "offline";
-                    self->UpdateUi();
-                    self->SetActionStatus("PS5 không phản hồi (quá thời gian)", true);
-                    return;
-                }
-                const Fields fields = ParseFields(result.output);
-                self->remote_state_ = Field(fields, "state",
-                                            result.exit_code == 0 ? "ready" : "offline");
-                self->helper_message_ = FriendlyHelperMessage(Field(fields, "message"));
-                self->UpdateUi();
-                const bool reachable = result.exit_code == 0 &&
-                                       (Lower(self->remote_state_) == "ready" ||
-                                        Lower(self->remote_state_) == "standby");
-                if (!self->helper_message_.empty()) {
-                    self->SetActionStatus(self->helper_message_, !reachable);
-                } else if (Lower(self->remote_state_) == "standby") {
-                    self->SetActionStatus("PS5 đang nghỉ và có thể được đánh thức");
-                } else if (reachable) {
-                    self->SetActionStatus("Đã tìm thấy PS5 · kết nối sẵn sàng");
-                } else {
-                    self->SetActionStatus("Không tìm thấy PS5 tại địa chỉ này", true);
-                }
-            });
-    }).detach();
-}
-
-void PsRemotePlayView::SaveThenLaunch(bool configure) {
-    if (busy_) return;
-    if (!installed_) {
-        SetActionStatus("Chưa cài chiaki-ng ARM64 · xem hướng dẫn cài đặt", true);
-        return;
-    }
-    std::string canonical;
-    if (!CanonicalIpv4(host_, canonical)) {
-        SetActionStatus("Hãy nhập IPv4 hợp lệ trước khi tiếp tục", true);
-        OpenHostModal();
-        return;
-    }
-    if (!configure && !registered_) {
-        SetActionStatus("Cần đăng ký PS5 trước khi Chơi ngay", true);
-        return;
-    }
-
-    const std::string preset = preset_ == Preset::Smooth ? "smooth" : "quality";
-    SetBusy(true, "Đang lưu cấu hình an toàn...");
-    std::weak_ptr<PsRemotePlayView> weak = Self();
-    std::thread([weak, host = std::move(canonical), preset, configure]() {
-        CommandResult result =
-            RunHelper({"save", "--host", host, "--preset", preset}, 8);
-        Application::GetInstance().Schedule(
-            [weak, result = std::move(result), configure]() mutable {
-                auto self = weak.lock();
-                if (!self) return;
-                LvglLockGuard lock;
-                self->SetBusy(false);
-                const Fields fields = ParseFields(result.output);
-                const std::string message = FriendlyHelperMessage(Field(fields, "message"));
-                if (result.helper_missing) {
-                    self->SetActionStatus("Không thể lưu: thiếu ps_remote_play_ctl.sh", true);
-                    return;
-                }
-                if (result.timed_out) {
-                    self->SetActionStatus("Lưu cấu hình quá thời gian", true);
-                    return;
-                }
-                if (result.exit_code != 0) {
-                    self->SetActionStatus(message.empty() ? "Không lưu được cấu hình Remote Play"
-                                                          : message,
-                                          true);
-                    return;
-                }
-                self->SetActionStatus(configure ? "Đã lưu · đang mở thiết lập PS5..."
-                                                : "Đã lưu · đang mở Remote Play...");
-                auto launch = self->launch_cb_;
-                if (launch) launch(configure);
-            });
-    }).detach();
-}
-
-void PsRemotePlayView::OpenHostModal() {
-    if (host_modal_) return;
-    const auto &p = jetson::UiTheme::Instance().Palette();
-
-    host_modal_ = lv_obj_create(overlay_);
-    lv_obj_remove_style_all(host_modal_);
-    lv_obj_set_size(host_modal_, width_, height_);
-    lv_obj_set_pos(host_modal_, 0, 0);
-    lv_obj_set_style_bg_color(host_modal_, Color(p.scrim), 0);
-    lv_obj_set_style_bg_opa(host_modal_, LV_OPA_80, 0);
-    lv_obj_add_flag(host_modal_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(host_modal_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(host_modal_, OnModalDismiss, LV_EVENT_CLICKED, this);
-
-    auto *card = lv_obj_create(host_modal_);
-    StylePanel(card, p.panel, p.border);
-    lv_obj_set_size(card, 600, 390);
-    lv_obj_center(card);
-    lv_obj_set_style_pad_all(card, 14, 0);
-
-    auto *title = lv_label_create(card);
-    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(title, Color(p.text), 0);
-    lv_label_set_text(title, "Nhập địa chỉ IPv4 của PS5");
-
-    auto *hint = lv_label_create(card);
-    lv_obj_set_pos(hint, 0, 27);
-    lv_obj_set_style_text_font(hint, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(hint, Color(p.sub_text), 0);
-    lv_label_set_text(hint, "Ví dụ: 192.168.1.50 · nên đặt IP tĩnh/DHCP reservation");
-
-    host_input_ = lv_textarea_create(card);
-    lv_obj_set_pos(host_input_, 0, 52);
-    lv_obj_set_size(host_input_, 572, 48);
-    lv_obj_set_style_text_font(host_input_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(host_input_, Color(p.text), 0);
-    lv_obj_set_style_bg_color(host_input_, Color(p.bg), 0);
-    lv_obj_set_style_bg_opa(host_input_, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(host_input_, Color(p.accent), 0);
-    lv_obj_set_style_border_width(host_input_, 2, 0);
-    lv_obj_set_style_radius(host_input_, 10, 0);
-    lv_textarea_set_one_line(host_input_, true);
-    lv_textarea_set_max_length(host_input_, 15);
-    lv_textarea_set_accepted_chars(host_input_, "0123456789.");
-    lv_textarea_set_placeholder_text(host_input_, "192.168.1.50");
-    lv_textarea_set_text(host_input_, host_.c_str());
-
-    host_keyboard_ = lv_keyboard_create(card);
-    lv_obj_set_pos(host_keyboard_, 42, 109);
-    lv_obj_set_size(host_keyboard_, 488, 225);
-    lv_obj_set_style_bg_color(host_keyboard_, Color(p.panel), 0);
-    lv_obj_set_style_text_font(host_keyboard_, &lv_font_montserrat_14, 0);
-    static const char *const kIpv4Map[] = {
-        "1", "2", "3", LV_SYMBOL_BACKSPACE, "\n",
-        "4", "5", "6", ".", "\n",
-        "7", "8", "9", "0", "\n",
-        LV_SYMBOL_CLOSE, LV_SYMBOL_OK, "",
-    };
-    static const lv_buttonmatrix_ctrl_t kIpv4Controls[] = {
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2),
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(1),
-        static_cast<lv_buttonmatrix_ctrl_t>(LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2),
-        static_cast<lv_buttonmatrix_ctrl_t>(LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2),
-    };
-    lv_keyboard_set_map(host_keyboard_, LV_KEYBOARD_MODE_USER_1,
-                        kIpv4Map, kIpv4Controls);
-    lv_keyboard_set_mode(host_keyboard_, LV_KEYBOARD_MODE_USER_1);
-    lv_keyboard_set_textarea(host_keyboard_, host_input_);
-    lv_obj_add_event_cb(host_keyboard_, OnKeyboardReady, LV_EVENT_READY, this);
-    lv_obj_add_event_cb(host_keyboard_, OnKeyboardCancel, LV_EVENT_CANCEL, this);
-
-    host_error_ = lv_label_create(card);
-    lv_obj_set_pos(host_error_, 0, 346);
-    lv_obj_set_width(host_error_, 572);
-    lv_obj_set_style_text_font(host_error_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(host_error_, Color(p.sub_text), 0);
-    lv_obj_set_style_text_align(host_error_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(host_error_, "✓ để lưu · × để hủy");
+    pin_error_ = MakeLabel(card, " ", &BUILTIN_SMALL_TEXT_FONT,
+                           palette.sub_text);
+    lv_obj_set_width(pin_error_, lv_pct(100));
+    lv_obj_set_style_text_align(pin_error_, LV_TEXT_ALIGN_CENTER, 0);
 
     if (auto *group = jetson::LvglRuntime::Instance().keypad_group()) {
-        lv_group_add_obj(group, host_input_);
-        lv_group_focus_obj(host_input_);
+        lv_group_add_obj(group, pin_input_);
+        lv_group_focus_obj(pin_input_);
     }
-    lv_obj_move_foreground(host_modal_);
+    lv_obj_move_foreground(pin_modal_);
+    AnimateSheetIn(card, kSheetHeight);
 }
 
-void PsRemotePlayView::CloseHostModal() {
-    if (!host_modal_) return;
-    if (host_keyboard_) lv_keyboard_set_textarea(host_keyboard_, nullptr);
-    lv_obj_del(host_modal_);
-    host_modal_ = nullptr;
-    host_input_ = nullptr;
-    host_keyboard_ = nullptr;
-    host_error_ = nullptr;
+void PsRemotePlayView::ClosePinModal() {
+    if (!pin_modal_) return;
+    lv_obj_del(pin_modal_);
+    pin_modal_ = nullptr;
+    pin_input_ = nullptr;
+    pin_error_ = nullptr;
 }
 
-void PsRemotePlayView::AcceptHostModal() {
-    if (!host_input_) return;
-    const char *text = lv_textarea_get_text(host_input_);
-    std::string canonical;
-    if (!CanonicalIpv4(text ? text : "", canonical)) {
-        if (host_error_) {
-            lv_label_set_text(host_error_, "IPv4 không hợp lệ · cần đủ 4 nhóm, mỗi nhóm 0–255");
-            lv_obj_set_style_text_color(host_error_, Color(kRed), 0);
+void PsRemotePlayView::AcceptPin() {
+    if (!pin_input_) return;
+    const char *value = lv_textarea_get_text(pin_input_);
+    const std::string pin = value ? value : "";
+    if (pin.empty()) {
+        if (pin_error_) {
+            lv_label_set_text(pin_error_, "Vui lòng nhập mã PIN PS5");
+            lv_obj_set_style_text_color(pin_error_, Color(kRed), 0);
         }
         return;
     }
+
+    // This screen is intentionally only a form.  Do not persist or log the
+    // passcode; acknowledge it through the Dynamic Island and discard it.
+    ClosePinModal();
+    Notify("Đã nhận mã PIN PS5");
+}
+
+void PsRemotePlayView::OpenSettingsModal() {
+    if (settings_modal_) return;
+    const auto &palette = jetson::UiTheme::Instance().Palette();
+    RefreshControllerState();
+    draft_preset_ = preset_;
+
+    settings_modal_ = MakeModalBackdrop(overlay_, width_, height_, palette.scrim,
+                                        OnSettingsDismiss, this);
+    constexpr int kSheetHeight = 420;
+    settings_card_ = MakeBottomSheet(settings_modal_, 720, kSheetHeight,
+                                     palette.panel);
+    AddGrabber(settings_card_, palette.sub_text);
+    MakeSheetHeader(settings_card_, "Cài đặt", OnSettingsCancel,
+                    OnSettingsSave, this);
+
+    auto *status_title = MakeLabel(settings_card_, "Trạng thái",
+                                   &BUILTIN_SMALL_TEXT_FONT, palette.sub_text);
+    lv_obj_set_width(status_title, lv_pct(100));
+
+    auto *device_group = lv_obj_create(settings_card_);
+    StyleSurface(device_group, palette.row, palette.border, 14);
+    lv_obj_set_size(device_group, lv_pct(100), 86);
+    lv_obj_set_style_pad_all(device_group, 0, 0);
+    lv_obj_set_flex_flow(device_group, LV_FLEX_FLOW_COLUMN);
+
+    auto make_info_row = [&](int height) {
+        auto *row = lv_obj_create(device_group);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), height);
+        lv_obj_set_style_pad_hor(row, 12, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        RemoveInteraction(row);
+        return row;
+    };
+
+    auto *controller_row = make_info_row(42);
+    settings_controller_label_ = MakeLabel(
+        controller_row, "Kết nối: Chưa kết nối", &BUILTIN_SMALL_TEXT_FONT,
+        palette.text);
+    lv_obj_set_flex_grow(settings_controller_label_, 1);
+    lv_label_set_long_mode(settings_controller_label_, LV_LABEL_LONG_DOT);
+
+    auto *connect = lv_button_create(controller_row);
+    lv_obj_set_size(connect, 38, 34);
+    lv_obj_set_style_bg_color(connect, Color(palette.button), 0);
+    lv_obj_set_style_bg_opa(connect, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(connect, 0, 0);
+    lv_obj_set_style_radius(connect, 9, 0);
+    lv_obj_set_style_shadow_width(connect, 0, 0);
+    lv_obj_set_style_pad_all(connect, 0, 0);
+    lv_obj_add_event_cb(connect, OnConnectController, LV_EVENT_CLICKED, this);
+    auto *connect_icon = jetson::ui::CreateAppIcon(connect, "connect", 21);
+    if (connect_icon) {
+        lv_obj_set_style_image_recolor(connect_icon, Color(palette.accent), 0);
+        lv_obj_set_style_image_recolor_opa(connect_icon, LV_OPA_COVER, 0);
+    } else {
+        connect_icon = MakeLabel(connect, LV_SYMBOL_BLUETOOTH,
+                                 &BUILTIN_ICON_FONT, palette.accent);
+    }
+    lv_obj_center(connect_icon);
+
+    auto *divider = lv_obj_create(device_group);
+    lv_obj_remove_style_all(divider);
+    lv_obj_set_size(divider, lv_pct(100), 1);
+    lv_obj_set_style_bg_color(divider, Color(palette.border), 0);
+    lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
+    RemoveInteraction(divider);
+
+    auto *ps5_row = make_info_row(42);
+    settings_ps5_name_label_ = MakeLabel(
+        ps5_row, "Tên PS5: Chưa kết nối PS5 nào", &BUILTIN_SMALL_TEXT_FONT,
+        palette.text);
+    lv_obj_set_width(settings_ps5_name_label_, lv_pct(100));
+    lv_label_set_long_mode(settings_ps5_name_label_, LV_LABEL_LONG_DOT);
+
+    auto *ip_form = lv_obj_create(settings_card_);
+    StyleSurface(ip_form, palette.row, palette.border, 14);
+    lv_obj_set_size(ip_form, lv_pct(100), 50);
+    lv_obj_set_style_pad_hor(ip_form, 12, 0);
+    lv_obj_set_style_pad_ver(ip_form, 4, 0);
+    lv_obj_set_style_pad_column(ip_form, 10, 0);
+    lv_obj_set_flex_flow(ip_form, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(ip_form, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+
+    auto *ip_label = MakeLabel(ip_form, "IP PS5", &BUILTIN_SMALL_TEXT_FONT,
+                               palette.text);
+    lv_obj_set_width(ip_label, 68);
+    settings_ip_input_ = lv_textarea_create(ip_form);
+    lv_obj_set_size(settings_ip_input_, 1, 42);
+    lv_obj_set_flex_grow(settings_ip_input_, 1);
+    lv_obj_set_style_bg_opa(settings_ip_input_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(settings_ip_input_, 0, 0);
+    lv_obj_set_style_text_font(settings_ip_input_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(settings_ip_input_, Color(palette.text), 0);
+    lv_obj_set_style_text_color(settings_ip_input_, Color(palette.sub_text),
+                                LV_PART_TEXTAREA_PLACEHOLDER);
+    lv_textarea_set_one_line(settings_ip_input_, true);
+    lv_textarea_set_max_length(settings_ip_input_, 15);
+    lv_textarea_set_accepted_chars(settings_ip_input_, "0123456789.");
+    lv_textarea_set_placeholder_text(settings_ip_input_,
+                                     "Chưa kết nối tới IP PS5");
+    lv_textarea_set_text(settings_ip_input_, host_.c_str());
+
+    settings_ip_error_ = MakeLabel(settings_card_, " ",
+                                   &BUILTIN_SMALL_TEXT_FONT, palette.sub_text);
+    lv_obj_set_width(settings_ip_error_, lv_pct(100));
+    lv_obj_set_style_text_align(settings_ip_error_, LV_TEXT_ALIGN_CENTER, 0);
+
+    auto *mode_title = MakeLabel(settings_card_, "Chế độ hiển thị",
+                                 &BUILTIN_SMALL_TEXT_FONT, palette.sub_text);
+    lv_obj_set_width(mode_title, lv_pct(100));
+
+    auto *cards = lv_obj_create(settings_card_);
+    lv_obj_remove_style_all(cards);
+    lv_obj_set_size(cards, lv_pct(100), 100);
+    lv_obj_set_style_pad_column(cards, 12, 0);
+    lv_obj_set_flex_flow(cards, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(cards, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    RemoveInteraction(cards);
+
+    auto make_preset_card = [&](const char *icon_name, const char *title_text,
+                                const char *detail, lv_event_cb_t callback,
+                                lv_obj_t **radio_out) {
+        auto *card = lv_obj_create(cards);
+        StyleSurface(card, palette.row, palette.border, 14);
+        lv_obj_set_height(card, lv_pct(100));
+        lv_obj_set_width(card, 1);
+        lv_obj_set_flex_grow(card, 1);
+        lv_obj_set_style_border_color(card, Color(palette.accent),
+                                      LV_STATE_CHECKED);
+        lv_obj_set_style_border_width(card, 3, LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(card, Color(palette.row_active),
+                                  LV_STATE_CHECKED);
+        lv_obj_set_style_pad_all(card, 12, 0);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(card, callback, LV_EVENT_CLICKED, this);
+
+        auto *icon_bg = lv_obj_create(card);
+        lv_obj_remove_style_all(icon_bg);
+        lv_obj_set_size(icon_bg, 38, 38);
+        lv_obj_set_pos(icon_bg, 0, 0);
+        lv_obj_set_style_bg_color(icon_bg, Color(palette.button), 0);
+        lv_obj_set_style_bg_opa(icon_bg, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(icon_bg, 10, 0);
+        RemoveInteraction(icon_bg);
+        auto *icon = jetson::ui::CreateAppIcon(icon_bg, icon_name, 24);
+        if (icon) {
+            lv_obj_set_style_image_recolor(icon, Color(palette.sub_text), 0);
+            lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+            lv_obj_center(icon);
+        }
+
+        auto *title_label = MakeLabel(card, title_text, &BUILTIN_TEXT_FONT,
+                                      palette.text);
+        lv_obj_set_pos(title_label, 52, 0);
+        auto *detail_label = MakeLabel(card, detail, &BUILTIN_SMALL_TEXT_FONT,
+                                       palette.sub_text);
+        lv_obj_set_pos(detail_label, 52, 36);
+
+        auto *radio = lv_obj_create(card);
+        lv_obj_remove_style_all(radio);
+        lv_obj_set_size(radio, 24, 24);
+        lv_obj_align(radio, LV_ALIGN_TOP_RIGHT, 0, 0);
+        lv_obj_set_style_border_color(radio, Color(palette.sub_text), 0);
+        lv_obj_set_style_border_color(radio, Color(palette.accent),
+                                      LV_STATE_CHECKED);
+        lv_obj_set_style_border_width(radio, 3, 0);
+        lv_obj_set_style_bg_color(radio, Color(palette.accent),
+                                  LV_STATE_CHECKED);
+        lv_obj_set_style_bg_opa(radio, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_opa(radio, LV_OPA_COVER, LV_STATE_CHECKED);
+        lv_obj_set_style_radius(radio, LV_RADIUS_CIRCLE, 0);
+        RemoveInteraction(radio);
+        *radio_out = radio;
+        return card;
+    };
+
+    performance_card_ = make_preset_card(
+        "performance", "Hiệu năng", "540p · 60 FPS", OnPerformance,
+        &performance_radio_);
+    quality_card_ = make_preset_card(
+        "quality", "Chất lượng", "720p · 40 FPS", OnQuality,
+        &quality_radio_);
+
+    UpdateSettingsUi();
+    UpdatePresetCards();
+    if (auto *group = jetson::LvglRuntime::Instance().keypad_group()) {
+        lv_group_add_obj(group, settings_ip_input_);
+    }
+    lv_obj_move_foreground(settings_modal_);
+    AnimateSheetIn(settings_card_, kSheetHeight);
+}
+
+void PsRemotePlayView::UpdatePresetCards() {
+    const bool performance = draft_preset_ == Preset::Performance;
+    auto set_checked = [](lv_obj_t *object, bool checked) {
+        if (!object) return;
+        if (checked) lv_obj_add_state(object, LV_STATE_CHECKED);
+        else lv_obj_remove_state(object, LV_STATE_CHECKED);
+    };
+    set_checked(performance_card_, performance);
+    set_checked(performance_radio_, performance);
+    set_checked(quality_card_, !performance);
+    set_checked(quality_radio_, !performance);
+}
+
+void PsRemotePlayView::CloseSettingsModal() {
+    if (!settings_modal_) return;
+    lv_obj_del(settings_modal_);
+    settings_modal_ = nullptr;
+    settings_card_ = nullptr;
+    settings_controller_label_ = nullptr;
+    settings_ps5_name_label_ = nullptr;
+    settings_ip_input_ = nullptr;
+    settings_ip_error_ = nullptr;
+    performance_card_ = nullptr;
+    quality_card_ = nullptr;
+    performance_radio_ = nullptr;
+    quality_radio_ = nullptr;
+}
+
+void PsRemotePlayView::SaveSettingsModal() {
+    if (!settings_ip_input_) return;
+    const char *input = lv_textarea_get_text(settings_ip_input_);
+    std::string canonical;
+    if (!CanonicalIpv4(input ? input : "", canonical)) {
+        if (settings_ip_error_) {
+            lv_label_set_text(settings_ip_error_, "Địa chỉ IP PS5 không hợp lệ");
+            lv_obj_set_style_text_color(settings_ip_error_, Color(kRed), 0);
+        }
+        lv_obj_set_style_border_width(settings_ip_input_, 2, 0);
+        lv_obj_set_style_border_color(settings_ip_input_, Color(kRed), 0);
+        Notify("Địa chỉ IP PS5 không hợp lệ");
+        return;
+    }
+
     host_ = std::move(canonical);
-    remote_state_.clear();
-    helper_message_.clear();
-    CloseHostModal();
-    UpdateUi();
-    SetActionStatus("Đã nhận IP · nhấn Kiểm tra kết nối hoặc tiếp tục thiết lập");
+    preset_ = draft_preset_;
+    if (host_.empty()) ps5_name_.clear();
+    Settings settings("remote_play", true);
+    settings.SetString("ps5_ip", host_);
+    settings.SetString("ps5_name", ps5_name_);
+    settings.SetString("preset",
+                       preset_ == Preset::Performance ? "performance" : "quality");
+
+    CloseSettingsModal();
+    Notify(host_.empty() ? "Đã lưu cài đặt Remote Play"
+                         : "Đã lưu IP PS5");
 }
 
-void PsRemotePlayView::OnRefresh(lv_event_t *e) {
+void PsRemotePlayView::OpenBluetoothSettings() {
+    CloseSettingsModal();
+    if (open_bluetooth_cb_) open_bluetooth_cb_();
+    else Notify("Mở Cài đặt > Bluetooth để kết nối tay cầm");
+}
+
+void PsRemotePlayView::OnSignIn(lv_event_t *e) {
     LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->RefreshStatus();
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->OpenPinModal();
 }
 
-void PsRemotePlayView::OnEditHost(lv_event_t *e) {
+void PsRemotePlayView::OnPinDismiss(lv_event_t *e) {
+    if (lv_event_get_target(e) != lv_event_get_current_target(e)) return;
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->ClosePinModal();
+}
+
+void PsRemotePlayView::OnPinCancel(lv_event_t *e) {
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->ClosePinModal();
+}
+
+void PsRemotePlayView::OnPinSave(lv_event_t *e) {
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->AcceptPin();
+}
+
+void PsRemotePlayView::OnSettingsDismiss(lv_event_t *e) {
+    if (lv_event_get_target(e) != lv_event_get_current_target(e)) return;
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->CloseSettingsModal();
+}
+
+void PsRemotePlayView::OnSettingsCancel(lv_event_t *e) {
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->CloseSettingsModal();
+}
+
+void PsRemotePlayView::OnSettingsSave(lv_event_t *e) {
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->SaveSettingsModal();
+}
+
+void PsRemotePlayView::OnConnectController(lv_event_t *e) {
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->OpenBluetoothSettings();
+}
+
+void PsRemotePlayView::OnPerformance(lv_event_t *e) {
     LvglLockGuard lock;
     auto *self = static_cast<PsRemotePlayView *>(lv_event_get_user_data(e));
-    if (!self->busy_) self->OpenHostModal();
-}
-
-void PsRemotePlayView::OnProbe(lv_event_t *e) {
-    LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->ProbeHost();
-}
-
-void PsRemotePlayView::OnSmooth(lv_event_t *e) {
-    LvglLockGuard lock;
-    auto *self = static_cast<PsRemotePlayView *>(lv_event_get_user_data(e));
-    if (self->busy_) return;
-    self->preset_ = Preset::Smooth;
-    self->UpdateUi();
-    self->SetActionStatus("Đã chọn 540p 60 FPS thử nghiệm · nếu giật, dùng 720p30");
+    self->draft_preset_ = Preset::Performance;
+    self->UpdatePresetCards();
+    self->Notify("540p và 60 FPS hiệu năng tốt nhất");
 }
 
 void PsRemotePlayView::OnQuality(lv_event_t *e) {
     LvglLockGuard lock;
     auto *self = static_cast<PsRemotePlayView *>(lv_event_get_user_data(e));
-    if (self->busy_) return;
-    self->preset_ = Preset::Quality;
-    self->UpdateUi();
-    self->SetActionStatus("Đã chọn 720p 30 FPS · ưu tiên hình ảnh");
+    self->draft_preset_ = Preset::Quality;
+    self->UpdatePresetCards();
+    self->Notify("720p và 40 FPS độ phân giải cao");
 }
 
-void PsRemotePlayView::OnConfigure(lv_event_t *e) {
-    LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->SaveThenLaunch(true);
-}
-
-void PsRemotePlayView::OnPlay(lv_event_t *e) {
-    LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->SaveThenLaunch(false);
-}
-
-void PsRemotePlayView::OnModalDismiss(lv_event_t *e) {
-    // Only a click whose current target is the scrim dismisses the modal.
-    if (lv_event_get_target(e) != lv_event_get_current_target(e)) return;
-    LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->CloseHostModal();
-}
-
-void PsRemotePlayView::OnKeyboardReady(lv_event_t *e) {
-    LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->AcceptHostModal();
-}
-
-void PsRemotePlayView::OnKeyboardCancel(lv_event_t *e) {
-    LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->CloseHostModal();
+void PsRemotePlayView::OnControllerPoll(lv_timer_t *timer) {
+    auto *self = static_cast<PsRemotePlayView *>(lv_timer_get_user_data(timer));
+    if (self) self->RefreshControllerState();
 }
 
 } // namespace home

@@ -1,12 +1,10 @@
 #pragma once
 
-/* Compact PS5 Remote Play control panel for the 800x480 DS-02 display.
+/* Minimal Remote Play welcome screen for the 800x480 DS-02 display.
  *
- * The view only prepares and validates the persistent Remote Play settings.
- * The home display owns the expensive hand-off to chiaki-ng: LaunchCb(true)
- * opens registration/configuration, while LaunchCb(false) starts streaming.
- * Both status/probe/save helper calls run off the LVGL thread and return through
- * Application::Schedule. No registration secret is collected or logged here.
+ * The screen intentionally stays close to Sony's lightweight welcome view:
+ * one live controller-state icon, one sign-in action, and a compact settings
+ * sheet.  Runtime/install diagnostics belong outside this user-facing view.
  */
 
 #include "display/views/overlay_view.h"
@@ -14,7 +12,6 @@
 #include <lvgl.h>
 
 #include <functional>
-#include <memory>
 #include <string>
 #include <utility>
 
@@ -23,84 +20,88 @@ namespace home {
 class PsRemotePlayView : public OverlayView {
 public:
     using LaunchCb = std::function<void(bool configure)>;
+    using NotifyCb = std::function<void(const char *)>;
+    using OpenBluetoothCb = std::function<void()>;
 
     PsRemotePlayView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
-    ~PsRemotePlayView() override = default;
+    ~PsRemotePlayView() override;
 
-    // true = registration/configuration; false = stream the saved profile.
+    // Kept for the existing launcher hand-off; this minimal form does not
+    // trigger an external client by itself.
     void SetLaunchRequest(LaunchCb cb) { launch_cb_ = std::move(cb); }
+    void SetNotifyCb(NotifyCb cb) { notify_cb_ = std::move(cb); }
+    void SetOpenBluetoothCb(OpenBluetoothCb cb) {
+        open_bluetooth_cb_ = std::move(cb);
+    }
 
 protected:
     void OnStart() override;
 
 private:
-    enum class Preset { Smooth, Quality };
+    enum class Preset { Performance, Quality };
 
-    // Status banner.
-    lv_obj_t *status_dot_ = nullptr;
-    lv_obj_t *status_summary_ = nullptr;
-    lv_obj_t *status_detail_ = nullptr;
-    lv_obj_t *install_badge_ = nullptr;
-    lv_obj_t *register_badge_ = nullptr;
-    lv_obj_t *refresh_btn_ = nullptr;
+    // Minimal welcome content.
+    lv_obj_t *controller_icon_ = nullptr;
+    lv_obj_t *controller_state_label_ = nullptr;
+    lv_obj_t *sign_in_btn_ = nullptr;
 
-    // Host/configuration controls.
-    lv_obj_t *host_label_ = nullptr;
-    lv_obj_t *edit_host_btn_ = nullptr;
-    lv_obj_t *probe_btn_ = nullptr;
-    lv_obj_t *smooth_card_ = nullptr;
+    // PIN bottom sheet.
+    lv_obj_t *pin_modal_ = nullptr;
+    lv_obj_t *pin_input_ = nullptr;
+    lv_obj_t *pin_error_ = nullptr;
+
+    // Settings bottom sheet.
+    lv_obj_t *settings_modal_ = nullptr;
+    lv_obj_t *settings_card_ = nullptr;
+    lv_obj_t *settings_controller_label_ = nullptr;
+    lv_obj_t *settings_ps5_name_label_ = nullptr;
+    lv_obj_t *settings_ip_input_ = nullptr;
+    lv_obj_t *settings_ip_error_ = nullptr;
+    lv_obj_t *performance_card_ = nullptr;
     lv_obj_t *quality_card_ = nullptr;
-    lv_obj_t *runtime_detail_ = nullptr;
-    lv_obj_t *action_status_ = nullptr;
-    lv_obj_t *configure_btn_ = nullptr;
-    lv_obj_t *configure_btn_label_ = nullptr;
-    lv_obj_t *play_btn_ = nullptr;
-
-    // Numeric IPv4 entry modal.
-    lv_obj_t *host_modal_ = nullptr;
-    lv_obj_t *host_input_ = nullptr;
-    lv_obj_t *host_keyboard_ = nullptr;
-    lv_obj_t *host_error_ = nullptr;
+    lv_obj_t *performance_radio_ = nullptr;
+    lv_obj_t *quality_radio_ = nullptr;
 
     LaunchCb launch_cb_;
-    Preset preset_ = Preset::Smooth;
+    NotifyCb notify_cb_;
+    OpenBluetoothCb open_bluetooth_cb_;
+    lv_timer_t *controller_timer_ = nullptr;
+
+    Preset preset_ = Preset::Performance;
+    Preset draft_preset_ = Preset::Performance;
     std::string host_;
-    std::string nickname_;
-    std::string controller_;
-    std::string network_;
-    std::string remote_state_;
-    std::string helper_message_;
-    bool installed_ = false;
-    bool registered_ = false;
-    bool status_loaded_ = false;
-    bool busy_ = false; // accessed only while the LVGL lock is held
+    std::string ps5_name_;
+    std::string controller_name_;
+    bool controller_connected_ = false;
 
     void BuildBody();
-    void UpdateUi();
+    void LoadState();
+    void RefreshControllerState();
+    void UpdateWelcomeUi();
+    void UpdateSettingsUi();
     void UpdatePresetCards();
-    void SetBusy(bool busy, const std::string &message = "");
-    void SetActionStatus(const std::string &message, bool error = false);
+    void Notify(const char *message);
 
-    void RefreshStatus();
-    void ProbeHost();
-    void SaveThenLaunch(bool configure);
+    void OpenPinModal();
+    void ClosePinModal();
+    void AcceptPin();
 
-    void OpenHostModal();
-    void CloseHostModal();
-    void AcceptHostModal();
+    void OpenSettingsModal();
+    void CloseSettingsModal();
+    void SaveSettingsModal();
+    void OpenBluetoothSettings();
 
-    std::shared_ptr<PsRemotePlayView> Self();
-
-    static void OnRefresh(lv_event_t *e);
-    static void OnEditHost(lv_event_t *e);
-    static void OnProbe(lv_event_t *e);
-    static void OnSmooth(lv_event_t *e);
+    static void OnSignIn(lv_event_t *e);
+    static void OnPinDismiss(lv_event_t *e);
+    static void OnPinCancel(lv_event_t *e);
+    static void OnPinSave(lv_event_t *e);
+    static void OnSettingsDismiss(lv_event_t *e);
+    static void OnSettingsCancel(lv_event_t *e);
+    static void OnSettingsSave(lv_event_t *e);
+    static void OnConnectController(lv_event_t *e);
+    static void OnPerformance(lv_event_t *e);
     static void OnQuality(lv_event_t *e);
-    static void OnConfigure(lv_event_t *e);
-    static void OnPlay(lv_event_t *e);
-    static void OnModalDismiss(lv_event_t *e);
-    static void OnKeyboardReady(lv_event_t *e);
-    static void OnKeyboardCancel(lv_event_t *e);
+    static void OnControllerPoll(lv_timer_t *timer);
 };
 
 } // namespace home

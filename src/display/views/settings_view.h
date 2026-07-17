@@ -141,6 +141,7 @@ private:
     lv_obj_t *night_warmth_slider_ = nullptr;
     lv_obj_t *vol_slider_ = nullptr;
     lv_obj_t *mute_switch_ = nullptr;
+    lv_obj_t *vol_icon_ = nullptr; // speaker / speaker-mute PNG beside the slider
 
     // General / cloud-font pane state.
     lv_obj_t *font_status_label_ = nullptr;
@@ -178,7 +179,7 @@ private:
     void AddVpnRow();
     void VpnRefreshUi();
     void RefreshVpnStatus();
-    void AddSidebarRow(Cat cat, const char *glyph, const char *label);
+    void AddSidebarRow(Cat cat, const char *icon, const char *label);
     void HighlightSide(Cat cat);
     void ShowCategory(Cat c);
     void ClearDetail();

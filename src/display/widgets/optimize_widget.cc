@@ -1,5 +1,6 @@
 #include "display/widgets/optimize_widget.h"
 #include "display/common/lvgl_utils.h"
+#include "display/core/app_icons.h"
 #include "platform/shell_command.h"
 #include "fonts.h"
 
@@ -111,10 +112,9 @@ OptimizeWidget::OptimizeWidget(lv_obj_t *parent) {
     lv_obj_set_style_shadow_opa(circle, LV_OPA_30, 0);
     lv_obj_clear_flag(circle, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    auto *icon = lv_label_create(circle);
-    lv_obj_set_style_text_font(icon, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(icon, lv_color_white(), 0);
-    lv_label_set_text(icon, LV_SYMBOL_REFRESH);
+    auto *icon = jetson::ui::CreateAppIcon(circle, "clean-cache", 24);
+    lv_obj_set_style_image_recolor(icon, lv_color_white(), 0);
+    lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
     lv_obj_center(icon);
 
     auto *caption = lv_label_create(button_);

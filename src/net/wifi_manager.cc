@@ -187,6 +187,25 @@ std::string WifiManager::ActiveSsid() const {
     return "";
 }
 
+int WifiManager::ActiveSignal() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::string out;
+    // Cached AP list only: `--rescan no` answers from NetworkManager's last
+    // scan in ~100 ms and never blocks the caller behind a 2-5 s driver scan.
+    if (RunShellCommand("nmcli -w 5 -t --escape no -f IN-USE,SIGNAL "
+                        "device wifi list --rescan no", out) != 0)
+        return -1;
+    std::istringstream iss(out);
+    std::string line;
+    while (std::getline(iss, line)) {
+        std::string in_use, signal;
+        splitFirst(line, ':', in_use, signal);
+        if (in_use.find('*') == std::string::npos) continue;
+        return std::min(100, std::max(0, toInt(signal)));
+    }
+    return -1;
+}
+
 std::vector<WifiNetwork> WifiManager::Scan() {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     const auto started = std::chrono::steady_clock::now();

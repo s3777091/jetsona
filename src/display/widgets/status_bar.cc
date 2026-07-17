@@ -1,16 +1,19 @@
 #include "display/widgets/status_bar.h"
 #include "display/common/airplane_icon.h"
 #include "display/common/lvgl_utils.h"
-#include "display/core/lvgl_image.h"
+#include "display/core/app_icons.h"
 #include "fonts.h"
 #include "net/airplane_mode.h"
+#include "net/bluetooth_manager.h"
 #include "net/vpn_manager.h"
+#include "net/wifi_manager.h"
 #include "settings.h"
 #include "board.h"
 
 #include <lvgl.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 
@@ -33,6 +36,22 @@ constexpr int kExpandedW = 430;
 constexpr int kExpandedH = 72;
 constexpr int kTopInset = 3;
 constexpr int kAutoCloseMs = 6000;
+
+// Box size for the PNG status icons (assets/icons/app, 28x28 sources).
+constexpr int kStatusIconPx = 20;
+// Radio state poll period. nmcli/bluetoothctl shell-outs run on the worker
+// thread, so this only bounds how stale the wifi/bt/cellular icons can be.
+constexpr auto kConnPollInterval = std::chrono::seconds(10);
+constexpr auto kConnPollTick = std::chrono::milliseconds(500);
+
+// cellular-2..5 mirror the active WiFi link quality (the DS-02 has no modem;
+// the bars are the iPhone-like "signal" affordance next to the WiFi icon).
+const char *CellularIconForSignal(int signal) {
+    if (signal >= 80) return "cellular-5";
+    if (signal >= 55) return "cellular-4";
+    if (signal >= 30) return "cellular-3";
+    return "cellular-2";
+}
 } // namespace
 
 StatusBar::StatusBar(lv_obj_t *parent) {
@@ -63,7 +82,9 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     // after the user changed the global font size.
     right_cluster_ = lv_obj_create(status_strip_);
     lv_obj_remove_style_all(right_cluster_);
-    lv_obj_set_size(right_cluster_, 218, lv_pct(100));
+    // Wide enough for the full set: VPN + cellular + wifi + bt + charging
+    // bolt + battery + lang + power (still clear of the centered island).
+    lv_obj_set_size(right_cluster_, 250, lv_pct(100));
     lv_obj_align(right_cluster_, LV_ALIGN_RIGHT_MID, -10, 0);
     lv_obj_set_flex_flow(right_cluster_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(right_cluster_, LV_FLEX_ALIGN_END,
@@ -72,15 +93,18 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_clear_flag(right_cluster_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    auto add_icon = [&](lv_obj_t **out, const char *glyph, lv_event_cb_t cb) {
-        auto *l = lv_label_create(right_cluster_);
-        lv_obj_set_style_text_font(l, &BUILTIN_ICON_FONT, 0);
-        lv_obj_set_style_text_color(l, lv_color_white(), 0);
-        lv_label_set_text(l, glyph);
-        lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_ext_click_area(l, 8);
-        if (cb) lv_obj_add_event_cb(l, cb, LV_EVENT_CLICKED, this);
-        *out = l;
+    // PNG icon from assets/icons/app, recolored white like the old glyphs so
+    // it stays readable on any wallpaper.
+    auto add_icon = [&](lv_obj_t **out, const char *png, lv_event_cb_t cb) {
+        lv_obj_t *o = jetson::ui::CreateAppIcon(right_cluster_, png, kStatusIconPx);
+        lv_obj_set_style_image_recolor(o, lv_color_white(), 0);
+        lv_obj_set_style_image_recolor_opa(o, LV_OPA_COVER, 0);
+        if (cb) {
+            lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(o, 8);
+            lv_obj_add_event_cb(o, cb, LV_EVENT_CLICKED, this);
+        }
+        *out = o;
     };
 
     // One short line fits before the resting island: time, numeric day/month,
@@ -91,26 +115,34 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_set_style_text_color(datetime_label_, lv_color_white(), 0);
     lv_label_set_text(datetime_label_, "--:--  --/--");
 
-    weather_icon_image_ = LvglImageFromFile("assets/icons/app/sun.png");
-    weather_icon_ = lv_image_create(left_cluster_);
-    lv_obj_set_size(weather_icon_, 18, 18);
-    if (weather_icon_image_) lv_image_set_src(weather_icon_, weather_icon_image_->image_dsc());
-    lv_obj_clear_flag(weather_icon_,
-                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    // Weather affordance. Recolored white like the rest of the strip so the
+    // monochrome icon set stays visible on any wallpaper.
+    weather_icon_ = jetson::ui::CreateAppIcon(left_cluster_, "sun", 18);
+    lv_obj_set_style_image_recolor(weather_icon_, lv_color_white(), 0);
+    lv_obj_set_style_image_recolor_opa(weather_icon_, LV_OPA_COVER, 0);
 
     airplane_icon_ = jetson::ui::CreateAirplaneIcon(right_cluster_, lv_color_white());
     lv_obj_add_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
 
-    vpn_label_ = lv_label_create(right_cluster_);
-    lv_obj_set_style_text_font(vpn_label_, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(vpn_label_, Color(0x30c967), 0);
-    lv_label_set_text(vpn_label_, "VPN");
-    lv_obj_add_flag(vpn_label_, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(vpn_label_,
-                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    // Same green the old "VPN" text badge used.
+    vpn_icon_ = jetson::ui::CreateAppIcon(right_cluster_, "vpn", kStatusIconPx);
+    lv_obj_set_style_image_recolor(vpn_icon_, Color(0x30c967), 0);
+    lv_obj_set_style_image_recolor_opa(vpn_icon_, LV_OPA_COVER, 0);
+    lv_obj_add_flag(vpn_icon_, LV_OBJ_FLAG_HIDDEN);
 
-    add_icon(&wifi_label_, LV_SYMBOL_WIFI, OnWifiClick);
-    add_icon(&bt_label_, LV_SYMBOL_BLUETOOTH, OnBtClick);
+    // Signal bars next to WiFi, iPhone-style. Not clickable: it mirrors the
+    // WiFi link, so the WiFi icon beside it is the tap target.
+    add_icon(&cellular_icon_, CellularIconForSignal(-1), nullptr);
+    add_icon(&wifi_icon_, "wifi", OnWifiClick);
+    add_icon(&bt_icon_, "bluetooth", OnBtClick);
+
+    // Charging bolt beside the battery; hidden until the battery reports
+    // charging (RefreshBattery re-reads the sensor every 5 s). Same green as
+    // the charging fill.
+    charge_icon_ = jetson::ui::CreateAppIcon(right_cluster_, "charge-batery", 16);
+    lv_obj_set_style_image_recolor(charge_icon_, Color(0x34c759), 0);
+    lv_obj_set_style_image_recolor_opa(charge_icon_, LV_OPA_COVER, 0);
+    lv_obj_add_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
 
     battery_icon_root_ = lv_obj_create(right_cluster_);
     lv_obj_remove_style_all(battery_icon_root_);
@@ -162,7 +194,7 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_set_style_text_color(lang_label_, lv_color_white(), 0);
     lv_label_set_text(lang_label_, "EN");
 
-    add_icon(&power_label_, LV_SYMBOL_POWER, OnPowerClick);
+    add_icon(&power_icon_, "start", OnPowerClick);
 
     // ---- Resting Dynamic Island (centered, solid black) ----
     pill_ = lv_obj_create(parent);
@@ -235,6 +267,27 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_add_event_cb(pill_, OnDeleted, LV_EVENT_DELETE, this);
     timer_ = lv_timer_create(OnTimer, 1000, this);
     Refresh();
+
+    // Radio-state poller. Publishes into atomics only; the LVGL-side icon
+    // updates happen in RefreshConnectivity() on the 1 Hz timer.
+    conn_poll_thread_ = std::thread([this]() {
+        auto next_poll = std::chrono::steady_clock::now(); // first poll now
+        while (!conn_poll_stop_.load()) {
+            if (std::chrono::steady_clock::now() >= next_poll) {
+                next_poll = std::chrono::steady_clock::now() + kConnPollInterval;
+                if (jetson::IsAirplaneModeEnabled()) {
+                    polled_wifi_signal_.store(-1);
+                    polled_bt_powered_.store(0);
+                } else {
+                    polled_wifi_signal_.store(
+                        jetson::WifiManager::Instance().ActiveSignal());
+                    polled_bt_powered_.store(
+                        jetson::BluetoothManager::Instance().IsPowered() ? 1 : 0);
+                }
+            }
+            std::this_thread::sleep_for(kConnPollTick);
+        }
+    });
 }
 
 void StatusBar::BuildPowerMenu() {
@@ -275,6 +328,12 @@ void StatusBar::BuildPowerMenu() {
 }
 
 StatusBar::~StatusBar() {
+    // Stop the poller before touching LVGL state. The worker never takes the
+    // LVGL lock, so joining here (worst case one in-flight nmcli/bluetoothctl
+    // call) cannot deadlock.
+    conn_poll_stop_.store(true);
+    if (conn_poll_thread_.joinable()) conn_poll_thread_.join();
+
     LvglLockGuard lock;
     if (timer_) { lv_timer_del(timer_); timer_ = nullptr; }
     if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
@@ -323,28 +382,45 @@ void StatusBar::Refresh() {
 void StatusBar::RefreshConnectivity() {
     const bool airplane = jetson::IsAirplaneModeEnabled();
     const bool vpn = jetson::VpnManager::Instance().CachedEnabled();
+    const int wifi_signal = polled_wifi_signal_.load();
+    const int bt_powered = polled_bt_powered_.load();
     if (airplane_state_read_ && airplane == cached_airplane_mode_ &&
-        vpn_state_read_ && vpn == cached_vpn_enabled_) return;
+        vpn_state_read_ && vpn == cached_vpn_enabled_ &&
+        wifi_signal == cached_wifi_signal_ && bt_powered == cached_bt_powered_)
+        return;
     airplane_state_read_ = true;
     cached_airplane_mode_ = airplane;
     vpn_state_read_ = true;
     cached_vpn_enabled_ = vpn;
+    cached_wifi_signal_ = wifi_signal;
+    cached_bt_powered_ = bt_powered;
 
     if (airplane_icon_) {
         if (airplane) lv_obj_clear_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
     }
-    if (wifi_label_) {
-        if (airplane) lv_obj_add_flag(wifi_label_, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_clear_flag(wifi_label_, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (bt_label_) {
-        if (airplane) lv_obj_add_flag(bt_label_, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_clear_flag(bt_label_, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (vpn_label_) {
-        if (vpn) lv_obj_clear_flag(vpn_label_, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_add_flag(vpn_label_, LV_OBJ_FLAG_HIDDEN);
+    // Radio cluster is replaced by the airplane glyph while airplane mode is
+    // on; otherwise each icon reflects the last polled state.
+    auto set_hidden = [](lv_obj_t *o, bool hidden) {
+        if (!o) return;
+        if (hidden) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+    };
+    set_hidden(cellular_icon_, airplane);
+    set_hidden(wifi_icon_, airplane);
+    set_hidden(bt_icon_, airplane);
+    set_hidden(vpn_icon_, !vpn);
+
+    if (!airplane) {
+        jetson::ui::SetAppIcon(cellular_icon_, CellularIconForSignal(wifi_signal),
+                               kStatusIconPx);
+        // -2 (not polled yet) keeps the optimistic connected icon the old
+        // static glyph showed at boot.
+        jetson::ui::SetAppIcon(wifi_icon_, wifi_signal == -1 ? "no-wifi" : "wifi",
+                               kStatusIconPx);
+        jetson::ui::SetAppIcon(bt_icon_,
+                               bt_powered == 0 ? "no-bluetooh" : "bluetooth",
+                               kStatusIconPx);
     }
 }
 
@@ -379,6 +455,15 @@ void StatusBar::RefreshBattery() {
         battery_read_done_ = true;
         cached_battery_charging_ = charging;
         (void)discharging;
+    }
+
+    // Charging bolt appears as soon as a poll sees the charger attached.
+    if (charge_icon_) {
+        const bool show_charge = has_battery_ && cached_battery_charging_;
+        if (show_charge == lv_obj_has_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN)) {
+            if (show_charge) lv_obj_clear_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     // Keep a percentage-style battery visible even on installations without a

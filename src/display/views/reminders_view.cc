@@ -1,6 +1,7 @@
 #include "display/views/reminders_view.h"
 
 #include "display/common/lvgl_utils.h"
+#include "display/core/app_icons.h"
 #include "display/theme/ui_theme.h"
 #include "fonts.h"
 #include "settings.h"
@@ -79,7 +80,8 @@ std::string CreatedNow() {
 
 lv_obj_t *MakeIconButton(lv_obj_t *parent, int size, uint32_t bg,
                          const char *symbol, lv_event_cb_t callback,
-                         void *user_data, uint32_t icon_color) {
+                         void *user_data, uint32_t icon_color,
+                         const char *png_icon = nullptr) {
     auto *button = lv_button_create(parent);
     lv_obj_set_size(button, size, size);
     lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
@@ -90,36 +92,29 @@ lv_obj_t *MakeIconButton(lv_obj_t *parent, int size, uint32_t bg,
     lv_obj_set_style_pad_all(button, 0, 0);
     lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, user_data);
 
-    auto *label = lv_label_create(button);
-    lv_obj_set_style_text_font(label, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(label, Color(icon_color), 0);
-    lv_label_set_text(label, symbol);
-    lv_obj_center(label);
+    lv_obj_t *icon;
+    if (png_icon) {
+        icon = jetson::ui::CreateAppIcon(button, png_icon, size * 3 / 5);
+        lv_obj_set_style_image_recolor(icon, Color(icon_color), 0);
+        lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+    } else {
+        icon = lv_label_create(button);
+        lv_obj_set_style_text_font(icon, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(icon, Color(icon_color), 0);
+        lv_label_set_text(icon, symbol);
+    }
+    lv_obj_center(icon);
     return button;
 }
 
-/* Draw a pin instead of relying on a font glyph. The bundled icon face only
- * guarantees LVGL's small symbol subset and does not include Font Awesome's
- * push-pin codepoint on every target. */
+/* Pin icon on a task row: assets/icons/app/pin.png recolored to `color`.
+ * The unpinned state renders dimmed instead of the old outline-only variant. */
 void DrawPin(lv_obj_t *button, uint32_t color, bool filled) {
-    auto *head = lv_obj_create(button);
-    lv_obj_remove_style_all(head);
-    lv_obj_set_size(head, 13, 9);
-    lv_obj_set_style_radius(head, 3, 0);
-    lv_obj_set_style_bg_color(head, Color(color), 0);
-    lv_obj_set_style_bg_opa(head, filled ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(head, filled ? 0 : 2, 0);
-    lv_obj_set_style_border_color(head, Color(color), 0);
-    lv_obj_align(head, LV_ALIGN_CENTER, 0, -4);
-    lv_obj_clear_flag(head, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-
-    auto *stem = lv_obj_create(button);
-    lv_obj_remove_style_all(stem);
-    lv_obj_set_size(stem, 2, 10);
-    lv_obj_set_style_bg_color(stem, Color(color), 0);
-    lv_obj_set_style_bg_opa(stem, LV_OPA_COVER, 0);
-    lv_obj_align(stem, LV_ALIGN_CENTER, 0, 6);
-    lv_obj_clear_flag(stem, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    auto *img = jetson::ui::CreateAppIcon(button, "pin", 18);
+    lv_obj_set_style_image_recolor(img, Color(color), 0);
+    lv_obj_set_style_image_recolor_opa(img, LV_OPA_COVER, 0);
+    if (!filled) lv_obj_set_style_opa(img, LV_OPA_50, 0);
+    lv_obj_center(img);
 }
 
 } // namespace
@@ -172,7 +167,8 @@ void RemindersView::BuildBody() {
     lv_obj_set_style_border_width(input_->obj(), 0, 0);
     lv_obj_add_event_cb(input_->obj(), OnAdd, LV_EVENT_READY, this);
 
-    MakeIconButton(composer, 38, p.accent, LV_SYMBOL_PLUS, OnAdd, this, 0xffffff);
+    MakeIconButton(composer, 38, p.accent, LV_SYMBOL_PLUS, OnAdd, this, 0xffffff,
+                   "add");
 
     auto *hint = lv_label_create(body_);
     lv_obj_set_width(hint, std::min(width_ - 28, 720));

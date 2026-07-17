@@ -1,6 +1,7 @@
 #include "display/views/wifi_settings_view.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/signal_bars.h"
+#include "display/core/app_icons.h"
 #include "fonts.h"
 #include "esp_log.h"
 #include "lvgl_runtime.h"
@@ -97,11 +98,10 @@ void WifiSettingsView::BuildUi() {
     lv_obj_align_to(rescan_btn_, back_btn_, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     lv_obj_set_style_bg_color(rescan_btn_, Color(0x2a2d33), 0);
     lv_obj_add_event_cb(rescan_btn_, OnRescan, LV_EVENT_CLICKED, this);
-    auto *res_lbl = lv_label_create(rescan_btn_);
-    lv_obj_set_style_text_font(res_lbl, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(res_lbl, lv_color_white(), 0);
-    lv_label_set_text(res_lbl, LV_SYMBOL_REFRESH);
-    lv_obj_center(res_lbl);
+    auto *res_ic = jetson::ui::CreateAppIcon(rescan_btn_, "reload", 22);
+    lv_obj_set_style_image_recolor(res_ic, lv_color_white(), 0);
+    lv_obj_set_style_image_recolor_opa(res_ic, LV_OPA_COVER, 0);
+    lv_obj_center(res_ic);
 
     title_label_ = lv_label_create(header);
     lv_obj_set_style_text_font(title_label_, &BUILTIN_TEXT_FONT, 0);

@@ -2,7 +2,7 @@
 #include "display/common/airplane_icon.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/signal_bars.h"
-#include "display/core/lvgl_image.h"
+#include "display/core/app_icons.h"
 #include "fonts.h"
 #include "display/theme/ui_theme.h"
 #include "lvgl_runtime.h"
@@ -462,15 +462,16 @@ void SettingsView::BuildShell() {
     AddAirplaneRow();
     AddVpnRow();
 
-    struct Entry { Cat cat; const char *glyph; const char *label; };
+    // PNG icons from assets/icons/app.
+    struct Entry { Cat cat; const char *icon; const char *label; };
     const Entry cats[] = {
-        {Cat::Display, LV_SYMBOL_EYE_OPEN, "Màn hình"},
-        {Cat::Sound, LV_SYMBOL_VOLUME_MAX, "Âm thanh"},
-        {Cat::Wifi, LV_SYMBOL_WIFI, "WiFi"},
-        {Cat::Bluetooth, LV_SYMBOL_BLUETOOTH, "Bluetooth"},
-        {Cat::General, LV_SYMBOL_SETTINGS, "Cài đặt chung"},
+        {Cat::Display, "screen", "Màn hình"},
+        {Cat::Sound, "speaker", "Âm thanh"},
+        {Cat::Wifi, "wifi", "WiFi"},
+        {Cat::Bluetooth, "bluetooth", "Bluetooth"},
+        {Cat::General, "settings", "Cài đặt chung"},
     };
-    for (const auto &e : cats) AddSidebarRow(e.cat, e.glyph, e.label);
+    for (const auto &e : cats) AddSidebarRow(e.cat, e.icon, e.label);
 
     // ---- Detail pane ----
     detail_ = lv_obj_create(body_);
@@ -582,10 +583,9 @@ void SettingsView::AddVpnRow() {
     lv_obj_clear_flag(vpn_icon_bg_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    auto *icon = lv_label_create(vpn_icon_bg_);
-    lv_obj_set_style_text_font(icon, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_text_color(icon, lv_color_white(), 0);
-    lv_label_set_text(icon, "VPN");
+    auto *icon = jetson::ui::CreateAppIcon(vpn_icon_bg_, "vpn", 20);
+    lv_obj_set_style_image_recolor(icon, lv_color_white(), 0);
+    lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
     lv_obj_center(icon);
 
     auto *label = lv_label_create(vpn_row_);
@@ -629,7 +629,7 @@ void SettingsView::RefreshVpnStatus() {
     }).detach();
 }
 
-void SettingsView::AddSidebarRow(Cat cat, const char *glyph, const char *label) {
+void SettingsView::AddSidebarRow(Cat cat, const char *icon, const char *label) {
     const auto &p = jetson::UiTheme::Instance().Palette();
     auto *row = lv_obj_create(sidebar_);
     lv_obj_remove_style_all(row);
@@ -646,10 +646,9 @@ void SettingsView::AddSidebarRow(Cat cat, const char *glyph, const char *label) 
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
 
-    auto *ic = lv_label_create(row);
-    lv_obj_set_style_text_font(ic, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(ic, Color(p.sub_text), 0);
-    lv_label_set_text(ic, glyph);
+    auto *ic = jetson::ui::CreateAppIcon(row, icon, 20);
+    lv_obj_set_style_image_recolor(ic, Color(p.sub_text), 0);
+    lv_obj_set_style_image_recolor_opa(ic, LV_OPA_COVER, 0);
 
     auto *lbl = lv_label_create(row);
     lv_obj_set_style_text_font(lbl, &BUILTIN_SMALL_TEXT_FONT, 0);
@@ -670,9 +669,9 @@ void SettingsView::HighlightSide(Cat cat) {
         bool sel = sd && sd->cat == cat;
         lv_obj_set_style_bg_color(r, sel ? Color(p.accent) : Color(p.row), 0);
         lv_obj_set_style_bg_opa(r, sel ? LV_OPA_20 : LV_OPA_TRANSP, 0);
-        auto *ic = lv_obj_get_child(r, 0);  // icon label
+        auto *ic = lv_obj_get_child(r, 0);  // icon image
         auto *lbl = lv_obj_get_child(r, 1); // text label
-        if (ic) lv_obj_set_style_text_color(ic, sel ? Color(p.accent) : Color(p.sub_text), 0);
+        if (ic) lv_obj_set_style_image_recolor(ic, sel ? Color(p.accent) : Color(p.sub_text), 0);
         if (lbl) lv_obj_set_style_text_color(lbl, sel ? Color(p.accent) : Color(p.text), 0);
     }
 }
@@ -709,6 +708,7 @@ void SettingsView::ClearDetail() {
     night_warmth_slider_ = nullptr;
     vol_slider_ = nullptr;
     mute_switch_ = nullptr;
+    vol_icon_ = nullptr;
     font_status_label_ = nullptr;
     // Any open modal belongs to overlay_, not detail_; leave it.
 }
@@ -1004,19 +1004,14 @@ void SettingsView::BuildDisplayMain() {
     if (v > 100) v = 100;
     auto *brightness_card = DisplayCard();
     auto *slider_row = DisplayRow(brightness_card, "", nullptr, 58);
-    /* Brightness sun icon. Rendered from a PNG (assets/icons/app/sun.png)
-     * and recolored to the palette at runtime, NOT as a U+2600 text glyph --
-     * the bundled arial.ttf has no Misc-Symbols block, so a literal "☀"
-     * floods the log with `ttf_get_glyph_dsc_cb: cache not allocated` and
-     * `glyph dsc. not found for U+2600` every frame. */
-    static auto sun_img = ::LvglImageFromFile("assets/icons/app/sun.png");
-    auto *sun_small = lv_image_create(slider_row);
-    if (sun_img) {
-        lv_image_set_src(sun_small, sun_img->image_dsc());
-        lv_obj_set_style_image_recolor(sun_small, Color(p.sub_text), 0);
-        lv_obj_set_style_image_recolor_opa(sun_small, LV_OPA_COVER, 0);
-    }
-    lv_obj_set_size(sun_small, 20, 20);
+    /* Brightness sun icon. Rendered from a PNG (assets/icons/app/sun.png,
+     * via the shared app-icon cache) and recolored to the palette at runtime,
+     * NOT as a U+2600 text glyph -- the bundled arial.ttf has no Misc-Symbols
+     * block, so a literal "☀" floods the log with `ttf_get_glyph_dsc_cb:
+     * cache not allocated` and `glyph dsc. not found for U+2600` every frame. */
+    auto *sun_small = jetson::ui::CreateAppIcon(slider_row, "sun", 20);
+    lv_obj_set_style_image_recolor(sun_small, Color(p.sub_text), 0);
+    lv_obj_set_style_image_recolor_opa(sun_small, LV_OPA_COVER, 0);
     lv_obj_set_style_margin_right(sun_small, 10, 0);
     bright_slider_ = MakeSlider(slider_row, 20, 100, v, OnBrightChanged);
     lv_obj_set_flex_grow(bright_slider_, 1);
@@ -1178,6 +1173,11 @@ void SettingsView::BuildSound() {
     char sub[32];
     std::snprintf(sub, sizeof(sub), "%d%%%s", vol, muted ? " (tắt tiếng)" : "");
     auto *row = MakeRow("Âm lượng", sub);
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    // Stateful speaker icon: swaps to speaker-mute while muted.
+    vol_icon_ = jetson::ui::CreateAppIcon(row, muted ? "speaker-mute" : "speaker", 22);
+    lv_obj_set_style_image_recolor(vol_icon_, Color(p.sub_text), 0);
+    lv_obj_set_style_image_recolor_opa(vol_icon_, LV_OPA_COVER, 0);
     auto *sl = MakeSlider(row, 0, 100, vol, OnVolChanged);
     lv_obj_set_width(sl, 180);
     vol_slider_ = sl;
@@ -1900,10 +1900,9 @@ void SettingsView::WifiOpenConnectSheet(const jetson::WifiNetwork &network) {
     lv_obj_set_style_bg_opa(popup_confirm_btn_, LV_OPA_60, 0);
     lv_obj_add_state(popup_confirm_btn_, LV_STATE_DISABLED);
 
-    auto *wifiIcon = lv_label_create(popup_card_);
-    lv_obj_set_style_text_font(wifiIcon, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(wifiIcon, Color(p.accent), 0);
-    lv_label_set_text(wifiIcon, LV_SYMBOL_WIFI);
+    auto *wifiIcon = jetson::ui::CreateAppIcon(popup_card_, "wifi", 26);
+    lv_obj_set_style_image_recolor(wifiIcon, Color(p.accent), 0);
+    lv_obj_set_style_image_recolor_opa(wifiIcon, LV_OPA_COVER, 0);
 
     auto *title = lv_label_create(popup_card_);
     lv_obj_set_width(title, lv_pct(100));
@@ -2443,10 +2442,9 @@ void SettingsView::BtOpenConnectSheet(const jetson::BtDevice &d) {
     popup_confirm_btn_ = makeCircleAction(LV_SYMBOL_OK, p.accent, 0xffffff,
                                           OnModalBtAction);
 
-    auto *btIcon = lv_label_create(popup_card_);
-    lv_obj_set_style_text_font(btIcon, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(btIcon, Color(p.accent), 0);
-    lv_label_set_text(btIcon, LV_SYMBOL_BLUETOOTH);
+    auto *btIcon = jetson::ui::CreateAppIcon(popup_card_, "bluetooth", 26);
+    lv_obj_set_style_image_recolor(btIcon, Color(p.accent), 0);
+    lv_obj_set_style_image_recolor_opa(btIcon, LV_OPA_COVER, 0);
 
     auto *title = lv_label_create(popup_card_);
     lv_obj_set_width(title, lv_pct(100));
@@ -3029,6 +3027,8 @@ void SettingsView::OnMuteToggle(lv_event_t *e) {
     Settings("display", true).SetBool("muted", !audible);
     int v = self->vol_slider_ ? lv_slider_get_value(self->vol_slider_) : 0;
     if (self->volume_cb_) self->volume_cb_(v, !audible);
+    if (self->vol_icon_)
+        jetson::ui::SetAppIcon(self->vol_icon_, audible ? "speaker" : "speaker-mute", 22);
     self->SetStatus(audible ? "Bật tiếng" : "Tắt tiếng");
 }
 

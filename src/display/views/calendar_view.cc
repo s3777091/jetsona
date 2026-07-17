@@ -1,5 +1,6 @@
 #include "display/views/calendar_view.h"
 #include "display/common/lvgl_utils.h"
+#include "display/core/app_icons.h"
 #include "fonts.h"
 #include "settings.h"
 #include "display/theme/ui_theme.h"
@@ -733,14 +734,8 @@ void CalendarView::OpenDayModal(int day) {
         // font; the tiny_ttf text faces have no Font Awesome block, which
         // spammed "glyph dsc. not found U+F078" + tiny_ttf "cache not
         // allocated" on every redraw. Use the dedicated 16x16 chevron PNG
-        // (shown 1:1), with the symbol-capable icon font as fallback.
-        if (!dropdown_icon_) dropdown_icon_ = LvglImageFromFile("assets/icons/app/dropdown.png");
-        if (dropdown_icon_) {
-            lv_dropdown_set_symbol(dropdown, dropdown_icon_->image_dsc());
-        } else {
-            lv_obj_set_style_text_font(dropdown, &BUILTIN_ICON_FONT, LV_PART_INDICATOR);
-            lv_obj_set_style_text_color(dropdown, Color(p.sub_text), LV_PART_INDICATOR);
-        }
+        // (shown 1:1, from the shared app-icon cache) instead.
+        lv_dropdown_set_symbol(dropdown, jetson::ui::AppIconDsc("dropdown"));
         lv_obj_set_style_text_color(dropdown, Color(p.sub_text), 0);
         lv_obj_set_style_bg_color(dropdown, Color(p.button), 0);
         lv_obj_set_style_bg_opa(dropdown, LV_OPA_COVER, 0);

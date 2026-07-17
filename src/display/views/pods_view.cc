@@ -1,5 +1,6 @@
 #include "display/views/pods_view.h"
 #include "display/common/lvgl_utils.h"
+#include "display/core/app_icons.h"
 #include "display/theme/ui_theme.h"
 #include "fonts.h"
 #include "application.h"
@@ -100,7 +101,12 @@ void PodsView::BuildBody() {
     lv_obj_set_style_bg_color(rent, Color(p.accent), 0);
     lv_obj_add_event_cb(rent, OnRent, LV_EVENT_CLICKED, this);
 
-    auto *refresh = MakeSmallButton(bar, LV_SYMBOL_REFRESH, true);
+    auto *refresh = MakeSmallButton(bar, "", true);
+    auto *reload_ic = jetson::ui::CreateAppIcon(refresh, "reload", 18);
+    lv_obj_set_style_image_recolor(reload_ic, Color(p.text), 0);
+    lv_obj_set_style_image_recolor_opa(reload_ic, LV_OPA_COVER, 0);
+    lv_obj_center(reload_ic);
+    lv_obj_delete(ButtonLabel(refresh)); // PNG replaces the empty glyph label
     lv_obj_add_event_cb(refresh, OnRefresh, LV_EVENT_CLICKED, this);
 
     // ---- Pod list ----

@@ -1,6 +1,7 @@
 #include "display/home/ds02_home_display.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/backgrounds.h"
+#include "display/core/app_icons.h"
 #include "display/views/background_gallery_view.h"
 #include "display/views/bluetooth_settings_view.h"
 #include "display/views/calendar_view.h"
@@ -552,6 +553,10 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
      * centered sensor pill; notifications morph that same pill. Created before
      * the brightness overlay so the software dimmer affects it too. */
     volume_muted_ = Settings("display").GetBool("muted", false);
+    // Warm the shared app-icon cache (raw bytes + one decode per icon into
+    // LVGL's image cache) before the status bar and views start asking for
+    // wifi/cellular/bluetooth/speaker states frame by frame.
+    jetson::ui::PreloadAppIcons();
     status_bar_ = std::make_unique<StatusBar>(lv_layer_top());
     status_bar_->SetWifiAction([this]() { OpenWifiSettings(); });
     status_bar_->SetBluetoothAction([this]() { OpenBluetoothSettings(); });
@@ -1022,6 +1027,10 @@ void Ds02HomeDisplay::OpenPsRemotePlay() {
         });
     ps_remote_play_view_->SetLaunchRequest(
         [this](bool configure) { LaunchPsRemotePlay(configure); });
+    ps_remote_play_view_->SetNotifyCb(
+        [this](const char *message) { ShowNotification(message, 2500); });
+    ps_remote_play_view_->SetOpenBluetoothCb(
+        [this]() { OpenBluetoothSettings(); });
     ps_remote_play_view_->SetBackgroundRequest(
         [this]() { BackgroundApp(kAppPsRemotePlay); });
     ps_remote_play_view_->Start();

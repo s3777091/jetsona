@@ -15,12 +15,11 @@
  * thread, which does NOT hold lv_lock, so they take jetson::ui::LvglLockGuard. */
 #include <lvgl.h>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
-#include <memory>
 #include <string>
-
-class LvglImage;
+#include <thread>
 
 namespace home {
 
@@ -61,19 +60,21 @@ private:
     lv_obj_t *left_cluster_ = nullptr;
     lv_obj_t *right_cluster_ = nullptr;
     lv_obj_t *airplane_icon_ = nullptr;
-    lv_obj_t *vpn_label_ = nullptr;
-    lv_obj_t *wifi_label_ = nullptr;
-    lv_obj_t *bt_label_ = nullptr;
+    lv_obj_t *vpn_icon_ = nullptr;
+    // PNG icons from assets/icons/app (label fallbacks when a PNG is missing).
+    lv_obj_t *cellular_icon_ = nullptr;
+    lv_obj_t *wifi_icon_ = nullptr;
+    lv_obj_t *bt_icon_ = nullptr;
+    lv_obj_t *charge_icon_ = nullptr; // charge-batery PNG, shown while charging
     lv_obj_t *battery_icon_root_ = nullptr;
     lv_obj_t *battery_icon_body_ = nullptr;
     lv_obj_t *battery_icon_fill_ = nullptr;
     lv_obj_t *battery_icon_nub_ = nullptr;
     lv_obj_t *battery_percent_label_ = nullptr;
     lv_obj_t *lang_label_ = nullptr;
-    lv_obj_t *power_label_ = nullptr;
+    lv_obj_t *power_icon_ = nullptr;
     lv_obj_t *datetime_label_ = nullptr;
     lv_obj_t *weather_icon_ = nullptr;
-    std::unique_ptr<LvglImage> weather_icon_image_;
 
     lv_timer_t *notif_timer_ = nullptr;
 
@@ -97,6 +98,17 @@ private:
     bool airplane_state_read_ = false;
     bool cached_vpn_enabled_ = false;
     bool vpn_state_read_ = false;
+
+    /* WiFi/Bluetooth state polling. nmcli/bluetoothctl block for up to
+     * seconds, so a worker thread polls them and publishes into atomics; the
+     * 1 Hz LVGL timer only reads the atomics and swaps icon sources.
+     * wifi signal: -2 not read yet, -1 radio off/disconnected, 0..100 in use. */
+    std::thread conn_poll_thread_;
+    std::atomic<bool> conn_poll_stop_{false};
+    std::atomic<int> polled_wifi_signal_{-2};
+    std::atomic<int> polled_bt_powered_{-1}; // -1 unknown, 0 off, 1 on
+    int cached_wifi_signal_ = -3;            // last value applied to the UI
+    int cached_bt_powered_ = -2;
 
     Action wifi_action_, bt_action_, lock_action_, reboot_action_, shutdown_action_;
     Action island_action_;
