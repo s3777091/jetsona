@@ -7,6 +7,7 @@
 #include "media/player_controller.h"
 #include "net/airplane_mode.h"
 #include "net/bluetooth_manager.h"
+#include "net/ethernet_status.h"
 #include "net/vpn_manager.h"
 #include "net/wifi_manager.h"
 #include "settings.h"
@@ -363,6 +364,9 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     conn_poll_thread_ = std::thread([this]() {
         auto next_poll = std::chrono::steady_clock::now(); // first poll now
         while (!conn_poll_stop_.load()) {
+            // Wired link is a sysfs read, not a shell-out: refresh it every
+            // tick so plugging/unplugging the LAN cable shows within ~1 s.
+            polled_eth_connected_.store(jetson::IsEthernetConnected() ? 1 : 0);
             if (std::chrono::steady_clock::now() >= next_poll) {
                 next_poll = std::chrono::steady_clock::now() + kConnPollInterval;
                 if (jetson::IsAirplaneModeEnabled()) {
@@ -753,11 +757,14 @@ void StatusBar::RefreshConnectivity() {
     const bool airplane = jetson::IsAirplaneModeEnabled();
     const bool vpn = jetson::VpnManager::Instance().CachedEnabled();
     const int wifi_signal = polled_wifi_signal_.load();
+    const int eth_connected = polled_eth_connected_.load();
     const int bt_powered = polled_bt_powered_.load();
     const int bt_device_polled = polled_bt_device_.load();
     if (airplane_state_read_ && airplane == cached_airplane_mode_ &&
         vpn_state_read_ && vpn == cached_vpn_enabled_ &&
-        wifi_signal == cached_wifi_signal_ && bt_powered == cached_bt_powered_ &&
+        wifi_signal == cached_wifi_signal_ &&
+        eth_connected == cached_eth_connected_ &&
+        bt_powered == cached_bt_powered_ &&
         bt_device_polled == cached_bt_device_)
         return;
     airplane_state_read_ = true;
@@ -765,6 +772,7 @@ void StatusBar::RefreshConnectivity() {
     vpn_state_read_ = true;
     cached_vpn_enabled_ = vpn;
     cached_wifi_signal_ = wifi_signal;
+    cached_eth_connected_ = eth_connected;
     cached_bt_powered_ = bt_powered;
     cached_bt_device_ = bt_device_polled;
 
@@ -779,17 +787,24 @@ void StatusBar::RefreshConnectivity() {
         if (hidden) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
     };
+    // A plugged LAN cable takes over the WiFi slot: wired connectivity is not
+    // a radio, so it stays visible even while airplane mode hides the rest.
+    const bool ethernet = eth_connected == 1;
     set_hidden(cellular_icon_, airplane);
-    set_hidden(wifi_icon_, airplane);
+    set_hidden(wifi_icon_, airplane && !ethernet);
     set_hidden(bt_icon_, airplane);
     set_hidden(vpn_icon_, !vpn);
 
-    if (!airplane) {
-        jetson::ui::SetAppIcon(cellular_icon_, CellularIconForSignal(wifi_signal),
-                               kStatusIconPx);
+    if (ethernet) {
+        jetson::ui::SetAppIcon(wifi_icon_, "ethernet", kStatusIconPx);
+    } else if (!airplane) {
         // -2 (not polled yet) keeps the optimistic connected icon the old
         // static glyph showed at boot.
         jetson::ui::SetAppIcon(wifi_icon_, wifi_signal == -1 ? "no-wifi" : "wifi",
+                               kStatusIconPx);
+    }
+    if (!airplane) {
+        jetson::ui::SetAppIcon(cellular_icon_, CellularIconForSignal(wifi_signal),
                                kStatusIconPx);
         jetson::ui::SetAppIcon(bt_icon_,
                                bt_powered == 0 ? "no-bluetooh" : "bluetooth",

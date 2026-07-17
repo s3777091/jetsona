@@ -1,25 +1,50 @@
 #include "application.h"
 #include "esp_log.h"
+#include "lvgl_runtime.h"
 
-#include <csignal>
 #include <cstdlib>
+#include <cstring>
+#include <pthread.h>
+#include <signal.h>
+#include <thread>
 
 #define TAG "main"
 
-static void onSignal(int /*sig*/) {
-    ESP_LOGW(TAG, "signal received, exiting");
-    std::exit(0);
-}
-
 int main(int /*argc*/, char ** /*argv*/) {
-    std::signal(SIGINT, onSignal);
-    std::signal(SIGTERM, onSignal);
+    // Block termination signals before any worker threads are created. A
+    // dedicated sigwait thread handles them synchronously, so logging and the
+    // application/LVGL shutdown path never run inside an async signal handler.
+    sigset_t termination_signals;
+    sigemptyset(&termination_signals);
+    sigaddset(&termination_signals, SIGINT);
+    sigaddset(&termination_signals, SIGTERM);
+    const int mask_rc = pthread_sigmask(SIG_BLOCK, &termination_signals, nullptr);
+    if (mask_rc != 0) {
+        ESP_LOGE(TAG, "could not block termination signals: %s", std::strerror(mask_rc));
+        return EXIT_FAILURE;
+    }
 
     ESP_LOGI(TAG, "Jetson Nano DS-02 firmware starting (display=%dx%d, backend=%s)",
              JETSON_DISPLAY_WIDTH, JETSON_DISPLAY_HEIGHT, JETSON_DISPLAY_BACKEND);
 
     auto &app = Application::GetInstance();
     if (!app.Initialize()) return EXIT_FAILURE;
-    app.Run(); // never returns
-    return 0;
+
+    std::thread signal_thread([&app, termination_signals]() mutable {
+        int sig = 0;
+        const int wait_rc = sigwait(&termination_signals, &sig);
+        if (wait_rc != 0) {
+            ESP_LOGE(TAG, "sigwait failed: %s", std::strerror(wait_rc));
+            app.RequestStop();
+            return;
+        }
+        ESP_LOGW(TAG, "signal %d received, stopping", sig);
+        app.RequestStop();
+    });
+
+    app.Run();
+    signal_thread.join();
+    jetson::LvglRuntime::Instance().Stop();
+    ESP_LOGI(TAG, "shutdown complete");
+    return EXIT_SUCCESS;
 }

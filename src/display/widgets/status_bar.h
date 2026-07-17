@@ -143,10 +143,15 @@ private:
     std::thread conn_poll_thread_;
     std::atomic<bool> conn_poll_stop_{false};
     std::atomic<int> polled_wifi_signal_{-2};
+    // -1 unknown, 0 no cable/link, 1 LAN cable link up. Unlike the radios this
+    // is a cheap sysfs read, so the worker refreshes it on every 500 ms tick
+    // and the ethernet icon reacts to a plug/unplug almost immediately.
+    std::atomic<int> polled_eth_connected_{-1};
     std::atomic<int> polled_bt_powered_{-1}; // -1 unknown, 0 off, 1 on
     // jetson::BtDeviceKind of the connected device (-1 = not polled yet).
     std::atomic<int> polled_bt_device_{-1};
     int cached_wifi_signal_ = -3;            // last value applied to the UI
+    int cached_eth_connected_ = -2;
     int cached_bt_powered_ = -2;
     int cached_bt_device_ = -2;
 

@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
+#include <atomic>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -31,6 +32,7 @@ public:
 
     bool Initialize();
     void Run();
+    void RequestStop();
 
     DeviceState GetDeviceState() const { return state_; }
     bool SetDeviceState(DeviceState state);
@@ -53,6 +55,7 @@ private:
     esp_timer_handle_t clock_timer_ = nullptr;
     std::mutex tasks_mtx_;
     std::deque<std::function<void()>> main_tasks_;
+    std::atomic<bool> running_{true};
 };
 
 #endif

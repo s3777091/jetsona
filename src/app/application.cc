@@ -70,9 +70,10 @@ bool Application::Initialize() {
 
 void Application::Run() {
     ESP_LOGI(TAG, "Entering main event loop");
-    while (true) {
+    while (running_.load()) {
         EventBits_t bits = xEventGroupWaitBits(event_group_, kAllEvents,
                                                pdTRUE, pdFALSE, portMAX_DELAY);
+        if (!running_.load()) break;
         if (bits & MAIN_EVENT_SCHEDULE) {
             std::deque<std::function<void()>> tasks;
             {
@@ -95,6 +96,14 @@ void Application::Run() {
             ESP_LOGE(TAG, "error event");
         }
     }
+    ESP_LOGI(TAG, "Leaving main event loop");
+}
+
+void Application::RequestStop() {
+    running_.store(false);
+    // Wake Run() if it is blocked waiting for UI events. This is called by the
+    // normal signal-waiting thread, never from an asynchronous signal handler.
+    xEventGroupSetBits(event_group_, MAIN_EVENT_SCHEDULE);
 }
 
 bool Application::SetDeviceState(DeviceState state) {
