@@ -409,14 +409,9 @@ void PsRemotePlayView::OpenPinModal() {
     lv_obj_set_style_shadow_width(submit, 0, 0);
     lv_obj_set_style_pad_all(submit, 0, 0);
     lv_obj_add_event_cb(submit, OnPinSave, LV_EVENT_CLICKED, this);
-    lv_obj_t *enter = nullptr;
-    if (jetson::ui::AppIconDsc("enter")) {
-        enter = jetson::ui::CreateAppIcon(submit, "enter", 22);
-        lv_obj_set_style_image_recolor(enter, lv_color_white(), 0);
-        lv_obj_set_style_image_recolor_opa(enter, LV_OPA_COVER, 0);
-    } else {
-        enter = MakeLabel(submit, LV_SYMBOL_OK, &BUILTIN_ICON_FONT, 0xffffff);
-    }
+    auto *enter = jetson::ui::CreateAppIcon(submit, "enter", 22);
+    lv_obj_set_style_image_recolor(enter, lv_color_white(), 0);
+    lv_obj_set_style_image_recolor_opa(enter, LV_OPA_COVER, 0);
     lv_obj_center(enter);
 
     pin_error_ = MakeLabel(card, " ", &BUILTIN_SMALL_TEXT_FONT,
