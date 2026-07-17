@@ -36,7 +36,7 @@ JETSON_FILES_HOME: ""
 JETSON_SETTINGS_FILE: ""
 
 # Display/input overrides. Empty device paths keep auto-detection enabled.
-JETSON_DISPLAY_BACKEND: "DRM"
+JETSON_DISPLAY_BACKEND: "FBDEV"
 JETSON_DRM_CARD: "/dev/dri/card0"
 JETSON_FB_DEVICE: "/dev/fb0"
 JETSON_TOUCH_DEVICE: ""
