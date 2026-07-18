@@ -44,6 +44,9 @@ constexpr int kMediaExpandedW = 430;
 constexpr int kMediaExpandedH = 126;
 constexpr int kTopInset = 3;
 constexpr int kAutoCloseMs = 6000;
+// LVGL 9.2 defines opacity constants in 10% steps only. Keep the intended
+// 95% quick-menu background without relying on a non-existent LV_OPA_95.
+constexpr lv_opa_t kQuickMenuBgOpacity = 242;
 
 // Box size for the PNG status icons (assets/icons/app, 28x28 sources).
 constexpr int kStatusIconPx = 20;
@@ -581,7 +584,7 @@ lv_obj_t *StatusBar::CreateQuickMenu(int width) {
     lv_obj_remove_style_all(menu);
     lv_obj_set_size(menu, width, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(menu, Color(0xe9e9f3), 0);
-    lv_obj_set_style_bg_opa(menu, LV_OPA_95, 0);
+    lv_obj_set_style_bg_opa(menu, kQuickMenuBgOpacity, 0);
     lv_obj_set_style_radius(menu, 14, 0);
     lv_obj_set_style_border_width(menu, 1, 0);
     lv_obj_set_style_border_color(menu, Color(0xffffff), 0);
@@ -664,8 +667,12 @@ void StatusBar::RebuildWifiMenu() {
             lv_obj_set_style_text_color(right,
                 Color(network.in_use ? 0x0a84ff : 0x5d6470), 0);
             char state[32];
-            std::snprintf(state, sizeof(state), network.in_use ? "Nối %d%%" : "%s%d%%",
-                          network.signal, network.secured ? "Khóa " : "");
+            if (network.in_use) {
+                std::snprintf(state, sizeof(state), "Nối %d%%", network.signal);
+            } else {
+                std::snprintf(state, sizeof(state), "%s%d%%",
+                              network.secured ? "Khóa " : "", network.signal);
+            }
             lv_label_set_text(right, state);
             lv_obj_align(right, LV_ALIGN_RIGHT_MID, -4, 0);
         }
@@ -892,7 +899,7 @@ void StatusBar::BuildPowerMenu() {
     lv_obj_set_size(power_menu_, 220, LV_SIZE_CONTENT);
     lv_obj_align_to(power_menu_, power_icon_, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
     lv_obj_set_style_bg_color(power_menu_, Color(0xe9e9f3), 0);
-    lv_obj_set_style_bg_opa(power_menu_, LV_OPA_95, 0);
+    lv_obj_set_style_bg_opa(power_menu_, kQuickMenuBgOpacity, 0);
     lv_obj_set_style_radius(power_menu_, 14, 0);
     lv_obj_set_style_pad_all(power_menu_, 8, 0);
     lv_obj_set_style_pad_row(power_menu_, 6, 0);
