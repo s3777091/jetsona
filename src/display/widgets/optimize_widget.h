@@ -1,8 +1,8 @@
 #pragma once
 
-/* Status-bar cache cleaner + disk/RAM popover.
+/* Status-bar cache cleaner + disk/RAM Dynamic Island surface.
  *
- * A translucent pill showing live disk and RAM usage bars (statvfs("/") and
+ * A compact island view showing live disk and RAM usage bars (statvfs("/") and
  * /proc/meminfo, refreshed by an lv_timer). The status icon drops the kernel
  * page/dentry caches (sync + /proc/sys/vm/drop_caches) on a
  * worker thread, then reports how much RAM was freed through the
@@ -25,7 +25,7 @@ namespace home {
 class OptimizeWidget {
 public:
     using NotifyCb = std::function<void(const char *)>;
-    using OpenCb = std::function<void()>;
+    using OpenCb = std::function<void(lv_obj_t *content, lv_obj_t *icon)>;
 
     OptimizeWidget(lv_obj_t *icon_parent, lv_obj_t *popup_parent);
     ~OptimizeWidget();
@@ -33,6 +33,7 @@ public:
     void SetNotifyCb(NotifyCb cb) { notify_ = std::move(cb); }
     void SetBeforeOpenCb(OpenCb cb) { before_open_ = std::move(cb); }
     void HidePopup();
+    lv_obj_t *Content() const { return root_; }
 
 private:
     struct Stats {
@@ -55,6 +56,7 @@ private:
     lv_obj_t *disk_label_ = nullptr;
     lv_obj_t *ram_bar_ = nullptr;
     lv_obj_t *ram_label_ = nullptr;
+    lv_obj_t *status_label_ = nullptr;
     lv_timer_t *timer_ = nullptr;
     std::atomic<bool> optimizing_{false};
     std::thread optimize_thread_;

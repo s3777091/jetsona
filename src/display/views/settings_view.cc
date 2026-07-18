@@ -517,7 +517,13 @@ void SettingsView::BuildShell() {
     lv_obj_set_scroll_dir(detail_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(detail_, LV_SCROLLBAR_MODE_ACTIVE);
 
-    ShowCategory(Cat::Wifi);
+    // Do not build the initial connectivity page from the constructor.
+    // BuildWifi() probes the adapter asynchronously and therefore calls
+    // Self()/shared_from_this(); the shared_ptr control block does not exist
+    // until std::make_shared has finished constructing this object.  Starting
+    // that work here throws std::bad_weak_ptr and terminates the application
+    // as soon as Settings is opened.  OnStart() is invoked by the owner only
+    // after make_shared returns, which is the first safe point for it.
 }
 
 void SettingsView::AddAirplaneRow() {
@@ -3339,6 +3345,7 @@ void SettingsView::OpenPinModal() {
 
 void SettingsView::OnStart() {
     SetStatus("");
+    ShowCategory(current_);
     RefreshVpnStatus();
 }
 

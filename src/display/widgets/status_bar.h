@@ -135,6 +135,12 @@ private:
     lv_obj_t *sound_mute_icon_ = nullptr;
     lv_obj_t *brightness_slider_ = nullptr;
     lv_obj_t *brightness_value_ = nullptr;
+    // All quick settings are real children of the Dynamic Island. The host
+    // clips/fades them while the island grows instead of drawing detached
+    // popovers below the status bar.
+    lv_obj_t *quick_host_ = nullptr;
+    lv_obj_t *active_quick_menu_ = nullptr;
+    bool quick_island_open_ = false;
     bool suppress_quick_events_ = false;
     lv_timer_t *quick_menu_timer_ = nullptr;
 
@@ -227,6 +233,8 @@ private:
     void StartBluetoothScan();
     void ShowQuickMenu(lv_obj_t *menu, lv_obj_t *anchor);
     void HideQuickMenus(lv_obj_t *except = nullptr);
+    void CloseQuickIsland(bool animated = true);
+    void ResizeQuickIsland(lv_obj_t *menu, bool animated = true);
     void ArmQuickMenuTimer();
     void ShowPowerMenu();
     void HidePowerMenu();

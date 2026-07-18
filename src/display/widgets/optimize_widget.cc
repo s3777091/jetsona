@@ -20,7 +20,7 @@ namespace {
 
 constexpr uint32_t kAccentBlue = 0x0a84ff;  // RAM bar + optimize button
 constexpr uint32_t kAccentCyan = 0x00c3d7;  // disk bar
-constexpr uint32_t kTextDark = 0x1c2733;
+constexpr uint32_t kTextLight = 0xf4f7fb;
 constexpr uint32_t kRefreshMs = 3000;
 
 // "155,1" — Vietnamese decimal comma. Whole totals print without decimals.
@@ -42,12 +42,12 @@ void SetUsageText(lv_obj_t *label, uint64_t used_kb, uint64_t total_kb) {
 // "used / total" caption drawn on top of the indicator.
 lv_obj_t *MakeUsageBar(lv_obj_t *parent, uint32_t accent, lv_obj_t **label_out) {
     auto *bar = lv_bar_create(parent);
-    lv_obj_set_size(bar, 170, 22);
+    lv_obj_set_size(bar, 262, 22);
     lv_bar_set_range(bar, 0, 1000);
     lv_bar_set_value(bar, 0, LV_ANIM_OFF);
     lv_obj_set_style_radius(bar, 11, 0);
-    lv_obj_set_style_bg_color(bar, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_90, 0);
+    lv_obj_set_style_bg_color(bar, Color(0x202938), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(bar, 11, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(bar, Color(accent), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
@@ -55,7 +55,7 @@ lv_obj_t *MakeUsageBar(lv_obj_t *parent, uint32_t accent, lv_obj_t **label_out) 
 
     auto *label = lv_label_create(bar);
     lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(label, Color(kTextDark), 0);
+    lv_obj_set_style_text_color(label, Color(kTextLight), 0);
     lv_label_set_text(label, "-- GB / -- GB");
     lv_obj_align(label, LV_ALIGN_RIGHT_MID, -8, 0);
     *label_out = label;
@@ -69,7 +69,7 @@ OptimizeWidget::OptimizeWidget(lv_obj_t *icon_parent, lv_obj_t *popup_parent) {
     if (!popup_parent) popup_parent = lv_layer_top();
 
     // The action itself participates in StatusBar's flex row. The usage bars
-    // live in a sibling popup so they do not change the row's height/spacing.
+    // are parented to the shared Dynamic Island content host.
     button_ = jetson::ui::CreateAppIcon(icon_parent, "clean-cache", 20);
     lv_obj_set_style_image_recolor(button_, lv_color_white(), 0);
     lv_obj_set_style_image_recolor_opa(button_, LV_OPA_COVER, 0);
@@ -79,18 +79,9 @@ OptimizeWidget::OptimizeWidget(lv_obj_t *icon_parent, lv_obj_t *popup_parent) {
 
     root_ = lv_obj_create(popup_parent);
     lv_obj_remove_style_all(root_);
-    lv_obj_set_size(root_, 214, 70);
-    lv_obj_align_to(root_, button_, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
-    lv_obj_set_style_radius(root_, 18, 0);
-    lv_obj_set_style_bg_color(root_, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(root_, LV_OPA_90, 0);
-    lv_obj_set_style_border_width(root_, 1, 0);
-    lv_obj_set_style_border_color(root_, lv_color_white(), 0);
-    lv_obj_set_style_border_opa(root_, LV_OPA_50, 0);
-    lv_obj_set_style_shadow_color(root_, lv_color_black(), 0);
-    lv_obj_set_style_shadow_width(root_, 12, 0);
-    lv_obj_set_style_shadow_offset_y(root_, 3, 0);
-    lv_obj_set_style_shadow_opa(root_, LV_OPA_20, 0);
+    lv_obj_set_size(root_, 300, 104);
+    lv_obj_center(root_);
+    lv_obj_set_style_bg_opa(root_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(root_, 8, 0);
     lv_obj_set_style_pad_row(root_, 6, 0);
     lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_COLUMN);
@@ -98,6 +89,11 @@ OptimizeWidget::OptimizeWidget(lv_obj_t *icon_parent, lv_obj_t *popup_parent) {
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(root_, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
+
+    status_label_ = lv_label_create(root_);
+    lv_obj_set_style_text_font(status_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(status_label_, Color(0x69b7ff), 0);
+    lv_label_set_text(status_label_, "BỘ NHỚ • NHẤN ĐỂ DỌN");
 
     disk_bar_ = MakeUsageBar(root_, kAccentCyan, &disk_label_);
     ram_bar_ = MakeUsageBar(root_, kAccentBlue, &ram_label_);
@@ -114,7 +110,10 @@ OptimizeWidget::~OptimizeWidget() {
 }
 
 void OptimizeWidget::HidePopup() {
-    if (root_) lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
+    if (root_) {
+        lv_obj_set_style_opa(root_, LV_OPA_0, 0);
+        lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 OptimizeWidget::Stats OptimizeWidget::ReadStats() {
@@ -156,6 +155,7 @@ void OptimizeWidget::StartOptimize() {
     if (!optimizing_.compare_exchange_strong(expected, true)) return;
     if (optimize_thread_.joinable()) optimize_thread_.join();
     lv_obj_set_style_image_recolor(button_, Color(0x69b7ff), 0);
+    if (status_label_) lv_label_set_text(status_label_, "ĐANG DỌN CACHE…");
 
     optimize_thread_ = std::thread([this]() {
         const Stats before = ReadStats();
@@ -181,6 +181,9 @@ void OptimizeWidget::StartOptimize() {
             LvglLockGuard lock;
             Apply(after);
             lv_obj_set_style_image_recolor(button_, lv_color_white(), 0);
+            if (status_label_)
+                lv_label_set_text(status_label_, ok ? "BỘ NHỚ • ĐÃ TỐI ƯU"
+                                                     : "KHÔNG THỂ DỌN CACHE");
             if (notify_) {
                 char msg[80];
                 if (ok) std::snprintf(msg, sizeof(msg), "Đã giải phóng %ld MB RAM", freed_mb);
@@ -204,16 +207,18 @@ void OptimizeWidget::OnOptimizeClicked(lv_event_t *e) {
     LvglLockGuard lock;
     if (!self->root_) return;
     const bool opening = lv_obj_has_flag(self->root_, LV_OBJ_FLAG_HIDDEN);
-    if (opening) {
-        if (self->before_open_) self->before_open_();
-        lv_obj_align_to(self->root_, self->button_, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
+    if (self->before_open_) {
+        self->before_open_(self->root_, self->button_);
+    } else if (opening) {
         lv_obj_clear_flag(self->root_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        self->HidePopup();
+    }
+    if (opening) {
         self->Apply(ReadStats());
         // No separate "clean" button: opening the real status action performs
         // the cache drop immediately and then refreshes both usage bars.
         self->StartOptimize();
-    } else {
-        self->HidePopup();
     }
 }
 

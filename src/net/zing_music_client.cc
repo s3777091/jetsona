@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cctype>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -921,7 +922,12 @@ void CacheArtworkTargets(ZingMusicClient &client,
                          std::vector<ArtworkTarget> &targets) {
     if (targets.empty()) return;
     std::atomic<size_t> next{0};
-    const size_t worker_count = std::min<size_t>(8, targets.size());
+    // Four CDN connections are enough to fill the artwork cache without
+    // overwhelming the Jetson/home Wi-Fi.  Discovery can run at the same time
+    // as the boot prefetch, so the previous eight workers per request could
+    // turn into sixteen concurrent TLS downloads and make every cover time
+    // out together.
+    const size_t worker_count = std::min<size_t>(4, targets.size());
     std::vector<std::thread> workers;
     workers.reserve(worker_count);
     for (size_t worker = 0; worker < worker_count; ++worker) {
@@ -932,21 +938,30 @@ void CacheArtworkTargets(ZingMusicClient &client,
                 // Covers ride a flaky home Wi-Fi; one immediate re-try per
                 // cover rescues most transient timeouts without holding the
                 // page hostage.
+                std::string last_error;
                 for (int attempt = 0; attempt < 2; ++attempt) {
-                    std::string ignored_error;
                     try {
                         if (client.DownloadArtwork(targets[index].url,
                                                    targets[index].cached_path,
-                                                   ignored_error))
+                                                   last_error))
                             break;
                     } catch (const std::exception &exception) {
+                        last_error = exception.what();
                         ESP_LOGW(TAG, "artwork worker failed: %s",
                                  exception.what());
                     } catch (...) {
+                        last_error = "unknown exception";
                         ESP_LOGW(TAG,
                                  "artwork worker failed with an unknown exception");
                     }
+                    if (attempt == 0)
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(200));
                 }
+                if (targets[index].cached_path.empty())
+                    ESP_LOGW(TAG, "artwork download failed: %s",
+                             last_error.empty() ? "unknown error"
+                                                : last_error.c_str());
             }
         });
     }
@@ -1150,7 +1165,12 @@ bool ZingMusicClient::FetchDiscover(DiscoverData &out, std::string &err) {
         ESP_LOGW(TAG, "%zu covers failed to download", missing_artwork);
         err = "Thiếu " + std::to_string(missing_artwork) +
               " ảnh bìa — kéo xuống để tải lại";
-        return false;
+        // Metadata is valid and any covers that did download are immediately
+        // usable.  Treat this as a degraded success instead of retrying the
+        // entire signed API request (and every cover) three times before the
+        // UI can render.  Pull-to-refresh will retry only the still-missing
+        // cache entries on the next fetch.
+        return true;
     }
     err.clear();
     return true;
@@ -1226,7 +1246,18 @@ bool ZingMusicClient::FetchAlbum(const std::string &id, Album &out,
         return false;
     }
     CacheAlbumArtwork(*this, out);
-    err.clear();
+    size_t missing_artwork = 0;
+    if (!out.artwork_url.empty() && out.artwork_path.empty()) ++missing_artwork;
+    for (const auto &track : out.tracks)
+        if (!track.artwork_url.empty() && track.artwork_path.empty())
+            ++missing_artwork;
+    if (missing_artwork > 0) {
+        ESP_LOGW(TAG, "%zu album covers failed to download", missing_artwork);
+        err = "Thiếu " + std::to_string(missing_artwork) +
+              " ảnh bìa — kéo xuống để tải lại";
+    } else {
+        err.clear();
+    }
     return true;
 }
 

@@ -182,6 +182,7 @@ void MusicView::BuildBody() {
     lv_obj_set_style_pad_all(page_, 12, 0);
     lv_obj_set_style_pad_row(page_, 12, 0);
     lv_obj_add_flag(page_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(page_, LV_OBJ_FLAG_SCROLL_ELASTIC);
     lv_obj_set_scroll_dir(page_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(page_, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_add_event_cb(page_, OnPageScroll, LV_EVENT_SCROLL, this);
@@ -745,39 +746,42 @@ void MusicView::LoadAlbum(const CatalogItem &item) {
                 error = "Không thể đọc album Zing";
             }
         }
-        Application::GetInstance().Schedule([weak, album, ok, generation]() {
-            auto self = weak.lock();
-            if (!self) return;
-            LvglLockGuard lock;
-            if (generation != self->request_generation_.load()) return;
-            self->loading_ = false;
-            if (!ok) {
-                self->ClearPage();
-                const auto &p = jetson::UiTheme::Instance().Palette();
-                auto *bar = lv_obj_create(self->page_);
-                lv_obj_remove_style_all(bar);
-                lv_obj_set_size(bar, lv_pct(100), 46);
-                auto *back = MakeIconButton(bar, LV_SYMBOL_LEFT, 40,
-                                            OnBack, self.get());
-                lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
-                auto *message = lv_label_create(self->page_);
-                lv_obj_set_width(message, lv_pct(100));
-                lv_obj_set_style_text_font(message, &BUILTIN_TEXT_FONT, 0);
-                lv_obj_set_style_text_color(message, Color(p.sub_text), 0);
-                lv_obj_set_style_text_align(message, LV_TEXT_ALIGN_CENTER, 0);
-                lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
-                constexpr char kZingApiError[] = "zing api đang lỗi";
-                lv_label_set_text(message, kZingApiError);
-                auto *retry = MakeIconButton(self->page_, LV_SYMBOL_REFRESH, 46,
-                                             OnRetry, self.get());
-                lv_obj_set_style_align(retry, LV_ALIGN_CENTER, 0);
-                self->AddPullHint("Kéo xuống hoặc bấm nút để thử lại", true);
-                self->Notify(kZingApiError);
-                return;
-            }
-            self->album_ = std::move(*album);
-            self->RenderAlbum();
-        });
+        Application::GetInstance().Schedule(
+            [weak, album, ok, error, generation]() {
+                auto self = weak.lock();
+                if (!self) return;
+                LvglLockGuard lock;
+                if (generation != self->request_generation_.load()) return;
+                self->loading_ = false;
+                if (!ok) {
+                    self->ClearPage();
+                    const auto &p = jetson::UiTheme::Instance().Palette();
+                    auto *bar = lv_obj_create(self->page_);
+                    lv_obj_remove_style_all(bar);
+                    lv_obj_set_size(bar, lv_pct(100), 46);
+                    auto *back = MakeIconButton(bar, LV_SYMBOL_LEFT, 40,
+                                                OnBack, self.get());
+                    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+                    auto *message = lv_label_create(self->page_);
+                    lv_obj_set_width(message, lv_pct(100));
+                    lv_obj_set_style_text_font(message, &BUILTIN_TEXT_FONT, 0);
+                    lv_obj_set_style_text_color(message, Color(p.sub_text), 0);
+                    lv_obj_set_style_text_align(message, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
+                    constexpr char kZingApiError[] = "zing api đang lỗi";
+                    lv_label_set_text(message, kZingApiError);
+                    auto *retry = MakeIconButton(self->page_, LV_SYMBOL_REFRESH,
+                                                 46, OnRetry, self.get());
+                    lv_obj_set_style_align(retry, LV_ALIGN_CENTER, 0);
+                    self->AddPullHint(
+                        "Kéo xuống hoặc bấm nút để thử lại", true);
+                    self->Notify(kZingApiError);
+                    return;
+                }
+                self->album_ = std::move(*album);
+                self->RenderAlbum();
+                if (!error.empty()) self->Notify(error);
+            });
     });
 }
 
@@ -798,6 +802,11 @@ void MusicView::RenderAlbum() {
     lv_obj_set_style_text_color(toolbar_title, Color(p.text), 0);
     lv_label_set_long_mode(toolbar_title, LV_LABEL_LONG_DOT);
     lv_label_set_text(toolbar_title, album_.title.c_str());
+
+    // Keep the same discover-page affordance after a card is opened.  The
+    // indicator itself lives above page_, while this hint makes it explicit
+    // that the album/playlist can be refreshed with the same gesture.
+    AddPullHint("Kéo xuống để tải lại album", false);
 
     auto *header = lv_obj_create(page_);
     lv_obj_remove_style_all(header);
@@ -953,6 +962,15 @@ void MusicView::RenderAlbum() {
             lv_obj_center(icon);
             RemoveInteraction(icon);
         }
+    }
+    // A one-track (or empty local) album is shorter than the viewport.  Give
+    // it just enough overflow for LVGL's elastic top edge to engage, otherwise
+    // there is no scroll gesture from which pull-to-refresh can be detected.
+    if (album_.tracks.size() < 2) {
+        auto *pull_spacer = lv_obj_create(page_);
+        lv_obj_remove_style_all(pull_spacer);
+        lv_obj_set_size(pull_spacer, lv_pct(100), 120);
+        RemoveInteraction(pull_spacer);
     }
     lv_obj_scroll_to_y(page_, 0, LV_ANIM_OFF);
     RefreshTrackRows();

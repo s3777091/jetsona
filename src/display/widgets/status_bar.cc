@@ -44,9 +44,6 @@ constexpr int kMediaExpandedW = 430;
 constexpr int kMediaExpandedH = 126;
 constexpr int kTopInset = 3;
 constexpr int kAutoCloseMs = 6000;
-// LVGL 9.2 defines opacity constants in 10% steps only. Keep the intended
-// 95% quick-menu background without relying on a non-existent LV_OPA_95.
-constexpr lv_opa_t kQuickMenuBgOpacity = 242;
 
 // Box size for the PNG status icons (assets/icons/app, 28x28 sources).
 constexpr int kStatusIconPx = 20;
@@ -163,23 +160,14 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_set_style_text_color(datetime_label_, lv_color_white(), 0);
     lv_label_set_text(datetime_label_, "--:--  --/--");
 
-    optimize_widget_ = std::make_unique<OptimizeWidget>(right_cluster_, parent);
-    optimize_widget_->SetBeforeOpenCb([this]() { HideQuickMenus(); });
-    optimize_widget_->SetNotifyCb(
-        [this](const char *message) { ShowNotification(message, 2500); });
-
-    add_icon(&bt_icon_, "bluetooth", OnBtClick);
-    add_icon(&wifi_icon_, "wifi", OnWifiClick);
-    add_icon(&sound_icon_, "speaker", OnSoundClick);
-    add_icon(&brightness_icon_, "sun", OnBrightnessClick);
-    add_icon(&power_icon_, "start", OnPowerClick);
-
     // ---- Resting Dynamic Island (centered, solid black) ----
     pill_ = lv_obj_create(parent);
     lv_obj_remove_style_all(pill_);
     lv_obj_set_size(pill_, kPillW, kPillH);
     lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
     lv_obj_set_style_bg_color(pill_, Color(0x000000), 0);
+    lv_obj_set_style_bg_grad_color(pill_, Color(0x0b1220), 0);
+    lv_obj_set_style_bg_grad_dir(pill_, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_bg_opa(pill_, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(pill_, 44, 0);
     lv_obj_set_style_border_width(pill_, 1, 0);
@@ -271,10 +259,30 @@ StatusBar::StatusBar(lv_obj_t *parent) {
 
     BuildMediaContent();
 
-    // ---- Power menu drop (below pill center, on layer_top; no full-screen
-    // backdrop -- a full-screen clickable on layer_top intercepted mouse input,
-    // so the menu now dismisses via the power icon toggle + an auto-close
-    // timer + tapping an action). ----
+    // Quick settings live *inside* the Dynamic Island. The host always tracks
+    // the pill's animated size, so its children are naturally revealed by the
+    // pill's rounded clipping instead of appearing as detached menu boxes.
+    quick_host_ = lv_obj_create(pill_);
+    lv_obj_remove_style_all(quick_host_);
+    lv_obj_set_size(quick_host_, lv_pct(100), lv_pct(100));
+    lv_obj_center(quick_host_);
+    lv_obj_set_style_opa(quick_host_, LV_OPA_0, 0);
+    lv_obj_clear_flag(quick_host_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_add_flag(quick_host_, LV_OBJ_FLAG_HIDDEN);
+
+    optimize_widget_ = std::make_unique<OptimizeWidget>(right_cluster_, quick_host_);
+    optimize_widget_->SetBeforeOpenCb([this](lv_obj_t *content, lv_obj_t *icon) {
+        ShowQuickMenu(content, icon);
+    });
+
+    add_icon(&bt_icon_, "bluetooth", OnBtClick);
+    add_icon(&wifi_icon_, "wifi", OnWifiClick);
+    add_icon(&sound_icon_, "speaker", OnSoundClick);
+    add_icon(&brightness_icon_, "sun", OnBrightnessClick);
+    add_icon(&power_icon_, "start", OnPowerClick);
+
+    // Build every quick surface only after the shared island host exists.
     BuildQuickMenus();
     BuildPowerMenu();
 
@@ -452,7 +460,7 @@ void StatusBar::BuildMediaContent() {
 
 void StatusBar::SyncIslandRest() {
     if (!island_rest_) return;
-    if (!notification_visible_ && !media_available_)
+    if (!notification_visible_ && !media_available_ && !quick_island_open_)
         lv_obj_clear_flag(island_rest_, LV_OBJ_FLAG_HIDDEN);
     else
         lv_obj_add_flag(island_rest_, LV_OBJ_FLAG_HIDDEN);
@@ -502,7 +510,7 @@ void StatusBar::LoadMediaArtwork(const std::string &path) {
 void StatusBar::ShowMediaPresentation(bool animate) {
     if (!visible_ || !media_available_ || notification_visible_ || !media_content_)
         return;
-    if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN)) return;
+    if (quick_island_open_) return;
     if (island_content_) lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
     SyncIslandRest();
     lv_obj_clear_flag(media_content_, LV_OBJ_FLAG_HIDDEN);
@@ -538,7 +546,7 @@ void StatusBar::RefreshMedia(bool force_layout) {
         media_expanded_open_ = false;
         HideMediaContent();
         SyncIslandRest();
-        if (was_available && !notification_visible_ && pill_) {
+        if (was_available && !notification_visible_ && !quick_island_open_ && pill_) {
             lv_anim_delete(pill_, OnIslandWidth);
             lv_anim_delete(pill_, OnIslandHeight);
             lv_obj_set_size(pill_, kPillW, kPillH);
@@ -580,23 +588,17 @@ void StatusBar::RefreshMedia(bool force_layout) {
 }
 
 lv_obj_t *StatusBar::CreateQuickMenu(int width) {
-    auto *menu = lv_obj_create(lv_layer_top());
+    auto *menu = lv_obj_create(quick_host_ ? quick_host_ : pill_);
     lv_obj_remove_style_all(menu);
     lv_obj_set_size(menu, width, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(menu, Color(0xe9e9f3), 0);
-    lv_obj_set_style_bg_opa(menu, kQuickMenuBgOpacity, 0);
-    lv_obj_set_style_radius(menu, 14, 0);
-    lv_obj_set_style_border_width(menu, 1, 0);
-    lv_obj_set_style_border_color(menu, Color(0xffffff), 0);
-    lv_obj_set_style_border_opa(menu, LV_OPA_70, 0);
-    lv_obj_set_style_shadow_color(menu, lv_color_black(), 0);
-    lv_obj_set_style_shadow_width(menu, 14, 0);
-    lv_obj_set_style_shadow_offset_y(menu, 4, 0);
-    lv_obj_set_style_shadow_opa(menu, LV_OPA_30, 0);
-    lv_obj_set_style_pad_all(menu, 10, 0);
-    lv_obj_set_style_pad_row(menu, 4, 0);
+    lv_obj_center(menu);
+    lv_obj_set_style_bg_opa(menu, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(menu, 12, 0);
+    lv_obj_set_style_pad_row(menu, 5, 0);
     lv_obj_set_flex_flow(menu, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(menu, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(menu,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_set_style_opa(menu, LV_OPA_0, 0);
     lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
     return menu;
 }
@@ -611,7 +613,7 @@ void StatusBar::RebuildWifiMenu() {
     lv_obj_set_size(header, lv_pct(100), 34);
     auto *title = lv_label_create(header);
     lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(title, Color(0x20242b), 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
     lv_label_set_text(title, "Wi-Fi");
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 2, 0);
     wifi_switch_ = lv_switch_create(header);
@@ -633,7 +635,11 @@ void StatusBar::RebuildWifiMenu() {
         auto *row = lv_obj_create(wifi_menu_);
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, lv_pct(100), 36);
-        lv_obj_set_style_radius(row, 8, 0);
+        lv_obj_set_style_radius(row, 10, 0);
+        lv_obj_set_style_bg_color(row, Color(0x121a29), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_70, 0);
+        lv_obj_set_style_bg_color(row, Color(0x17365f), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
         if (clickable) {
             lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, data);
@@ -641,7 +647,7 @@ void StatusBar::RebuildWifiMenu() {
         auto *label = lv_label_create(row);
         lv_obj_set_width(label, 178);
         lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(label, Color(0x20242b), 0);
+        lv_obj_set_style_text_color(label, lv_color_white(), 0);
         lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
         lv_label_set_text(label, text);
         lv_obj_align(label, LV_ALIGN_LEFT_MID, 4, 0);
@@ -665,7 +671,7 @@ void StatusBar::RebuildWifiMenu() {
             auto *right = lv_label_create(row);
             lv_obj_set_style_text_font(right, &BUILTIN_SMALL_TEXT_FONT, 0);
             lv_obj_set_style_text_color(right,
-                Color(network.in_use ? 0x0a84ff : 0x5d6470), 0);
+                Color(network.in_use ? 0x56b4ff : 0x9ca3af), 0);
             char state[32];
             if (network.in_use) {
                 std::snprintf(state, sizeof(state), "Nối %d%%", network.signal);
@@ -680,8 +686,10 @@ void StatusBar::RebuildWifiMenu() {
     auto *settings = add_text_row("Cài đặt Wi-Fi…", true, OnWifiSettings, this);
     lv_obj_set_style_border_width(settings, 1, 0);
     lv_obj_set_style_border_side(settings, LV_BORDER_SIDE_TOP, 0);
-    lv_obj_set_style_border_color(settings, Color(0xc0c2cc), 0);
+    lv_obj_set_style_border_color(settings, Color(0x344154), 0);
     applied_wifi_scan_revision_ = wifi_scan_revision_.load();
+    if (quick_island_open_ && active_quick_menu_ == wifi_menu_)
+        ResizeQuickIsland(wifi_menu_);
 }
 
 void StatusBar::RebuildBluetoothMenu() {
@@ -694,7 +702,7 @@ void StatusBar::RebuildBluetoothMenu() {
     lv_obj_set_size(header, lv_pct(100), 34);
     auto *title = lv_label_create(header);
     lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(title, Color(0x20242b), 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
     lv_label_set_text(title, "Bluetooth");
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 2, 0);
     bt_switch_ = lv_switch_create(header);
@@ -724,7 +732,11 @@ void StatusBar::RebuildBluetoothMenu() {
         auto *row = lv_obj_create(bt_menu_);
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, lv_pct(100), 36);
-        lv_obj_set_style_radius(row, 8, 0);
+        lv_obj_set_style_radius(row, 10, 0);
+        lv_obj_set_style_bg_color(row, Color(0x121a29), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_70, 0);
+        lv_obj_set_style_bg_color(row, Color(0x17365f), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
         if (clickable) {
             lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, data);
@@ -732,7 +744,7 @@ void StatusBar::RebuildBluetoothMenu() {
         auto *label = lv_label_create(row);
         lv_obj_set_width(label, 184);
         lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(label, Color(0x20242b), 0);
+        lv_obj_set_style_text_color(label, lv_color_white(), 0);
         lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
         lv_label_set_text(label, text);
         lv_obj_align(label, LV_ALIGN_LEFT_MID, 4, 0);
@@ -755,7 +767,7 @@ void StatusBar::RebuildBluetoothMenu() {
             auto *state = lv_label_create(row);
             lv_obj_set_style_text_font(state, &BUILTIN_SMALL_TEXT_FONT, 0);
             lv_obj_set_style_text_color(state,
-                Color(device.connected ? 0x0a84ff : 0x5d6470), 0);
+                Color(device.connected ? 0x56b4ff : 0x9ca3af), 0);
             lv_label_set_text(state, device.connected ? "Đã nối" : (device.paired ? "Đã ghép" : ""));
             lv_obj_align(state, LV_ALIGN_RIGHT_MID, -4, 0);
         }
@@ -763,20 +775,22 @@ void StatusBar::RebuildBluetoothMenu() {
     auto *settings = add_row("Cài đặt Bluetooth…", true, OnBluetoothSettings, this);
     lv_obj_set_style_border_width(settings, 1, 0);
     lv_obj_set_style_border_side(settings, LV_BORDER_SIDE_TOP, 0);
-    lv_obj_set_style_border_color(settings, Color(0xc0c2cc), 0);
+    lv_obj_set_style_border_color(settings, Color(0x344154), 0);
     applied_bt_scan_revision_ = bt_scan_revision_.load();
+    if (quick_island_open_ && active_quick_menu_ == bt_menu_)
+        ResizeQuickIsland(bt_menu_);
 }
 
 void StatusBar::BuildQuickMenus() {
-    wifi_menu_ = CreateQuickMenu(260);
-    bt_menu_ = CreateQuickMenu(270);
+    wifi_menu_ = CreateQuickMenu(318);
+    bt_menu_ = CreateQuickMenu(328);
     RebuildWifiMenu();
     RebuildBluetoothMenu();
 
-    sound_menu_ = CreateQuickMenu(280);
+    sound_menu_ = CreateQuickMenu(310);
     auto *sound_title = lv_label_create(sound_menu_);
     lv_obj_set_style_text_font(sound_title, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(sound_title, Color(0x20242b), 0);
+    lv_obj_set_style_text_color(sound_title, lv_color_white(), 0);
     lv_label_set_text(sound_title, "Âm thanh");
     auto *sound_row = lv_obj_create(sound_menu_);
     lv_obj_remove_style_all(sound_row);
@@ -785,6 +799,11 @@ void StatusBar::BuildQuickMenus() {
     lv_obj_set_flex_align(sound_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(sound_row, 8, 0);
+    lv_obj_set_style_bg_color(sound_row, Color(0x121a29), 0);
+    lv_obj_set_style_bg_opa(sound_row, LV_OPA_70, 0);
+    lv_obj_set_style_radius(sound_row, 12, 0);
+    lv_obj_set_style_pad_left(sound_row, 10, 0);
+    lv_obj_set_style_pad_right(sound_row, 10, 0);
     const bool sound_muted = Settings("display").GetBool("muted", false);
     sound_mute_icon_ = jetson::ui::CreateAppIcon(
         sound_row, sound_muted ? "speaker-mute" : "speaker", 20);
@@ -792,26 +811,28 @@ void StatusBar::BuildQuickMenus() {
     lv_obj_set_ext_click_area(sound_mute_icon_, 6);
     lv_obj_add_event_cb(sound_mute_icon_, OnMuteClick, LV_EVENT_CLICKED, this);
     sound_slider_ = lv_slider_create(sound_row);
-    lv_obj_set_width(sound_slider_, 174);
+    lv_obj_set_width(sound_slider_, 184);
+    lv_obj_set_style_bg_color(sound_slider_, Color(0x323b4a), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sound_slider_, Color(0x0a84ff), LV_PART_INDICATOR);
     lv_slider_set_range(sound_slider_, 0, 100);
     const int volume = Clamp(Settings("display").GetInt("volume", 50), 0, 100);
     lv_slider_set_value(sound_slider_, volume, LV_ANIM_OFF);
     lv_obj_add_event_cb(sound_slider_, OnVolumeChanged, LV_EVENT_VALUE_CHANGED, this);
     sound_value_ = lv_label_create(sound_row);
     lv_obj_set_style_text_font(sound_value_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(sound_value_, Color(0x20242b), 0);
+    lv_obj_set_style_text_color(sound_value_, lv_color_white(), 0);
     char volume_text[12];
     std::snprintf(volume_text, sizeof(volume_text), "%d%%", volume);
     lv_label_set_text(sound_value_, volume_text);
     auto *output = lv_label_create(sound_menu_);
     lv_obj_set_style_text_font(output, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(output, Color(0x3c4350), 0);
+    lv_obj_set_style_text_color(output, Color(0xb8c0cc), 0);
     lv_label_set_text(output, "Đầu ra\n✓  Speaker Jetson");
 
-    brightness_menu_ = CreateQuickMenu(280);
+    brightness_menu_ = CreateQuickMenu(310);
     auto *bright_title = lv_label_create(brightness_menu_);
     lv_obj_set_style_text_font(bright_title, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(bright_title, Color(0x20242b), 0);
+    lv_obj_set_style_text_color(bright_title, lv_color_white(), 0);
     lv_label_set_text(bright_title, "Màn hình");
     auto *bright_row = lv_obj_create(brightness_menu_);
     lv_obj_remove_style_all(bright_row);
@@ -820,11 +841,18 @@ void StatusBar::BuildQuickMenus() {
     lv_obj_set_flex_align(bright_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(bright_row, 8, 0);
+    lv_obj_set_style_bg_color(bright_row, Color(0x121a29), 0);
+    lv_obj_set_style_bg_opa(bright_row, LV_OPA_70, 0);
+    lv_obj_set_style_radius(bright_row, 12, 0);
+    lv_obj_set_style_pad_left(bright_row, 10, 0);
+    lv_obj_set_style_pad_right(bright_row, 10, 0);
     auto *sun = jetson::ui::CreateAppIcon(bright_row, "sun", 20);
     lv_obj_set_style_image_recolor(sun, Color(0xff9f0a), 0);
     lv_obj_set_style_image_recolor_opa(sun, LV_OPA_COVER, 0);
     brightness_slider_ = lv_slider_create(bright_row);
-    lv_obj_set_width(brightness_slider_, 176);
+    lv_obj_set_width(brightness_slider_, 184);
+    lv_obj_set_style_bg_color(brightness_slider_, Color(0x323b4a), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(brightness_slider_, Color(0xff9f0a), LV_PART_INDICATOR);
     lv_slider_set_range(brightness_slider_, 20, 100);
     const int brightness = Clamp(Settings("display").GetInt("brightness", 100), 20, 100);
     lv_slider_set_value(brightness_slider_, brightness, LV_ANIM_OFF);
@@ -832,7 +860,7 @@ void StatusBar::BuildQuickMenus() {
                         LV_EVENT_VALUE_CHANGED, this);
     brightness_value_ = lv_label_create(bright_row);
     lv_obj_set_style_text_font(brightness_value_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(brightness_value_, Color(0x20242b), 0);
+    lv_obj_set_style_text_color(brightness_value_, lv_color_white(), 0);
     char brightness_text[12];
     std::snprintf(brightness_text, sizeof(brightness_text), "%d%%", brightness);
     lv_label_set_text(brightness_value_, brightness_text);
@@ -870,21 +898,97 @@ void StatusBar::StartBluetoothScan() {
 }
 
 void StatusBar::HideQuickMenus(lv_obj_t *except) {
+    if (!except && quick_island_open_) {
+        CloseQuickIsland(true);
+        return;
+    }
     for (auto *menu : {wifi_menu_, bt_menu_, sound_menu_, brightness_menu_, power_menu_})
         if (menu && menu != except) lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
-    if (optimize_widget_) optimize_widget_->HidePopup();
+    if (optimize_widget_ && optimize_widget_->Content() != except)
+        optimize_widget_->HidePopup();
 }
 
 void StatusBar::ShowQuickMenu(lv_obj_t *menu, lv_obj_t *anchor) {
-    if (!menu || !anchor) return;
-    if (!lv_obj_has_flag(menu, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
+    (void)anchor;
+    if (!menu || !pill_ || !quick_host_) return;
+    if (quick_island_open_ && active_quick_menu_ == menu) {
+        CloseQuickIsland(true);
         return;
     }
+
+    if (!quick_island_open_ && notification_visible_)
+        CollapseIsland(false);
+    if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
+
     HideQuickMenus(menu);
-    lv_obj_align_to(menu, anchor, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
+    HideMediaContent();
+    media_expanded_open_ = false;
+    notification_visible_ = false;
+    if (island_content_) lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
+    if (island_rest_) lv_obj_add_flag(island_rest_, LV_OBJ_FLAG_HIDDEN);
+
+    active_quick_menu_ = menu;
+    quick_island_open_ = true;
+    island_expanded_ = true;
+    lv_obj_clear_flag(quick_host_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_opa(quick_host_, LV_OPA_COVER, 0);
     lv_obj_clear_flag(menu, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_center(menu);
+    AnimateDrop(menu, true);
+    lv_obj_set_style_border_color(pill_, Color(0x0a84ff), 0);
+    lv_obj_set_style_border_opa(pill_, LV_OPA_50, 0);
+    ResizeQuickIsland(menu, true);
     ArmQuickMenuTimer();
+}
+
+void StatusBar::ResizeQuickIsland(lv_obj_t *menu, bool animated) {
+    if (!menu || !pill_) return;
+    lv_obj_update_layout(menu);
+    const int target_w = std::min(460, std::max(kPillW, lv_obj_get_width(menu) + 20));
+    const int target_h = std::min(350, std::max(kPillH, lv_obj_get_height(menu) + 16));
+    lv_obj_center(menu);
+    if (animated) {
+        AnimateIslandSize(target_w, target_h, false);
+    } else {
+        lv_obj_set_size(pill_, target_w, target_h);
+        lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
+    }
+}
+
+void StatusBar::CloseQuickIsland(bool animated) {
+    if (!pill_ || !quick_host_) return;
+    if (quick_menu_timer_) { lv_timer_del(quick_menu_timer_); quick_menu_timer_ = nullptr; }
+
+    if (active_quick_menu_) {
+        lv_anim_delete(active_quick_menu_, OnDropOpa);
+        lv_anim_delete(active_quick_menu_, OnDropY);
+        if (animated) AnimateDrop(active_quick_menu_, false);
+        else lv_obj_add_flag(active_quick_menu_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (!animated) {
+        quick_island_open_ = false;
+        for (auto *menu : {wifi_menu_, bt_menu_, sound_menu_, brightness_menu_, power_menu_})
+            if (menu) lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
+        if (optimize_widget_) optimize_widget_->HidePopup();
+        lv_obj_set_style_opa(quick_host_, LV_OPA_0, 0);
+        lv_obj_add_flag(quick_host_, LV_OBJ_FLAG_HIDDEN);
+        active_quick_menu_ = nullptr;
+        island_expanded_ = false;
+        if (media_available_) {
+            RefreshMedia(true);
+        } else {
+            lv_anim_delete(pill_, OnIslandWidth);
+            lv_anim_delete(pill_, OnIslandHeight);
+            lv_obj_set_size(pill_, kPillW, kPillH);
+            lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
+            lv_obj_set_style_border_color(pill_, Color(0x253142), 0);
+            SyncIslandRest();
+        }
+        return;
+    }
+
+    AnimateIslandSize(media_available_ ? kMediaCompactW : kPillW,
+                      media_available_ ? kMediaCompactH : kPillH, true);
 }
 
 void StatusBar::ArmQuickMenuTimer() {
@@ -894,40 +998,33 @@ void StatusBar::ArmQuickMenuTimer() {
 }
 
 void StatusBar::BuildPowerMenu() {
-    power_menu_ = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(power_menu_);
-    lv_obj_set_size(power_menu_, 220, LV_SIZE_CONTENT);
-    lv_obj_align_to(power_menu_, power_icon_, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
-    lv_obj_set_style_bg_color(power_menu_, Color(0xe9e9f3), 0);
-    lv_obj_set_style_bg_opa(power_menu_, kQuickMenuBgOpacity, 0);
-    lv_obj_set_style_radius(power_menu_, 14, 0);
-    lv_obj_set_style_pad_all(power_menu_, 8, 0);
-    lv_obj_set_style_pad_row(power_menu_, 6, 0);
-    lv_obj_set_flex_flow(power_menu_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(power_menu_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_opa(power_menu_, LV_OPA_0, 0);
-    lv_obj_add_flag(power_menu_, LV_OBJ_FLAG_HIDDEN);
+    power_menu_ = CreateQuickMenu(250);
     lv_obj_add_event_cb(power_menu_, OnPowerMenuDeleted, LV_EVENT_DELETE, this);
 
-    auto add_item = [&](const char *label, lv_event_cb_t cb) {
+    auto add_item = [&](const char *label, lv_event_cb_t cb, bool destructive) {
         auto *row = lv_obj_create(power_menu_);
         lv_obj_remove_style_all(row);
         lv_obj_set_width(row, lv_pct(100));
-        lv_obj_set_height(row, 38);
-        lv_obj_set_style_radius(row, 8, 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_height(row, 40);
+        lv_obj_set_style_radius(row, 11, 0);
+        lv_obj_set_style_bg_color(row, Color(destructive ? 0x35151b : 0x121a29), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_80, 0);
+        lv_obj_set_style_bg_color(row, Color(destructive ? 0x67202d : 0x17365f),
+                                  LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         auto *lbl = lv_label_create(row);
         lv_obj_set_style_text_font(lbl, &BUILTIN_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(lbl, Color(0x9d1c1c), 0);
+        lv_obj_set_style_text_color(lbl,
+            destructive ? Color(0xff6b7d) : lv_color_white(), 0);
         lv_label_set_text(lbl, label);
         lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 12, 0);
         lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, this);
     };
-    add_item("Ngủ", OnPowerLock);
-    add_item("Khởi động lại", OnPowerReboot);
-    add_item("Tắt máy", OnPowerShutdown);
+    add_item("Ngủ", OnPowerLock, false);
+    add_item("Khởi động lại", OnPowerReboot, false);
+    add_item("Tắt máy", OnPowerShutdown, true);
 }
 
 StatusBar::~StatusBar() {
@@ -948,8 +1045,8 @@ StatusBar::~StatusBar() {
     if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
     if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
     if (quick_menu_timer_) { lv_timer_del(quick_menu_timer_); quick_menu_timer_ = nullptr; }
-    // Siblings on the same top layer are not deleted with pill_; delete them
-    // explicitly. Delete callbacks null pointers if the layer tore down first.
+    // Remove quick-menu children explicitly so their row contexts/callbacks
+    // disappear before the shared island host is destroyed.
     for (lv_obj_t **menu : {&wifi_menu_, &bt_menu_, &sound_menu_,
                             &brightness_menu_, &power_menu_}) {
         if (*menu) { lv_obj_del(*menu); *menu = nullptr; }
@@ -965,6 +1062,7 @@ StatusBar::~StatusBar() {
 void StatusBar::Hide() {
     visible_ = false;
     if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
+    if (quick_island_open_) CloseQuickIsland(false);
     if (pill_) {
         lv_anim_delete(pill_, OnIslandWidth);
         lv_anim_delete(pill_, OnIslandHeight);
@@ -983,9 +1081,6 @@ void StatusBar::Hide() {
     notification_visible_ = false;
     media_expanded_open_ = false;
     SyncIslandRest();
-    if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN))
-        HidePowerMenu();
-    HideQuickMenus();
 }
 
 void StatusBar::Show() {
@@ -1171,8 +1266,8 @@ void StatusBar::AnimateIslandSize(int width, int height, bool collapsing) {
     lv_anim_set_var(&w, pill_);
     lv_anim_set_exec_cb(&w, OnIslandWidth);
     lv_anim_set_values(&w, from_w, width);
-    lv_anim_set_time(&w, collapsing ? 570 : 420);
-    lv_anim_set_delay(&w, collapsing ? 50 : 0);
+    lv_anim_set_time(&w, collapsing ? 320 : 360);
+    lv_anim_set_delay(&w, 0);
     lv_anim_set_path_cb(&w, lv_anim_path_ease_in_out);
     lv_anim_start(&w);
 
@@ -1181,8 +1276,8 @@ void StatusBar::AnimateIslandSize(int width, int height, bool collapsing) {
     lv_anim_set_var(&h, pill_);
     lv_anim_set_exec_cb(&h, OnIslandHeight);
     lv_anim_set_values(&h, from_h, height);
-    lv_anim_set_time(&h, collapsing ? 570 : 420);
-    lv_anim_set_delay(&h, collapsing ? 50 : 0);
+    lv_anim_set_time(&h, collapsing ? 320 : 360);
+    lv_anim_set_delay(&h, 0);
     lv_anim_set_path_cb(&h, lv_anim_path_ease_in_out);
     if (collapsing) {
         lv_anim_set_completed_cb(&h, OnIslandCollapsed);
@@ -1195,8 +1290,7 @@ void StatusBar::ShowIslandMessage(const char *title, const char *text,
                                   const char *icon, uint32_t accent,
                                   int duration_ms) {
     if (!visible_ || !pill_ || !island_content_) return;
-    if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN))
-        HidePowerMenu();
+    if (quick_island_open_) CloseQuickIsland(false);
 
     if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
     lv_label_set_text(island_title_, title ? title : "");
@@ -1281,6 +1375,7 @@ void StatusBar::AnimateDrop(lv_obj_t *obj, bool show) {
     lv_anim_set_exec_cb(&a, OnDropOpa);
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_set_time(&a, 220);
+    lv_anim_set_delay(&a, show ? 80 : 0);
     lv_anim_set_values(&a, show ? 0 : 255, show ? 255 : 0);
     lv_anim_start(&a);
 
@@ -1290,6 +1385,7 @@ void StatusBar::AnimateDrop(lv_obj_t *obj, bool show) {
     lv_anim_set_exec_cb(&b, OnDropY);
     lv_anim_set_path_cb(&b, lv_anim_path_ease_out);
     lv_anim_set_time(&b, 220);
+    lv_anim_set_delay(&b, show ? 80 : 0);
     lv_anim_set_values(&b, show ? -10 : 0, show ? 0 : -10);
     if (!show) lv_anim_set_completed_cb(&b, OnDropHidden);
     lv_anim_start(&b);
@@ -1307,19 +1403,15 @@ void StatusBar::ShowWelcome(int duration_ms) {
 
 void StatusBar::ShowPowerMenu() {
     if (!power_menu_) return;
-    CollapseIsland(false);
-    HideQuickMenus(power_menu_);
-    lv_obj_align_to(power_menu_, power_icon_, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
-    AnimateDrop(power_menu_, true);
-    if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
-    power_menu_timer_ = lv_timer_create(OnPowerMenuTimer, kAutoCloseMs, this);
-    lv_timer_set_repeat_count(power_menu_timer_, 1);
+    ShowQuickMenu(power_menu_, power_icon_);
 }
 
 void StatusBar::HidePowerMenu() {
     if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
-    if (power_menu_) AnimateDrop(power_menu_, false);
-    RefreshMedia(true);
+    if (quick_island_open_ && active_quick_menu_ == power_menu_)
+        CloseQuickIsland(true);
+    else if (power_menu_)
+        lv_obj_add_flag(power_menu_, LV_OBJ_FLAG_HIDDEN);
 }
 
 void StatusBar::OnTimer(lv_timer_t *t) {
@@ -1542,6 +1634,10 @@ void StatusBar::OnIslandClick(lv_event_t *e) {
         self->suppress_island_click_ = false;
         return;
     }
+    if (self->quick_island_open_) {
+        self->CloseQuickIsland(true);
+        return;
+    }
     const auto snapshot = jetson::music::PlayerController::Instance().Snapshot();
     if (snapshot.has_current &&
         snapshot.status != jetson::music::PlaybackStatus::Idle) {
@@ -1566,6 +1662,7 @@ void StatusBar::OnIslandLongPress(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
     self->suppress_island_click_ = true;
+    if (self->quick_island_open_) self->CloseQuickIsland(false);
     self->media_expanded_open_ = false;
     self->RefreshMedia(true);
     if (self->island_action_) self->island_action_();
@@ -1662,6 +1759,17 @@ void StatusBar::OnIslandCollapsed(lv_anim_t *a) {
         lv_obj_set_style_opa(self->island_content_, LV_OPA_0, 0);
         lv_obj_add_flag(self->island_content_, LV_OBJ_FLAG_HIDDEN);
     }
+    for (auto *menu : {self->wifi_menu_, self->bt_menu_, self->sound_menu_,
+                       self->brightness_menu_, self->power_menu_}) {
+        if (menu) lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (self->optimize_widget_) self->optimize_widget_->HidePopup();
+    if (self->quick_host_) {
+        lv_obj_set_style_opa(self->quick_host_, LV_OPA_0, 0);
+        lv_obj_add_flag(self->quick_host_, LV_OBJ_FLAG_HIDDEN);
+    }
+    self->active_quick_menu_ = nullptr;
+    self->quick_island_open_ = false;
     self->notification_visible_ = false;
     self->media_expanded_open_ = false;
     self->island_expanded_ = false;
