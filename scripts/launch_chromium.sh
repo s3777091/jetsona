@@ -59,6 +59,14 @@ if [ "${1:-}" = "--x-client" ]; then
             "$@"
     }
 
+    # Paint the root window the same black the firmware left in the
+    # framebuffer. X's default root is a grey stipple, and a flash of it
+    # between the firmware's collapse and the bar's bloom is exactly what
+    # breaks the illusion of a single hand-off animation.
+    if command -v xsetroot >/dev/null 2>&1; then
+        xsetroot -solid black >/dev/null 2>&1 || true
+    fi
+
     if command -v setxkbmap >/dev/null 2>&1; then
         # Ctrl+Alt+Backspace exits the bare-X session even though Chromium has
         # no close button in --kiosk mode.
@@ -244,6 +252,10 @@ rm -f "$PROFILE_DIR/SingletonLock" "$PROFILE_DIR/SingletonSocket" \
 export CHROMIUM_BIN="$CHROMIUM"
 export CHROMIUM_PROFILE_DIR="$PROFILE_DIR"
 export CHROMIUM_EXTRA_URLS="$EXTRA_URLS"
+# Tells jetson_kiosk_bar which launcher entry the firmware was opening, so it
+# can continue that app's island zoom instead of starting a generic one. Its
+# presence is also the signal that this really is a firmware hand-off.
+export JETSON_KIOSK_HANDOFF_URL="$HOME_URL"
 
 # App list for the island long-press launcher in jetson_kiosk_bar ("Name|URL"
 # per line). Regenerated every session so entries never go stale. The Pods
@@ -322,14 +334,17 @@ fi
 # unlike the firmware, Chromium does not draw its own mouse cursor, so
 # -nocursor makes a working mouse look disconnected.
 if command -v xinit >/dev/null 2>&1; then
+    # -background none: do not repaint the root at startup, so the firmware's
+    # final black frame survives in the framebuffer until the bar draws over
+    # it. Without it X clears to its grey stipple and the hand-off flashes.
     exec xinit "$SCRIPT_DIR/launch_chromium.sh" --x-client \
         "$CHROMIUM" "${CHROMIUM_FLAGS[@]}" -- \
-        "$DISPLAY_NO" vt1 -nolisten tcp -s 0 -dpms
+        "$DISPLAY_NO" vt1 -nolisten tcp -s 0 -dpms -background none
 fi
 
 # Fallback: start Xorg ourselves, run Chromium, then tear X down.
 echo "launch_chromium: xinit not found, falling back to Xorg + chromium" >&2
-Xorg "$DISPLAY_NO" vt1 -nolisten tcp -s 0 -dpms &
+Xorg "$DISPLAY_NO" vt1 -nolisten tcp -s 0 -dpms -background none &
 XPID=$!
 cleanup_xorg()
 {

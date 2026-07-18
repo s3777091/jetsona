@@ -95,7 +95,7 @@ private:
     lv_obj_t *airplane_icon_ = nullptr;
     lv_obj_t *vpn_icon_ = nullptr;
     // PNG icons from assets/icons/app (label fallbacks when a PNG is missing).
-    lv_obj_t *cellular_icon_ = nullptr;
+    // wifi_icon_ is the single link slot: wifi / no-wifi / ethernet.
     lv_obj_t *wifi_icon_ = nullptr;
     lv_obj_t *bt_icon_ = nullptr;
     lv_obj_t *charge_icon_ = nullptr; // charge-batery PNG, shown while charging
@@ -107,7 +107,6 @@ private:
     lv_obj_t *lang_label_ = nullptr;
     lv_obj_t *power_icon_ = nullptr;
     lv_obj_t *datetime_label_ = nullptr;
-    lv_obj_t *weather_icon_ = nullptr;
 
     lv_timer_t *notif_timer_ = nullptr;
 

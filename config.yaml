@@ -54,6 +54,12 @@ INA219_ADDR: "0x42"
 INA219_VMIN: "6.0"
 INA219_VMAX: "8.4"
 INA219_SHUNT: "0.1"
+# Which current sign means "charging" on this module's shunt wiring. If the
+# charging bolt stays dark on the charger (or shows on battery), flip to "-1".
+# The firmware logs the measured mA once per start under the "ina219" tag:
+#   journalctl -u jetson-fw | grep ina219
+INA219_CHARGE_SIGN: "1"
+INA219_CHARGE_MA: "50"
 
 # PS5 Remote Play (Chiaki).
 CHIAKI_BIN: "/home/ekkohuynh/chiaki-ng/chiaki-ng"

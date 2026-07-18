@@ -15,6 +15,7 @@ $icons = [ordered]@{
     "messenger" = "messenger.png"
     "teams"     = "team.png"
     "studio"    = "studio.png"
+    "gmail"     = "gmail.png"
     "chatgpt"   = "chat-gpt.png"
     "pods"      = "pods.png"
 }

@@ -57,6 +57,11 @@ Ina219::Ina219() {
     vmin_     = EnvFloatOr("INA219_VMIN", 6.0f);
     vmax_     = EnvFloatOr("INA219_VMAX", 8.4f);
     shunt_    = EnvFloatOr("INA219_SHUNT", 0.1f);
+    // Anything non-negative keeps the documented "positive = charging" wiring;
+    // a negative value flips it for modules whose shunt sits the other way.
+    charge_sign_ = EnvFloatOr("INA219_CHARGE_SIGN", 1.0f) < 0.0f ? -1.0f : 1.0f;
+    charge_ma_   = EnvFloatOr("INA219_CHARGE_MA", 50.0f);
+    if (charge_ma_ < 0.0f) charge_ma_ = -charge_ma_;
 }
 
 Ina219::~Ina219() {
@@ -145,17 +150,26 @@ bool Ina219::Read(int &level_pct, bool &charging, bool &discharging) {
     level_pct = level;
 
     // Current is signed 16-bit × current_lsb (amperes). Only meaningful when the
-    // calibration register was written. Sign convention on this module: positive
-    // current = battery being charged, negative = discharging into the Jetson.
+    // calibration register was written. charge_sign_ orients it: after the
+    // multiply, positive always means "energy going into the pack", so the
+    // same comparison works on either shunt wiring.
     charging = false;
     discharging = false;
     uint16_t cur_raw = 0;
     if (current_lsb_ > 0.0f && ReadReg16(kRegCurrent, cur_raw)) {
         int16_t signed_cur = (int16_t)cur_raw;
-        float amps = signed_cur * current_lsb_;
-        float ma = amps * 1000.0f;
-        if (ma > 50.0f) charging = true;
-        else if (ma < -50.0f) discharging = true;
+        float ma = signed_cur * current_lsb_ * 1000.0f * charge_sign_;
+        if (ma > charge_ma_) charging = true;
+        else if (ma < -charge_ma_) discharging = true;
+        // One line per process start: the fastest way to tell whether
+        // INA219_CHARGE_SIGN needs flipping on this particular module.
+        if (!logged_current_) {
+            logged_current_ = true;
+            ESP_LOGI(TAG, "current %+.0f mA (sign=%+.0f, threshold=%.0f mA) -> %s"
+                          " — flip INA219_CHARGE_SIGN if this is backwards",
+                     ma, charge_sign_, charge_ma_,
+                     charging ? "charging" : discharging ? "discharging" : "idle");
+        }
     }
 
     return true;

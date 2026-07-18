@@ -13,6 +13,9 @@ enum class CatalogKind {
     Artist,
     Radio,
     Top100,
+    // A locally stored album owned by the user (see media/user_library.h).
+    // Never produced by the Zing parser; only by MusicView's own section.
+    UserAlbum,
 };
 
 struct CatalogItem {

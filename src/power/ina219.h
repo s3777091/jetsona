@@ -13,16 +13,23 @@
  * State of charge is derived from the INA219 bus-voltage register (the battery
  * pack voltage; 2S2P 18650 pack). Waveshare's demo maps it linearly:
  * percent = (V − 6.0) / 2.4 × 100, i.e. 8.4 V full / 6.0 V empty.
- * Charging/discharging come from the calibrated current register's sign
- * (positive = batteries charging, negative = batteries powering the Jetson).
+ * Charging/discharging come from the calibrated current register's sign. Which
+ * sign means "charging" depends on how the shunt is wired on the individual
+ * module, so it is a knob rather than an assumption: with the default +1 a
+ * positive current means the pack is being charged. If the bolt shows while
+ * running on battery (or stays dark on the charger), flip INA219_CHARGE_SIGN
+ * to -1. Every successful first read logs the measured mA under the "ina219"
+ * tag, which is the quickest way to tell which way round this module is.
  *
  * Everything is env-configurable so a wrong I2C bus/address or a different cell
  * chemistry is a runtime fix, not a rebuild:
- *   INA219_BUS   "/dev/i2c-1"   I2C character device path
- *   INA219_ADDR  "0x42"         7-bit I2C address (hex) of the INA219
- *   INA219_VMIN  "6.0"          pack voltage mapped to 0 %
- *   INA219_VMAX  "8.4"          pack voltage mapped to 100 %
- *   INA219_SHUNT "0.1"          shunt resistor value (ohm) for current cal
+ *   INA219_BUS         "/dev/i2c-1"  I2C character device path
+ *   INA219_ADDR        "0x42"        7-bit I2C address (hex) of the INA219
+ *   INA219_VMIN        "6.0"         pack voltage mapped to 0 %
+ *   INA219_VMAX        "8.4"         pack voltage mapped to 100 %
+ *   INA219_SHUNT       "0.1"         shunt resistor value (ohm) for current cal
+ *   INA219_CHARGE_SIGN "1"           +1 or -1: current sign that means charging
+ *   INA219_CHARGE_MA   "50"          |mA| below this counts as idle, not charging
  *
  * On any I2C failure Read() returns false so the caller can keep the UI sane.
  */
@@ -58,9 +65,12 @@ private:
     float       vmin_ = 6.0f;
     float       vmax_ = 8.4f;
     float       shunt_ = 0.1f;
+    float       charge_sign_ = 1.0f;  // current sign that means "charging"
+    float       charge_ma_ = 50.0f;   // idle band around zero, in mA
     // current_lsb in amperes per ADC step, set during Init() from shunt_.
     float       current_lsb_ = 0.0f;
     bool        tried_ = false;   // Init() has been attempted at least once
+    bool        logged_current_ = false;  // first current sample has been logged
 };
 
 #endif // JETSON_POWER_INA219_H

@@ -5,6 +5,7 @@
 #include "display/theme/ui_theme.h"
 #include "fonts.h"
 #include "media/player_controller.h"
+#include "media/user_library.h"
 #include "net/zing_music_client.h"
 
 #include <lvgl.h>
@@ -24,11 +25,12 @@ using jetson::music::CatalogKind;
 using jetson::music::PlaybackStatus;
 using jetson::music::PlayerController;
 using jetson::music::Track;
+using jetson::music::UserAlbum;
+using jetson::music::UserLibrary;
 using jetson::ui::Color;
 using jetson::ui::LvglLockGuard;
 
 namespace {
-constexpr int kPlayerBarHeight = 64;
 constexpr int kCardWidth = 124;
 constexpr int kCoverSize = 112;
 constexpr int kRailHeight = 178;
@@ -143,10 +145,6 @@ MusicView::~MusicView() {
     LvglLockGuard lock;
     if (player_timer_) { lv_timer_del(player_timer_); player_timer_ = nullptr; }
     ClearArtwork();
-    if (player_art_obj_) lv_image_set_src(player_art_obj_, nullptr);
-    if (player_artwork_)
-        lv_image_cache_drop(player_artwork_->image_dsc());
-    player_artwork_.reset();
 }
 
 void MusicView::OnStart() {
@@ -156,7 +154,6 @@ void MusicView::OnStart() {
 }
 
 void MusicView::BuildBody() {
-    const auto &p = jetson::UiTheme::Instance().Palette();
     lv_obj_clear_flag(body_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(body_, 0, 0);
 
@@ -172,64 +169,9 @@ void MusicView::BuildBody() {
     lv_obj_set_scroll_dir(page_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(page_, LV_SCROLLBAR_MODE_AUTO);
 
-    player_bar_ = lv_obj_create(overlay_);
-    lv_obj_remove_style_all(player_bar_);
-    lv_obj_set_size(player_bar_, width_, kPlayerBarHeight);
-    lv_obj_set_pos(player_bar_, 0, height_ - kPlayerBarHeight);
-    lv_obj_set_style_bg_color(player_bar_, Color(0x111216), 0);
-    lv_obj_set_style_bg_opa(player_bar_, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(player_bar_, 1, 0);
-    lv_obj_set_style_border_side(player_bar_, LV_BORDER_SIDE_TOP, 0);
-    lv_obj_set_style_border_color(player_bar_, Color(p.border), 0);
-    lv_obj_clear_flag(player_bar_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(player_bar_, LV_OBJ_FLAG_HIDDEN);
-
-    player_art_host_ = lv_obj_create(player_bar_);
-    lv_obj_remove_style_all(player_art_host_);
-    lv_obj_set_size(player_art_host_, 46, 46);
-    lv_obj_set_pos(player_art_host_, 10, 7);
-    lv_obj_set_style_radius(player_art_host_, 8, 0);
-    lv_obj_set_style_clip_corner(player_art_host_, true, 0);
-    lv_obj_set_style_bg_color(player_art_host_, Color(0x273047), 0);
-    lv_obj_set_style_bg_opa(player_art_host_, LV_OPA_COVER, 0);
-    RemoveInteraction(player_art_host_);
-
-    player_title_ = lv_label_create(player_bar_);
-    lv_obj_set_size(player_title_, 300, 24);
-    lv_obj_set_pos(player_title_, 68, 8);
-    lv_obj_set_style_text_font(player_title_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(player_title_, Color(p.text), 0);
-    lv_label_set_long_mode(player_title_, LV_LABEL_LONG_DOT);
-
-    player_artist_ = lv_label_create(player_bar_);
-    lv_obj_set_size(player_artist_, 300, 22);
-    lv_obj_set_pos(player_artist_, 68, 32);
-    lv_obj_set_style_text_font(player_artist_, jetson::BuiltinTextFaceAt(14), 0);
-    lv_obj_set_style_text_color(player_artist_, Color(p.sub_text), 0);
-    lv_label_set_long_mode(player_artist_, LV_LABEL_LONG_DOT);
-
-    auto *previous = MakeIconButton(player_bar_, LV_SYMBOL_PREV, 40,
-                                    OnPlayerPrevious, this);
-    lv_obj_set_pos(previous, width_ - 174, 10);
-    auto *toggle = MakeIconButton(player_bar_, LV_SYMBOL_PLAY, 44,
-                                  OnPlayerToggle, this);
-    lv_obj_set_pos(toggle, width_ - 122, 8);
-    player_toggle_label_ = lv_obj_get_child(toggle, 0);
-    auto *next = MakeIconButton(player_bar_, LV_SYMBOL_NEXT, 40,
-                                OnPlayerNext, this);
-    lv_obj_set_pos(next, width_ - 66, 10);
-
-    player_progress_ = lv_bar_create(player_bar_);
-    lv_obj_set_size(player_progress_, width_, 3);
-    lv_obj_align(player_progress_, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_bar_set_range(player_progress_, 0, 1000);
-    lv_bar_set_value(player_progress_, 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(player_progress_, Color(0x303138), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(player_progress_, Color(p.accent), LV_PART_INDICATOR);
-    lv_obj_set_style_radius(player_progress_, 0, LV_PART_MAIN);
-    lv_obj_set_style_radius(player_progress_, 0, LV_PART_INDICATOR);
-    RemoveInteraction(player_progress_);
-
+    // The Dynamic Island in the status bar now owns the transport controls and
+    // now-playing display, so there is no in-app bottom player bar. This timer
+    // only keeps the album view's "now playing" row highlight in sync.
     player_timer_ = lv_timer_create(OnPlayerTimer, 350, this);
 }
 
@@ -533,11 +475,79 @@ void MusicView::RenderDiscovery() {
     RenderSection("Chill", discovery_.chill, false);
     RenderSection("Top 100", discovery_.top100, false);
     RenderSection("Nghệ sĩ", discovery_.artists, true);
-    RenderSection("Radio", discovery_.radio, false);
+    // The user's own albums take the Radio rail's place: that is the library,
+    // so no separate screen is needed.
+    RenderUserAlbums();
     lv_obj_scroll_to_y(page_, 0, LV_ANIM_OFF);
 }
 
+void MusicView::RenderUserAlbums() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    const auto albums = UserLibrary::Instance().Albums();
+
+    if (albums.empty()) {
+        // Keep the section visible so the feature is discoverable even before
+        // the first song is saved.
+        auto *heading = lv_label_create(page_);
+        lv_obj_set_style_text_font(heading, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(heading, Color(p.text), 0);
+        lv_label_set_text(heading, "Album của tôi");
+        auto *hint = lv_label_create(page_);
+        lv_obj_set_width(hint, lv_pct(100));
+        lv_obj_set_style_text_font(hint, jetson::BuiltinTextFaceAt(14), 0);
+        lv_obj_set_style_text_color(hint, Color(p.sub_text), 0);
+        lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(hint,
+            "Mở một album rồi nhấn + trên bài hát để lưu vào đây.");
+        RemoveInteraction(hint);
+        return;
+    }
+
+    std::vector<CatalogItem> items;
+    items.reserve(albums.size());
+    for (const auto &album : albums) {
+        CatalogItem item;
+        item.id = album.id;
+        item.kind = CatalogKind::UserAlbum;
+        item.title = album.name;
+        item.subtitle = std::to_string(album.tracks.size()) + " bài hát";
+        if (!album.tracks.empty()) {
+            item.thumbnail_path = album.tracks.front().artwork_path;
+            item.thumbnail_url = album.tracks.front().artwork_url;
+        }
+        items.push_back(std::move(item));
+    }
+    RenderSection("Album của tôi", items, false);
+}
+
+void MusicView::OpenUserAlbum(const std::string &album_id) {
+    UserAlbum stored;
+    if (!UserLibrary::Instance().GetAlbum(album_id, stored)) {
+        Notify("Album này không còn nữa");
+        return;
+    }
+    // Supersede any in-flight Zing request so its result cannot overwrite the
+    // page we are about to render.
+    request_generation_.fetch_add(1);
+    loading_ = false;
+
+    album_ = {};
+    album_.id = stored.id;
+    album_.title = stored.name;
+    album_.creator = "Album của tôi";
+    album_.tracks = stored.tracks;
+    if (!album_.tracks.empty()) {
+        album_.artwork_path = album_.tracks.front().artwork_path;
+        album_.artwork_url = album_.tracks.front().artwork_url;
+    }
+    RenderAlbum();
+}
+
 void MusicView::OpenItem(const CatalogItem &item) {
+    if (item.kind == CatalogKind::UserAlbum) {
+        OpenUserAlbum(item.id);
+        return;
+    }
     if (item.premium) {
         Notify("Bài hát này cần tài khoản Zing MP3 Premium");
         return;
@@ -825,25 +835,38 @@ void MusicView::RenderAlbum() {
         lv_label_set_text(duration, duration_text.c_str());
         if (track.premium) lv_obj_set_style_opa(duration, LV_OPA_60, 0);
         RemoveInteraction(duration);
-        lv_obj_t *action = nullptr;
+        auto *ctx = new TrackCtx{this, i, row};
+        track_rows_.push_back(ctx);
+        lv_obj_add_event_cb(row, OnTrackEvent, LV_EVENT_CLICKED, ctx);
+        lv_obj_add_event_cb(row, OnTrackDeleted, LV_EVENT_DELETE, ctx);
+
         if (track.premium) {
             auto *badge = CreatePremiumBadge(row);
             lv_obj_align(badge, LV_ALIGN_RIGHT_MID, -76, 0);
         } else {
-            action = lv_label_create(row);
-            lv_obj_set_size(action, 24, 24);
-            lv_obj_align(action, LV_ALIGN_RIGHT_MID, -76, 0);
-            lv_obj_set_style_text_font(action, &BUILTIN_ICON_FONT, 0);
-            lv_obj_set_style_text_color(action, Color(p.text), 0);
-            lv_label_set_text(action, LV_SYMBOL_PLUS);
-            lv_obj_add_flag(action, LV_OBJ_FLAG_HIDDEN);
-            RemoveInteraction(action);
+            /* "Add to my album". Kept permanently visible rather than revealed
+             * on row hover: a clickable child takes the hover away from the row,
+             * so a hover-reveal would hide the button the moment the pointer
+             * reached it. Being CLICKABLE also means the press never falls
+             * through to the row, so adding a song does not start playback. */
+            auto *action = lv_obj_create(row);
+            lv_obj_remove_style_all(action);
+            lv_obj_set_size(action, 30, 30);
+            lv_obj_align(action, LV_ALIGN_RIGHT_MID, -74, 0);
+            lv_obj_set_style_radius(action, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(action, Color(p.button), 0);
+            lv_obj_set_style_bg_opa(action, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(action, Color(p.accent), LV_STATE_PRESSED);
+            lv_obj_add_flag(action, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_clear_flag(action, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(action, OnAddToAlbum, LV_EVENT_CLICKED, ctx);
+            auto *icon = lv_label_create(action);
+            lv_obj_set_style_text_font(icon, &BUILTIN_ICON_FONT, 0);
+            lv_obj_set_style_text_color(icon, Color(p.text), 0);
+            lv_label_set_text(icon, LV_SYMBOL_PLUS);
+            lv_obj_center(icon);
+            RemoveInteraction(icon);
         }
-
-        auto *ctx = new TrackCtx{this, i, row, action};
-        track_rows_.push_back(ctx);
-        lv_obj_add_event_cb(row, OnTrackEvent, LV_EVENT_ALL, ctx);
-        lv_obj_add_event_cb(row, OnTrackDeleted, LV_EVENT_DELETE, ctx);
     }
     lv_obj_scroll_to_y(page_, 0, LV_ANIM_OFF);
     RefreshTrackRows();
@@ -912,70 +935,6 @@ void MusicView::RefreshTrackRows() {
     }
 }
 
-void MusicView::RefreshPlayerBar() {
-    const auto snapshot = PlayerController::Instance().Snapshot();
-    if (!snapshot.has_current || snapshot.status == PlaybackStatus::Idle) {
-        if (!lv_obj_has_flag(player_bar_, LV_OBJ_FLAG_HIDDEN)) {
-            lv_obj_add_flag(player_bar_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_height(body_, height_ - kHeaderHeight);
-        }
-        return;
-    }
-    if (lv_obj_has_flag(player_bar_, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_clear_flag(player_bar_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_height(body_, height_ - kHeaderHeight - kPlayerBarHeight);
-    }
-
-    lv_label_set_text(player_title_, snapshot.current.title.c_str());
-    if (snapshot.status == PlaybackStatus::Error && !snapshot.error.empty()) {
-        lv_label_set_text(player_artist_, snapshot.error.c_str());
-        if (snapshot.revision != notified_player_error_revision_) {
-            notified_player_error_revision_ = snapshot.revision;
-            Notify(snapshot.error);
-        }
-    } else {
-        lv_label_set_text(player_artist_, snapshot.current.artist.c_str());
-    }
-    const bool playing = snapshot.status == PlaybackStatus::Playing ||
-                         snapshot.status == PlaybackStatus::Buffering ||
-                         snapshot.status == PlaybackStatus::Resolving;
-    lv_label_set_text(player_toggle_label_, playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
-    const int progress = snapshot.duration_ms > 0
-        ? static_cast<int>(std::clamp<int64_t>(
-              snapshot.position_ms * 1000 / snapshot.duration_ms, 0, 1000))
-        : 0;
-    lv_bar_set_value(player_progress_, progress, LV_ANIM_OFF);
-
-    if (rendered_player_art_ != snapshot.current.artwork_path) {
-        rendered_player_art_ = snapshot.current.artwork_path;
-        if (player_art_obj_) {
-            lv_image_set_src(player_art_obj_, nullptr);
-            lv_obj_del(player_art_obj_);
-            player_art_obj_ = nullptr;
-        }
-        if (player_artwork_)
-            lv_image_cache_drop(player_artwork_->image_dsc());
-        player_artwork_.reset();
-        if (!rendered_player_art_.empty())
-            player_artwork_ = LvglImageFromFile(rendered_player_art_);
-        if (player_artwork_) {
-            player_art_obj_ = lv_image_create(player_art_host_);
-            int w, h;
-            ImageDimensions(player_artwork_->image_dsc(), w, h);
-            lv_image_set_src(player_art_obj_, player_artwork_->image_dsc());
-            lv_obj_set_size(player_art_obj_, w, h);
-            lv_image_set_scale(player_art_obj_,
-                static_cast<uint32_t>(46 * 256 / std::max(1, std::min(w, h))));
-            lv_image_set_pivot(player_art_obj_, w / 2, h / 2);
-            lv_obj_center(player_art_obj_);
-            RemoveInteraction(player_art_obj_);
-        }
-    }
-    if (snapshot.revision != rendered_player_revision_) {
-        rendered_player_revision_ = snapshot.revision;
-        RefreshTrackRows();
-    }
-}
 
 void MusicView::OnCardEvent(lv_event_t *e) {
     auto *ctx = static_cast<CardCtx *>(lv_event_get_user_data(e));
@@ -1001,20 +960,9 @@ void MusicView::OnCardDeleted(lv_event_t *e) {
 
 void MusicView::OnTrackEvent(lv_event_t *e) {
     auto *ctx = static_cast<TrackCtx *>(lv_event_get_user_data(e));
-    if (!ctx) return;
-    const auto code = lv_event_get_code(e);
-    if (code == LV_EVENT_HOVER_OVER || code == LV_EVENT_PRESSED) {
-        if (ctx->action) lv_obj_clear_flag(ctx->action, LV_OBJ_FLAG_HIDDEN);
-    } else if (code == LV_EVENT_HOVER_LEAVE || code == LV_EVENT_PRESS_LOST) {
-        if (ctx->action) lv_obj_add_flag(ctx->action, LV_OBJ_FLAG_HIDDEN);
-    } else if (code == LV_EVENT_RELEASED) {
-        auto *target = static_cast<lv_obj_t *>(lv_event_get_target(e));
-        if (ctx->action && (!target || !lv_obj_has_state(target, LV_STATE_HOVERED)))
-            lv_obj_add_flag(ctx->action, LV_OBJ_FLAG_HIDDEN);
-    } else if (code == LV_EVENT_CLICKED) {
-        LvglLockGuard lock;
-        ctx->self->PlayTrack(ctx->index);
-    }
+    if (!ctx || !ctx->self) return;
+    LvglLockGuard lock;
+    ctx->self->PlayTrack(ctx->index);
 }
 
 void MusicView::OnTrackDeleted(lv_event_t *e) {
@@ -1038,22 +986,220 @@ void MusicView::OnPlayAll(lv_event_t *e) {
     static_cast<MusicView *>(lv_event_get_user_data(e))->PlayAll();
 }
 
-void MusicView::OnPlayerToggle(lv_event_t *e) {
-    PlayerController::Instance().Toggle();
+void MusicView::OpenAddToAlbumModal(size_t index) {
+    if (index >= album_.tracks.size()) return;
+    CloseAddModal();
+    pending_add_track_ = album_.tracks[index];
+
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    const auto albums = UserLibrary::Instance().Albums();
+
+    // Dimmed backdrop over the whole overlay; clicking it dismisses. Mirrors the
+    // calendar day-modal pattern.
+    add_modal_ = lv_obj_create(overlay_);
+    lv_obj_remove_style_all(add_modal_);
+    lv_obj_set_size(add_modal_, width_, height_);
+    lv_obj_set_pos(add_modal_, 0, 0);
+    lv_obj_set_style_bg_color(add_modal_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(add_modal_, LV_OPA_50, 0);
+    lv_obj_add_flag(add_modal_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(add_modal_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(add_modal_, OnAddModalDismiss, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(add_modal_, OnAddModalDeleted, LV_EVENT_DELETE, this);
+
+    const int card_w = std::min(430, width_ - 60);
+    const int card_h = std::min(320, height_ - 60);
+    auto *card = lv_obj_create(add_modal_);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, card_w, card_h);
+    lv_obj_center(card);
+    lv_obj_set_style_bg_color(card, Color(p.panel), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 20, 0);
+    lv_obj_set_style_shadow_color(card, lv_color_black(), 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_40, 0);
+    lv_obj_set_style_shadow_width(card, 24, 0);
+    lv_obj_set_style_pad_all(card, 14, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    // Clickable so presses inside the sheet never reach the dismiss backdrop.
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto *header = lv_obj_create(card);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 38);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    auto *title = lv_label_create(header);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title, Color(p.text), 0);
+    lv_label_set_text(title, "Thêm vào album");
+    RemoveInteraction(title);
+    auto *close = MakeIconButton(header, LV_SYMBOL_CLOSE, 34,
+                                 OnAddModalDismiss, this);
+    lv_obj_align(close, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    auto *song = lv_label_create(card);
+    lv_obj_set_width(song, lv_pct(100));
+    lv_obj_set_style_text_font(song, jetson::BuiltinTextFaceAt(14), 0);
+    lv_obj_set_style_text_color(song, Color(p.sub_text), 0);
+    lv_label_set_long_mode(song, LV_LABEL_LONG_DOT);
+    lv_label_set_text(song, pending_add_track_.title.c_str());
+    RemoveInteraction(song);
+
+    auto *list = lv_obj_create(card);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_width(list, lv_pct(100));
+    lv_obj_set_flex_grow(list, 1);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 6, 0);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+
+    if (albums.empty()) {
+        auto *empty = lv_label_create(list);
+        lv_obj_set_width(empty, lv_pct(100));
+        lv_obj_set_style_text_font(empty, jetson::BuiltinTextFaceAt(14), 0);
+        lv_obj_set_style_text_color(empty, Color(p.sub_text), 0);
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(empty,
+            "Bạn chưa có album nào. Tạo một album để lưu bài hát này.");
+        RemoveInteraction(empty);
+    }
+
+    for (const auto &album : albums) {
+        auto *entry = lv_obj_create(list);
+        lv_obj_remove_style_all(entry);
+        lv_obj_set_size(entry, lv_pct(100), 46);
+        lv_obj_set_style_radius(entry, 10, 0);
+        lv_obj_set_style_bg_color(entry, Color(p.row), 0);
+        lv_obj_set_style_bg_opa(entry, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(entry, Color(p.row_active), LV_STATE_PRESSED);
+        lv_obj_add_flag(entry, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(entry, LV_OBJ_FLAG_SCROLLABLE);
+        auto *pick = new PickCtx{this, album.id};
+        lv_obj_add_event_cb(entry, OnPickAlbum, LV_EVENT_CLICKED, pick);
+        lv_obj_add_event_cb(entry, OnPickDeleted, LV_EVENT_DELETE, pick);
+
+        auto *name = lv_label_create(entry);
+        lv_obj_set_pos(name, 12, 4);
+        lv_obj_set_size(name, card_w - 90, 21);
+        lv_obj_set_style_text_font(name, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(name, Color(p.text), 0);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_label_set_text(name, album.name.c_str());
+        RemoveInteraction(name);
+
+        const bool already = std::any_of(album.tracks.begin(), album.tracks.end(),
+            [&](const Track &track) { return track.id == pending_add_track_.id; });
+        const std::string count_text = already
+            ? std::string("Đã có trong album")
+            : std::to_string(album.tracks.size()) + " bài hát";
+        auto *count = lv_label_create(entry);
+        lv_obj_set_pos(count, 12, 25);
+        lv_obj_set_size(count, card_w - 90, 18);
+        lv_obj_set_style_text_font(count, jetson::BuiltinTextFaceAt(13), 0);
+        lv_obj_set_style_text_color(count, Color(p.sub_text), 0);
+        lv_label_set_long_mode(count, LV_LABEL_LONG_DOT);
+        lv_label_set_text(count, count_text.c_str());
+        RemoveInteraction(count);
+    }
+
+    auto *create = lv_obj_create(card);
+    lv_obj_remove_style_all(create);
+    lv_obj_set_size(create, lv_pct(100), 44);
+    lv_obj_set_style_radius(create, 12, 0);
+    lv_obj_set_style_bg_color(create, Color(p.accent), 0);
+    lv_obj_set_style_bg_opa(create, LV_OPA_COVER, 0);
+    lv_obj_add_flag(create, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(create, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(create, OnCreateAlbum, LV_EVENT_CLICKED, this);
+    auto *create_label = lv_label_create(create);
+    lv_obj_center(create_label);
+    lv_obj_set_style_text_font(create_label, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(create_label, lv_color_white(), 0);
+    lv_label_set_text(create_label, LV_SYMBOL_PLUS "  Tạo album mới");
+    RemoveInteraction(create_label);
 }
 
-void MusicView::OnPlayerPrevious(lv_event_t *e) {
-    PlayerController::Instance().Previous();
+void MusicView::CloseAddModal() {
+    if (!add_modal_) return;
+    lv_obj_t *modal = add_modal_;
+    add_modal_ = nullptr;
+    // Async: this is normally reached from a callback owned by the modal itself
+    // (backdrop, close button, or one of the album rows).
+    lv_obj_delete_async(modal);
 }
 
-void MusicView::OnPlayerNext(lv_event_t *e) {
-    PlayerController::Instance().Next();
+void MusicView::OnAddToAlbum(lv_event_t *e) {
+    auto *ctx = static_cast<TrackCtx *>(lv_event_get_user_data(e));
+    if (!ctx || !ctx->self) return;
+    LvglLockGuard lock;
+    ctx->self->OpenAddToAlbumModal(ctx->index);
+}
+
+void MusicView::OnAddModalDismiss(lv_event_t *e) {
+    auto *self = static_cast<MusicView *>(lv_event_get_user_data(e));
+    if (!self) return;
+    LvglLockGuard lock;
+    self->CloseAddModal();
+}
+
+void MusicView::OnAddModalDeleted(lv_event_t *e) {
+    auto *self = static_cast<MusicView *>(lv_event_get_user_data(e));
+    auto *target = static_cast<lv_obj_t *>(lv_event_get_current_target(e));
+    // Only clear when this really is the live modal: an earlier modal may still
+    // be finishing its async delete after a new one has been opened.
+    if (self && self->add_modal_ == target) self->add_modal_ = nullptr;
+}
+
+void MusicView::OnPickDeleted(lv_event_t *e) {
+    delete static_cast<PickCtx *>(lv_event_get_user_data(e));
+}
+
+void MusicView::OnPickAlbum(lv_event_t *e) {
+    auto *ctx = static_cast<PickCtx *>(lv_event_get_user_data(e));
+    if (!ctx || !ctx->self) return;
+    LvglLockGuard lock;
+    auto *self = ctx->self;
+    // Copy the id: ctx dies with the modal we are about to close.
+    const std::string album_id = ctx->album_id;
+    auto &library = UserLibrary::Instance();
+    UserAlbum stored;
+    const bool known = library.GetAlbum(album_id, stored);
+    if (library.AddTrack(album_id, self->pending_add_track_))
+        self->Notify("Đã thêm vào " + (known ? stored.name : std::string("album")));
+    else
+        self->Notify("Album này không còn nữa");
+    self->CloseAddModal();
+}
+
+void MusicView::OnCreateAlbum(lv_event_t *e) {
+    auto *self = static_cast<MusicView *>(lv_event_get_user_data(e));
+    if (!self) return;
+    LvglLockGuard lock;
+    auto &library = UserLibrary::Instance();
+    const std::string id = library.CreateAlbum("");
+    UserAlbum stored;
+    library.GetAlbum(id, stored);
+    library.AddTrack(id, self->pending_add_track_);
+    self->Notify("Đã tạo \"" + stored.name + "\" và thêm bài hát");
+    self->CloseAddModal();
 }
 
 void MusicView::OnPlayerTimer(lv_timer_t *t) {
     auto *self = static_cast<MusicView *>(lv_timer_get_user_data(t));
     LvglLockGuard lock;
-    self->RefreshPlayerBar();
+    // Only the album "now playing" row highlight needs refreshing here; the
+    // Dynamic Island owns the transport UI. Gate on the snapshot revision so we
+    // are not restyling rows every tick.
+    const auto snapshot = PlayerController::Instance().Snapshot();
+    if (snapshot.revision != self->rendered_player_revision_) {
+        self->rendered_player_revision_ = snapshot.revision;
+        self->RefreshTrackRows();
+    }
 }
 
 } // namespace home

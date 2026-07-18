@@ -1,0 +1,14 @@
+[Unit]
+Description=Jetson Nano PWM fan curve
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/jetson-fan-curve.sh
+Restart=always
+RestartSec=3
+# Leave the fan at full speed if the daemon ever dies, never at 0.
+ExecStopPost=/bin/sh -c 'echo 255 > /sys/devices/pwm-fan/target_pwm || true'
+
+[Install]
+WantedBy=multi-user.target

@@ -132,17 +132,29 @@ static int transition_rotate = 0;
 static int transition_from_app = -1; /* app card shown while closing */
 static int transition_show_app = -1; /* app card the current frame draws */
 static double transition_scale = 1.0;/* 1 = fills panel, 0 = tucked in island */
+/* Firmware hand-off: play only the second (bloom) half of the zoom, then hold
+ * the card as a splash until the browser is actually on screen. */
+static int transition_open_only = 0;
+static long transition_hold = 0;     /* ms the splash started waiting, 0 = no */
+static long transition_ready = 0;    /* ms Chromium first mapped a window */
 static Window toast = None, toast_target = None;
 static Pixmap toast_buffer = None;
 static int toast_app = -1;
 static long toast_start = 0, toast_until = 0;
 static char toast_message[96];
 #define TRANS_MS 460  /* island zoom: close over 0..0.5, open over 0.5..1 */
+/* Hand-off splash: how long the bloomed card waits for Chromium to map a
+ * window before lifting anyway, so a browser that fails to start can never
+ * leave the panel covered for good. */
+#define HANDOFF_MAX_MS 15000
+/* Chromium maps its window before it has painted the page, so the splash
+ * outstays the map by this much rather than landing on a white flash. */
+#define HANDOFF_SETTLE_MS 450
 #define TOAST_MAX_W 318
 #define TOAST_MAX_H 68
 
 static void fetch_window_title(Window w, char *out, size_t cap);
-static void redraw(int bat_level, int bat_charging, int wifi_signal);
+static void redraw(int bat_level, int bat_charging, int wifi_signal, int eth);
 static long now_ms(void);
 static void start_switch(Window target);
 static void inspect_notification_window(Window w);
@@ -216,8 +228,18 @@ static int ina_battery_read(int *level, int *charging)
     if (pct > 100) pct = 100;
     *level = pct;
     *charging = 0;
-    if (ina_read16(0x04, &current_raw))
-        *charging = (int16_t)current_raw > 500; /* >50mA at 100uA/step */
+    if (ina_read16(0x04, &current_raw)) {
+        /* Same orientation knob as the firmware (src/power/ina219.h): after the
+         * multiply a positive current always means "into the pack", so both
+         * bars agree on charging regardless of how the shunt is wired. */
+        const char *s = getenv("INA219_CHARGE_SIGN");
+        const char *t = getenv("INA219_CHARGE_MA");
+        float sign = (s && strtof(s, NULL) < 0.0f) ? -1.0f : 1.0f;
+        float thresh = t ? strtof(t, NULL) : 50.0f;
+        if (thresh < 0.0f) thresh = -thresh;
+        float ma = (float)(int16_t)current_raw * 0.1f * sign; /* 100uA/step */
+        *charging = ma > thresh;
+    }
     return 1;
 }
 
@@ -296,6 +318,31 @@ static int wifi_signal(void)
     }
     closedir(d);
     return up ? 70 : 0;
+}
+
+/* Wired link, using the same sysfs carrier check as the firmware status bar
+ * (src/net/ethernet_status.cc) so both bars agree on what "connected" means.
+ * Covers the onboard eth0 and USB adapters, which enumerate as eth1/enx<mac>.
+ * A few microseconds per call, so the 1 Hz status refresh can just poll it. */
+static int ethernet_up(void)
+{
+    DIR *d = opendir("/sys/class/net");
+    if (!d) return 0;
+    struct dirent *e;
+    int up = 0;
+    while (!up && (e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "eth", 3) != 0 &&
+            strncmp(e->d_name, "en", 2) != 0) continue;
+        char path[512];
+        snprintf(path, sizeof(path), "/sys/class/net/%s/carrier", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;   /* read fails while the interface is down = no link */
+        int link = 0;
+        if (fscanf(f, "%d", &link) == 1 && link == 1) up = 1;
+        fclose(f);
+    }
+    closedir(d);
+    return up;
 }
 
 static int bluetooth_up(void)
@@ -542,6 +589,7 @@ static int icon_for_entry(const char *name, const char *url)
         {"messenger.com", "messenger"}, {"facebook.com", "facebook"},
         {"teams.microsoft", "teams"}, {"chatgpt.com", "chatgpt"},
         {"chat.openai.com", "chatgpt"}, {"runpod", "pods"},
+        {"mail.google.com", "gmail"},
     };
     for (size_t u = 0; u < sizeof(by_url) / sizeof(by_url[0]); u++)
         if (contains_ci(url, by_url[u].frag))
@@ -565,8 +613,8 @@ static void draw_app_icon(Drawable d, int app, int cx, int cy, int size)
         return;
     }
 
-    /* Letter disc fallback for entries without embedded artwork (Gmail,
-     * unrecognised pods). */
+    /* Letter disc fallback for entries without embedded artwork (unrecognised
+     * pods and any free-form launcher entry). */
     const char *n = (app >= 0 && app < napps) ? apps[app].name : "Chromium";
     int x = cx - size / 2, y = cy - size / 2;
     XSetForeground(dpy, gc, px(app_color(app)));
@@ -645,13 +693,18 @@ static void draw_queue(Drawable d)
     }
 }
 
-static void draw_signal(Drawable d, int x, int y, int signal)
+/* RJ45 plug, drawn at the same weight as draw_wifi so wired and wireless read
+ * as one icon set. The panel has no modem, so this replaces the old signal
+ * bars entirely -- they only ever mirrored the Wi-Fi link. */
+static void draw_ethernet(Drawable d, int cx, int cy, int connected)
 {
-    int bars = signal >= 80 ? 4 : signal >= 55 ? 3 : signal >= 30 ? 2 : 1;
-    for (int i = 0; i < 4; i++) {
-        XSetForeground(dpy, gc, px(i < bars ? 0xffffff : 0x4b5563));
-        XFillRectangle(dpy, d, gc, x + i * 4, y + 9 - i * 3, 3, 4 + i * 3);
-    }
+    XSetForeground(dpy, gc, px(connected ? 0xffffff : 0x4b5563));
+    XDrawRectangle(dpy, d, gc, cx - 8, cy - 7, 16, 10);   /* connector body  */
+    XDrawLine(dpy, d, gc, cx - 3, cy + 3, cx - 3, cy + 7);/* latch tab       */
+    XDrawLine(dpy, d, gc, cx + 3, cy + 3, cx + 3, cy + 7);
+    XDrawLine(dpy, d, gc, cx - 3, cy + 7, cx + 3, cy + 7);
+    for (int i = -2; i <= 2; i++)                          /* contact pins   */
+        XDrawLine(dpy, d, gc, cx + i * 3, cy - 7, cx + i * 3, cy - 4);
 }
 
 static void draw_bluetooth(Drawable d, int cx, int cy, int on)
@@ -664,7 +717,7 @@ static void draw_bluetooth(Drawable d, int cx, int cy, int on)
     XDrawLine(dpy, d, gc, cx + 6, cy + 3, cx, cy + 9);
 }
 
-static void redraw(int bat_level, int bat_charging, int wifi)
+static void redraw(int bat_level, int bat_charging, int wifi, int eth)
 {
     Drawable d = bar_buffer != None ? bar_buffer : bar;
     XSetForeground(dpy, gc, px(COL_BAR_BG));
@@ -685,16 +738,6 @@ static void redraw(int bat_level, int bat_charging, int wifi)
     XSetForeground(dpy, gc, px(COL_TEXT));
     draw_string(d, font_big, 14,
                 (BAR_H + font_big->ascent - font_big->descent) / 2, ts);
-    /* Firmware weather affordance. */
-    int tx = 20 + XTextWidth(font_big, ts, (int)strlen(ts));
-    XDrawArc(dpy, d, gc, tx, 14, 12, 12, 0, 360 * 64);
-    for (int i = 0; i < 8; i += 2) {
-        int dx = (i == 0 ? 0 : i == 2 ? 8 : i == 4 ? 0 : -8);
-        int dy = (i == 0 ? -9 : i == 2 ? 0 : i == 4 ? 9 : 0);
-        XDrawLine(dpy, d, gc, tx + 6 + dx, 20 + dy,
-                  tx + 6 + dx + (dx ? (dx > 0 ? 3 : -3) : 0),
-                  20 + dy + (dy ? (dy > 0 ? 3 : -3) : 0));
-    }
 
     /* Center: the resting island pill. Single click cycles the switcher,
      * double click exits. Shows the active window's title (and a position
@@ -707,8 +750,8 @@ static void redraw(int bat_level, int bat_charging, int wifi)
     fill_round_rect(d, pillx, PILL_Y, PILL_W, PILL_H, PILL_H / 2, 0);
     draw_queue(d);
 
-    /* Right cluster, in the same order as firmware: signal, Wi-Fi, Bluetooth,
-     * charging, battery, keyboard language and power. */
+    /* Right cluster, in the same order as firmware: link (Ethernet or Wi-Fi),
+     * Bluetooth, charging, battery, keyboard language and power. */
     char lang[8], airplane[8];
     setting_get("input", "kbd_lang", "en", lang, sizeof(lang));
     setting_get("system", "airplane_mode", "0", airplane, sizeof(airplane));
@@ -753,10 +796,14 @@ static void redraw(int bat_level, int bat_charging, int wifi)
         XDrawLine(dpy, d, gc, x - 22, 21, x - 2, 16);
         XDrawLine(dpy, d, gc, x - 12, 19, x - 17, 12);
         XDrawLine(dpy, d, gc, x - 12, 19, x - 15, 27);
+        /* A cable is not a radio, so the wired icon survives airplane mode. */
+        if (eth) draw_ethernet(d, x - 40, 21, 1);
     } else {
         draw_bluetooth(d, x - 8, 21, bluetooth_up());
-        draw_wifi(d, x - 31, 25, wifi > 0);
-        draw_signal(d, x - 63, 15, wifi);
+        /* One connectivity slot, wired wins: the Wi-Fi arcs would otherwise
+         * read as "offline" while the panel is perfectly online over LAN. */
+        if (eth) draw_ethernet(d, x - 31, 21, 1);
+        else draw_wifi(d, x - 31, 25, wifi > 0);
     }
 
     /* One copy makes the entire strip appear atomically. This removes the
@@ -1196,11 +1243,82 @@ static void start_cycle(void)
     transition_rotate = 1;
 }
 
+/* Continue the island zoom the firmware started. The firmware collapses the
+ * app card *into* the island and leaves the panel black, then exits; we come
+ * up and bloom the same card back *out* of the island. Across the process
+ * swap it reads as one motion instead of two unrelated ones.
+ *
+ * The card then holds as a splash until Chromium maps a window: the browser
+ * needs a second or two to start, and lifting the cover on schedule would
+ * expose a bare black panel in the middle of the transition. */
+static void start_handoff(void)
+{
+    const char *url = getenv("JETSON_KIOSK_HANDOFF_URL");
+    unsigned W = (unsigned)sw, H = (unsigned)(sh - BAR_H);
+    if (transition == None) {
+        XSetWindowAttributes a;
+        a.override_redirect = True;
+        a.background_pixel = px(COL_BAR_BG);
+        a.event_mask = ExposureMask;
+        transition = XCreateWindow(dpy, root, 0, BAR_H, W, H, 0,
+                                   CopyFromParent, InputOutput, CopyFromParent,
+                                   CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
+        transition_buffer = XCreatePixmap(dpy, transition, W, H,
+                                          (unsigned)DefaultDepth(dpy, DefaultScreen(dpy)));
+    }
+    /* Show the launcher entry we are opening; an unknown URL falls back to the
+     * plain Chromium mark, which is what is starting anyway. */
+    int app = -1;
+    if (url && *url)
+        for (int i = 0; i < napps; i++)
+            if (strcmp(apps[i].url, url) == 0) { app = i; break; }
+    transition_target = None;
+    transition_rotate = 0;
+    transition_switched = 1;      /* nothing to swap: no windows exist yet */
+    transition_open_only = 1;
+    transition_hold = 0;
+    transition_ready = 0;
+    transition_from_app = app;
+    transition_show_app = app;
+    transition_scale = 0.0;
+    transition_start = now_ms();
+    XMoveResizeWindow(dpy, transition, 0, BAR_H, W, H);
+    XMapRaised(dpy, transition);
+}
+
 static void update_transition(long now)
 {
     if (!transition_start || transition == None) return;
-    double t = (double)(now - transition_start) / (double)TRANS_MS;
+
+    /* Hand-off splash: the bloom has finished, so the card just sits there
+     * until the browser is really on screen (or gives up trying). */
+    if (transition_hold) {
+        if (nwins > 0 && !transition_ready) transition_ready = now;
+        if ((transition_ready && now - transition_ready >= HANDOFF_SETTLE_MS) ||
+            now - transition_hold >= HANDOFF_MAX_MS) {
+            XUnmapWindow(dpy, transition);
+            transition_start = 0;
+            transition_hold = 0;
+            transition_ready = 0;
+            transition_open_only = 0;
+            XFlush(dpy);
+        }
+        return;
+    }
+
+    /* The hand-off enters at the midpoint, so its bloom runs for TRANS_MS/2 --
+     * the same length as the collapse the firmware just played. */
+    double raw = (double)(now - transition_start) / (double)TRANS_MS;
+    double t = transition_open_only ? 0.5 + raw : raw;
     if (t >= 1.0) {
+        if (transition_open_only) {
+            transition_scale = 1.0;
+            transition_show_app = transition_from_app;
+            transition_hold = now;       /* freeze the card as the splash */
+            XRaiseWindow(dpy, transition);
+            draw_transition();
+            return;
+        }
         XUnmapWindow(dpy, transition);   /* reveal the already-swapped app */
         transition_start = 0;
         transition_target = None;
@@ -1230,7 +1348,9 @@ static void update_transition(long now)
             }
             transition_switched = 1;
         }
-        transition_show_app = effective_app(0);
+        /* On a hand-off there is no window to read the app from yet, so keep
+         * showing the launcher entry the firmware handed us. */
+        if (!transition_open_only) transition_show_app = effective_app(0);
     }
     XRaiseWindow(dpy, transition);
     draw_transition();
@@ -1424,10 +1544,14 @@ int main(void)
     XMapRaised(dpy, bar);
     load_apps();
     manage_existing();
+    /* Only when the firmware handed the panel over: a bar started on its own
+     * has no collapse to continue, and covering the screen would be wrong. */
+    if (getenv("JETSON_KIOSK_HANDOFF_URL")) start_handoff();
 
-    int bat_level = 100, bat_charging = 0, wifi = 0;
+    int bat_level = 100, bat_charging = 0, wifi = 0, eth = 0;
     battery_read(&bat_level, &bat_charging);
     wifi = wifi_signal();
+    eth = ethernet_up();
 
     long press_start = 0; /* monotonic ms of a pill ButtonPress, 0 = idle */
     int ticks = 0;
@@ -1435,7 +1559,7 @@ int main(void)
     long menu_opened = 0;
     struct pollfd pfd = {ConnectionNumber(dpy), POLLIN, 0};
 
-    redraw(bat_level, bat_charging, wifi);
+    redraw(bat_level, bat_charging, wifi, eth);
     for (;;) {
         int dirty = 0;
         while (XPending(dpy)) {
@@ -1564,13 +1688,16 @@ int main(void)
         update_transition(frame_now);
         update_toast(frame_now);
         if (queue_anim_start) dirty = 1;
-        if (dirty) redraw(bat_level, bat_charging, wifi);
+        if (dirty) redraw(bat_level, bat_charging, wifi, eth);
         /* Short poll while the pill is held so the launcher can drop at the
          * long-press threshold instead of waiting for the release. 16 ms
          * animation frames (~60 fps) keep the drop/switch/toast motion
          * smooth; everything is double-buffered so the extra frames only
          * cost XCopyArea calls, not full redraws. */
-        int animating = menu_anim_start || transition_start || toast_start || queue_anim_start;
+        /* A held hand-off splash is a still frame, not an animation: polling it
+         * at 60 fps would spin the CPU for the seconds Chromium takes to load. */
+        int animating = menu_anim_start || (transition_start && !transition_hold) ||
+                        toast_start || queue_anim_start;
         int timeout = press_start ? 30 : (animating ? 16 : 250);
         if (poll(&pfd, 1, timeout) == 0) {
             if (press_start) {
@@ -1582,6 +1709,10 @@ int main(void)
             frame_now = now_ms();
             if (frame_now - last_status >= 1000) {
                 last_status = frame_now;
+                /* Wired link is a sysfs read, not a shell-out, so refresh it
+                 * every second: plugging the cable shows up almost at once,
+                 * matching the firmware bar. Battery/Wi-Fi stay on 5 s. */
+                eth = ethernet_up();
                 if (++ticks % 5 == 0) {
                     battery_read(&bat_level, &bat_charging);
                     wifi = wifi_signal();
@@ -1589,7 +1720,7 @@ int main(void)
                 if (menu_open && menu_opened &&
                     frame_now - menu_opened >= MENU_AUTOCLOSE_S * 1000L)
                     close_menu();
-                redraw(bat_level, bat_charging, wifi);
+                redraw(bat_level, bat_charging, wifi, eth);
             }
         }
     }

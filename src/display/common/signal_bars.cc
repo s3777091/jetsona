@@ -35,10 +35,17 @@ lv_obj_t *CreateSignalBars(lv_obj_t *parent, int signal_percent) {
     const int strength = std::clamp(signal_percent, 0, 100);
     const int filled = SignalBarCount(strength);
 
+    // Purely decorative: plain containers are clickable by default and do not
+    // bubble, so leaving the flag on would make the bars swallow the press
+    // meant for the WiFi/Bluetooth row they sit in.
+    constexpr auto kDecorative = (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE |
+                                                 LV_OBJ_FLAG_CLICK_FOCUSABLE |
+                                                 LV_OBJ_FLAG_SCROLLABLE);
+
     auto *container = lv_obj_create(parent);
     lv_obj_remove_style_all(container);
     lv_obj_set_size(container, 36, 22);
-    lv_obj_clear_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(container, kDecorative);
     lv_obj_set_style_pad_all(container, 0, 0);
     lv_obj_set_flex_flow(container, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(container, 2, 0);
@@ -50,7 +57,7 @@ lv_obj_t *CreateSignalBars(lv_obj_t *parent, int signal_percent) {
         lv_obj_remove_style_all(bar);
         lv_obj_set_size(bar, 6, kBarHeights[i]);
         lv_obj_set_style_radius(bar, 1, 0);
-        lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(bar, kDecorative);
         lv_obj_set_style_bg_color(bar, i < filled ? lv_color_white() : Color(0x555555), 0);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     }

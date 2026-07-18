@@ -28,8 +28,8 @@ const lv_img_dsc_t *AppIconDsc(const char *name);
 lv_obj_t *CreateAppIcon(lv_obj_t *parent, const char *name, int box_px);
 
 // Swap the source of an image created by CreateAppIcon — for stateful icons
-// (wifi/no-wifi, speaker/speaker-mute, cellular-2..5). Recomputes the
-// aspect-fitted size for the new source. No-op when the PNG is missing.
+// (wifi/no-wifi/ethernet, speaker/speaker-mute). Recomputes the aspect-fitted
+// size for the new source. No-op when the PNG is missing.
 void SetAppIcon(lv_obj_t *img, const char *name, int box_px);
 
 // Load every PNG under assets/icons/app into the cache and run the decoder

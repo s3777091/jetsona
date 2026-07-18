@@ -31,6 +31,7 @@ public:
     SettingsView(lv_obj_t *parent, int width, int height,
                  jetson::IWifiManager &wifi, jetson::IBluetoothManager &bluetooth,
                  ClosedCb on_closed);
+    ~SettingsView() override;
 
     void SetBrightnessApplier(std::function<void(int)> cb) { brightness_cb_ = std::move(cb); }
     void SetDisplayPreferencesApplier(std::function<void()> cb) {
@@ -76,6 +77,7 @@ private:
         CloudFonts,
         Power,
         LockTimeout,
+        Fan,
         About,
     };
 
@@ -144,6 +146,13 @@ private:
     lv_obj_t *vol_slider_ = nullptr;
     lv_obj_t *mute_switch_ = nullptr;
     lv_obj_t *vol_icon_ = nullptr; // speaker / speaker-mute PNG beside the slider
+
+    // Fan pane. The readout row is refreshed by a timer while the page is open
+    // so RPM/temperature track the curve daemon instead of going stale.
+    lv_obj_t *fan_slider_ = nullptr;
+    lv_obj_t *fan_value_label_ = nullptr;
+    lv_obj_t *fan_readout_label_ = nullptr;
+    lv_timer_t *fan_poll_ = nullptr;
 
     // General / cloud-font pane state.
     lv_obj_t *font_status_label_ = nullptr;
@@ -222,6 +231,9 @@ private:
     void BuildCloudFonts();
     void BuildGeneralPower();
     void BuildGeneralLockTimeout();
+    void BuildGeneralFan();
+    void RefreshFanReadout();
+    void StopFanPoll();
     void BuildGeneralAbout();
     void GeneralPageHeader(const char *title);
     void MakeOptionRow(lv_obj_t *card, const char *title, const char *sub,
@@ -243,7 +255,11 @@ private:
     void WifiOpenConnectSheet(const jetson::WifiNetwork &network);
     void WifiLoadDetails(const jetson::WifiNetwork &network);
     void WifiOpenDetails(const jetson::WifiDetails &details);
-    void WifiDoConnect(const std::string &ssid, const std::string &pw);
+    // offer_password_retry re-opens the password sheet when the attempt fails,
+    // so a saved profile whose stored password no longer works is recoverable
+    // without first having to Forget the network.
+    void WifiDoConnect(const std::string &ssid, const std::string &pw,
+                       bool offer_password_retry = false);
     void WifiDoForget(const std::string &ssid);
 
     // ---- Bluetooth ----
@@ -324,6 +340,11 @@ private:
     static void OnTzSelected(lv_event_t *e);
     static void OnSleepSelected(lv_event_t *e);
     static void OnOpenGeneralLockTimeout(lv_event_t *e);
+    static void OnOpenGeneralFan(lv_event_t *e);
+    static void OnFanModeSelected(lv_event_t *e);
+    static void OnFanProfileSelected(lv_event_t *e);
+    static void OnFanSpeedChanged(lv_event_t *e);
+    static void OnFanPollTick(lv_timer_t *t);
     static void OnFontSelected(lv_event_t *e);
     static void OnRefreshFontCatalog(lv_event_t *e);
 

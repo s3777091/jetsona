@@ -45,7 +45,12 @@ private:
         MusicView *self = nullptr;
         size_t index = 0;
         lv_obj_t *row = nullptr;
-        lv_obj_t *action = nullptr;
+    };
+
+    // Per-row context for the "add to album" modal's album picker.
+    struct PickCtx {
+        MusicView *self = nullptr;
+        std::string album_id;
     };
 
     void BuildBody();
@@ -63,12 +68,19 @@ private:
     void ClearArtwork();
     void Notify(const std::string &message);
 
+    /* User-owned albums. The list lives where the Zing "Radio" rail used to be,
+     * so there is no separate library screen; the "+" on a track row opens a
+     * modal to pick (or create) the album to add it to. */
+    void RenderUserAlbums();
+    void OpenUserAlbum(const std::string &album_id);
+    void OpenAddToAlbumModal(size_t index);
+    void CloseAddModal();
+
     lv_obj_t *CreateArtwork(lv_obj_t *parent, const std::string &path,
                             int size, bool circular);
     lv_obj_t *CreateSkeletonCard(lv_obj_t *rail, bool circular);
     void PlayTrack(size_t index);
     void PlayAll();
-    void RefreshPlayerBar();
     void RefreshTrackRows();
 
     static void OnCardEvent(lv_event_t *e);
@@ -78,29 +90,25 @@ private:
     static void OnPlayAll(lv_event_t *e);
     static void OnTrackEvent(lv_event_t *e);
     static void OnTrackDeleted(lv_event_t *e);
-    static void OnPlayerToggle(lv_event_t *e);
-    static void OnPlayerPrevious(lv_event_t *e);
-    static void OnPlayerNext(lv_event_t *e);
     static void OnPlayerTimer(lv_timer_t *t);
+    static void OnAddToAlbum(lv_event_t *e);
+    static void OnAddModalDismiss(lv_event_t *e);
+    static void OnAddModalDeleted(lv_event_t *e);
+    static void OnPickAlbum(lv_event_t *e);
+    static void OnPickDeleted(lv_event_t *e);
+    static void OnCreateAlbum(lv_event_t *e);
 
     lv_obj_t *page_ = nullptr;
-    lv_obj_t *player_bar_ = nullptr;
-    lv_obj_t *player_art_host_ = nullptr;
-    lv_obj_t *player_art_obj_ = nullptr;
-    lv_obj_t *player_title_ = nullptr;
-    lv_obj_t *player_artist_ = nullptr;
-    lv_obj_t *player_toggle_label_ = nullptr;
-    lv_obj_t *player_progress_ = nullptr;
     lv_obj_t *loading_label_ = nullptr;
+    lv_obj_t *add_modal_ = nullptr;
     lv_timer_t *player_timer_ = nullptr;
+    jetson::music::Track pending_add_track_;
 
     bool loading_ = false;
     bool album_mode_ = false;
     bool started_ = false;
     std::atomic<uint64_t> request_generation_{0};
     uint64_t rendered_player_revision_ = 0;
-    uint64_t notified_player_error_revision_ = 0;
-    std::string rendered_player_art_;
     jetson::music::CatalogItem pending_item_;
     jetson::music::DiscoverData discovery_;
     jetson::music::Album album_;
@@ -108,7 +116,6 @@ private:
     std::vector<lv_obj_t *> image_objects_;
     std::vector<std::unique_ptr<LvglImage>> artwork_;
     std::unordered_map<std::string, LvglImage *> artwork_by_path_;
-    std::unique_ptr<LvglImage> player_artwork_;
     NotifyCb notify_cb_;
 };
 

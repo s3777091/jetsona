@@ -189,21 +189,44 @@ std::string WifiManager::ActiveSsid() const {
 
 int WifiManager::ActiveSignal() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    // Whether we are on WiFi is a property of the device, not of the AP scan
+    // cache. Asking the cache first made the status bar show "no WiFi" on a
+    // perfectly good link whenever NetworkManager had aged out its scan
+    // results (or had only ever cached the joined BSSID), so the device state
+    // is now the authority and the cache only supplies the bar count.
+    std::string devices;
+    if (RunShellCommand("nmcli -w 5 -t --escape yes -f TYPE,STATE device status",
+                        devices) != 0)
+        return -1;
+    bool connected = false;
+    {
+        std::istringstream iss(devices);
+        std::string line;
+        while (std::getline(iss, line)) {
+            auto f = splitNmcliFields(line);
+            if (f.size() < 2 || f[0] != "wifi") continue;
+            if (f[1] == "connected") { connected = true; break; }
+        }
+    }
+    if (!connected) return -1;
+
     std::string out;
     // Cached AP list only: `--rescan no` answers from NetworkManager's last
     // scan in ~100 ms and never blocks the caller behind a 2-5 s driver scan.
     if (RunShellCommand("nmcli -w 5 -t --escape no -f IN-USE,SIGNAL "
-                        "device wifi list --rescan no", out) != 0)
-        return -1;
-    std::istringstream iss(out);
-    std::string line;
-    while (std::getline(iss, line)) {
-        std::string in_use, signal;
-        splitFirst(line, ':', in_use, signal);
-        if (in_use.find('*') == std::string::npos) continue;
-        return std::min(100, std::max(0, toInt(signal)));
+                        "device wifi list --rescan no", out) == 0) {
+        std::istringstream iss(out);
+        std::string line;
+        while (std::getline(iss, line)) {
+            std::string in_use, signal;
+            splitFirst(line, ':', in_use, signal);
+            if (in_use.find('*') == std::string::npos) continue;
+            return std::min(100, std::max(0, toInt(signal)));
+        }
     }
-    return -1;
+    // Connected, but the cache cannot say how strongly. Report a mid-strength
+    // link rather than -1, which callers read as "not connected".
+    return 50;
 }
 
 std::vector<WifiNetwork> WifiManager::Scan() {

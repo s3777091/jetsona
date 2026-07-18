@@ -188,6 +188,14 @@ private:
     static void OnSplashBar(void *var, int32_t v);
     static void OnSplashGone(lv_anim_t *a);
 
+    /* First half of the Chromium hand-off zoom: the app card collapses into
+     * the island and leaves the panel black, which is the frame the
+     * framebuffer keeps while Xorg starts. jetson_kiosk_bar then blooms the
+     * same card back out, so the two processes read as one animation.
+     * Returns the milliseconds to wait before tearing LVGL down. */
+    int PlayChromiumHandoff(const std::string &url);
+    static void OnHandoffCollapse(void *var, int32_t v);
+
     StandbyState standby_state_ = StandbyState::Awake;
     esp_timer_handle_t refresh_timer_ = nullptr;
 
@@ -260,6 +268,13 @@ private:
      * hands off to the welcome animation in the Dynamic Island. */
     lv_obj_t *splash_ = nullptr;
     std::unique_ptr<LvglImage> splash_logo_;
+    // Chromium hand-off card. Lives until the process exits, so nothing
+    // tears it down again.
+    lv_obj_t *handoff_cover_ = nullptr;
+    lv_obj_t *handoff_card_ = nullptr;
+    lv_obj_t *handoff_icon_ = nullptr;
+    std::unique_ptr<LvglImage> handoff_icon_image_;
+    int handoff_icon_w_ = 0, handoff_icon_h_ = 0;
 };
 
 } // namespace home

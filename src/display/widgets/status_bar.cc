@@ -1,5 +1,4 @@
 #include "display/widgets/status_bar.h"
-#include "display/common/airplane_icon.h"
 #include "display/common/lvgl_utils.h"
 #include "display/core/app_icons.h"
 #include "display/core/lvgl_image.h"
@@ -47,18 +46,9 @@ constexpr int kAutoCloseMs = 6000;
 // Box size for the PNG status icons (assets/icons/app, 28x28 sources).
 constexpr int kStatusIconPx = 20;
 // Radio state poll period. nmcli/bluetoothctl shell-outs run on the worker
-// thread, so this only bounds how stale the wifi/bt/cellular icons can be.
+// thread, so this only bounds how stale the wifi/bt icons can be.
 constexpr auto kConnPollInterval = std::chrono::seconds(10);
 constexpr auto kConnPollTick = std::chrono::milliseconds(500);
-
-// cellular-2..5 mirror the active WiFi link quality (the DS-02 has no modem;
-// the bars are the iPhone-like "signal" affordance next to the WiFi icon).
-const char *CellularIconForSignal(int signal) {
-    if (signal >= 80) return "cellular-5";
-    if (signal >= 55) return "cellular-4";
-    if (signal >= 30) return "cellular-3";
-    return "cellular-2";
-}
 
 void RemoveInteraction(lv_obj_t *obj) {
     if (!obj) return;
@@ -138,8 +128,8 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     // after the user changed the global font size.
     right_cluster_ = lv_obj_create(status_strip_);
     lv_obj_remove_style_all(right_cluster_);
-    // Wide enough for the full set: VPN + cellular + wifi + bt + charging
-    // bolt + battery + lang + power (still clear of the centered island).
+    // Wide enough for the full set: VPN + link + bt + charging bolt +
+    // battery + lang + power (still clear of the centered island).
     lv_obj_set_size(right_cluster_, 250, lv_pct(100));
     lv_obj_align(right_cluster_, LV_ALIGN_RIGHT_MID, -10, 0);
     lv_obj_set_flex_flow(right_cluster_, LV_FLEX_FLOW_ROW);
@@ -163,32 +153,25 @@ StatusBar::StatusBar(lv_obj_t *parent) {
         *out = o;
     };
 
-    // One short line fits before the resting island: time, numeric day/month,
-    // and a small weather affordance. The full weekday/date stays out of the
-    // center of the wallpaper so it does not duplicate this status information.
+    // One short line fits before the resting island: time and numeric
+    // day/month. The full weekday/date stays out of the center of the
+    // wallpaper so it does not duplicate this status information.
     datetime_label_ = lv_label_create(left_cluster_);
     lv_obj_set_style_text_font(datetime_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(datetime_label_, lv_color_white(), 0);
     lv_label_set_text(datetime_label_, "--:--  --/--");
 
-    // Weather affordance. Recolored white like the rest of the strip so the
-    // monochrome icon set stays visible on any wallpaper.
-    weather_icon_ = jetson::ui::CreateAppIcon(left_cluster_, "sun", 18);
-    lv_obj_set_style_image_recolor(weather_icon_, lv_color_white(), 0);
-    lv_obj_set_style_image_recolor_opa(weather_icon_, LV_OPA_COVER, 0);
-
-    airplane_icon_ = jetson::ui::CreateAirplaneIcon(right_cluster_, lv_color_white());
+    // airplans.png and vpn.png ship with their own artwork (a near-white plane,
+    // a magenta shield), so neither goes through add_icon's white recolor --
+    // tinting them would throw away the color the assets were drawn with.
+    airplane_icon_ = jetson::ui::CreateAppIcon(right_cluster_, "airplans", kStatusIconPx);
     lv_obj_add_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
 
-    // Same green the old "VPN" text badge used.
     vpn_icon_ = jetson::ui::CreateAppIcon(right_cluster_, "vpn", kStatusIconPx);
-    lv_obj_set_style_image_recolor(vpn_icon_, Color(0x30c967), 0);
-    lv_obj_set_style_image_recolor_opa(vpn_icon_, LV_OPA_COVER, 0);
     lv_obj_add_flag(vpn_icon_, LV_OBJ_FLAG_HIDDEN);
 
-    // Signal bars next to WiFi, iPhone-style. Not clickable: it mirrors the
-    // WiFi link, so the WiFi icon beside it is the tap target.
-    add_icon(&cellular_icon_, CellularIconForSignal(-1), nullptr);
+    // Single connectivity slot: "wifi"/"no-wifi", or "ethernet" while a LAN
+    // cable is plugged (RefreshConnectivity swaps the source).
     add_icon(&wifi_icon_, "wifi", OnWifiClick);
     add_icon(&bt_icon_, "bluetooth", OnBtClick);
 
@@ -429,7 +412,7 @@ void StatusBar::BuildMediaContent() {
     media_compact_title_ = lv_label_create(media_compact_);
     lv_obj_set_pos(media_compact_title_, 44, 3);
     lv_obj_set_size(media_compact_title_, 142, 19);
-    lv_obj_set_style_text_font(media_compact_title_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(media_compact_title_, jetson::BuiltinTextFaceAt(14), 0);
     lv_obj_set_style_text_color(media_compact_title_, lv_color_white(), 0);
     lv_label_set_long_mode(media_compact_title_, LV_LABEL_LONG_DOT);
     RemoveInteraction(media_compact_title_);
@@ -437,7 +420,7 @@ void StatusBar::BuildMediaContent() {
     media_compact_artist_ = lv_label_create(media_compact_);
     lv_obj_set_pos(media_compact_artist_, 44, 20);
     lv_obj_set_size(media_compact_artist_, 142, 17);
-    lv_obj_set_style_text_font(media_compact_artist_, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(media_compact_artist_, jetson::BuiltinTextFaceAt(13), 0);
     lv_obj_set_style_text_color(media_compact_artist_, Color(0x9ca3af), 0);
     lv_label_set_long_mode(media_compact_artist_, LV_LABEL_LONG_DOT);
     RemoveInteraction(media_compact_artist_);
@@ -469,7 +452,7 @@ void StatusBar::BuildMediaContent() {
     media_expanded_artist_ = lv_label_create(media_expanded_);
     lv_obj_set_pos(media_expanded_artist_, 74, 35);
     lv_obj_set_size(media_expanded_artist_, 328, 20);
-    lv_obj_set_style_text_font(media_expanded_artist_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(media_expanded_artist_, jetson::BuiltinTextFaceAt(14), 0);
     lv_obj_set_style_text_color(media_expanded_artist_, Color(0x9ca3af), 0);
     lv_label_set_long_mode(media_expanded_artist_, LV_LABEL_LONG_DOT);
     RemoveInteraction(media_expanded_artist_);
@@ -790,7 +773,6 @@ void StatusBar::RefreshConnectivity() {
     // A plugged LAN cable takes over the WiFi slot: wired connectivity is not
     // a radio, so it stays visible even while airplane mode hides the rest.
     const bool ethernet = eth_connected == 1;
-    set_hidden(cellular_icon_, airplane);
     set_hidden(wifi_icon_, airplane && !ethernet);
     set_hidden(bt_icon_, airplane);
     set_hidden(vpn_icon_, !vpn);
@@ -803,19 +785,23 @@ void StatusBar::RefreshConnectivity() {
         jetson::ui::SetAppIcon(wifi_icon_, wifi_signal == -1 ? "no-wifi" : "wifi",
                                kStatusIconPx);
     }
+    const int bt_device = airplane
+        ? static_cast<int>(jetson::BtDeviceKind::None) : cached_bt_device_;
     if (!airplane) {
-        jetson::ui::SetAppIcon(cellular_icon_, CellularIconForSignal(wifi_signal),
-                               kStatusIconPx);
         jetson::ui::SetAppIcon(bt_icon_,
                                bt_powered == 0 ? "no-bluetooh" : "bluetooth",
                                kStatusIconPx);
+        // Powered and idle is not the same state as powered with a device on
+        // it, and the glyph alone cannot tell them apart -- tint the icon blue
+        // once something is actually connected.
+        if (bt_icon_)
+            lv_obj_set_style_image_recolor(
+                bt_icon_, bt_device > 0 ? Color(0x0a84ff) : lv_color_white(), 0);
     }
 
     // Resting island: device-type mini icon + status ring. The ring turns
     // green while any Bluetooth device is connected; without one the icon
     // hides and the ring dims (-1 = not polled yet behaves like "none").
-    const int bt_device = airplane
-        ? static_cast<int>(jetson::BtDeviceKind::None) : cached_bt_device_;
     if (island_device_icon_) {
         const auto kind = static_cast<jetson::BtDeviceKind>(
             bt_device > 0 ? bt_device

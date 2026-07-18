@@ -82,6 +82,31 @@ int PngScaleToFit(const char *path, int target_px) {
     return 256; // unknown size -> leave native (100%)
 }
 
+/* Chromium hand-off zoom: the collapse played here and the bloom played by
+ * jetson_kiosk_bar are two halves of one motion, so this runs for half of the
+ * bar's TRANS_MS (460). The card tucks into *this* process's island, which is
+ * kPillW in status_bar.cc -- the kiosk island is a little wider (PILL_W 172),
+ * and each half correctly targets the island the user is looking at. */
+constexpr int kHandoffBarH = 42;    // status_strip_ height in status_bar.cc
+constexpr int kHandoffPillW = 132;  // kPillW in status_bar.cc
+constexpr int kHandoffCollapseMs = 230;
+
+/* Launcher artwork for the hand-off card, matching icon_for_entry()'s URL
+ * table in kiosk_bar.c so the card that tucks away and the card that blooms
+ * back out are the same one. Unknown URLs get the plain Chromium mark. */
+struct HandoffApp { const char *frag; const char *icon; uint32_t color; };
+constexpr HandoffApp kHandoffApps[] = {
+    {"youtube.com",     "assets/icons/drawer/youtube.png",   0xff0033},
+    {"github.com",      "assets/icons/drawer/github.png",    0x24292f},
+    {"messenger.com",   "assets/icons/drawer/messenger.png", 0x0084ff},
+    {"facebook.com",    "assets/icons/drawer/facebook.png",  0x1877f2},
+    {"teams.microsoft", "assets/icons/drawer/team.png",      0x6264a7},
+    {"mail.google.com", "assets/icons/drawer/gmail.png",     0xea4335},
+    {"chatgpt.com",     "assets/icons/drawer/chat-gpt.png",  0x10a37f},
+    {"chat.openai.com", "assets/icons/drawer/chat-gpt.png",  0x10a37f},
+    {"runpod",          "assets/icons/drawer/pods.png",      0x7c3aed},
+};
+
 constexpr int kSystemBarHeight = 28;
 constexpr int kDockHeight = 74;
 constexpr int kDockBottomMargin = 6;
@@ -1120,6 +1145,97 @@ void Ds02HomeDisplay::OpenStudio() {
     OpenChromium(vm_studio);
 }
 
+void Ds02HomeDisplay::OnHandoffCollapse(void *var, int32_t v) {
+    auto *self = static_cast<Ds02HomeDisplay *>(var);
+    if (!self->handoff_card_) return;
+    const double s = Clamp(static_cast<int>(v), 0, 1000) / 1000.0;
+
+    /* Same geometry as draw_transition() in kiosk_bar.c: centred and
+     * top-anchored, so the card visibly tucks up into the island rather than
+     * shrinking towards the middle of the panel. */
+    const int W = self->width_;
+    const int H = self->height_ - kHandoffBarH;
+    const int cw = kHandoffPillW, ch = 6;
+    int w = cw + static_cast<int>((W - cw) * s);
+    int h = ch + static_cast<int>((H - ch) * s);
+    if (w < 2) w = 2;
+    if (h < 2) h = 2;
+    int r = 6 + static_cast<int>(22.0 * s);   /* 28 full -> 6 collapsed */
+    if (r * 2 > h) r = h / 2;
+    if (r * 2 > w) r = w / 2;
+    lv_obj_set_size(self->handoff_card_, w, h);
+    lv_obj_align(self->handoff_card_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_radius(self->handoff_card_, r, 0);
+
+    if (!self->handoff_icon_) return;
+    const int longer = std::max(self->handoff_icon_w_, self->handoff_icon_h_);
+    if (longer <= 0) return;
+    int box = (w < h ? w : h) * 42 / 100;     /* 42 %, as in kiosk_bar.c */
+    if (box < 8) box = 8;
+    const int scale = Clamp(box * 256 / longer, 1, 1024);
+    lv_obj_set_size(self->handoff_icon_,
+                    self->handoff_icon_w_ * scale / 256,
+                    self->handoff_icon_h_ * scale / 256);
+    lv_image_set_scale(self->handoff_icon_, static_cast<uint32_t>(scale));
+    lv_obj_center(self->handoff_icon_);
+}
+
+int Ds02HomeDisplay::PlayChromiumHandoff(const std::string &url) {
+    if (handoff_cover_) return kHandoffCollapseMs;   // already collapsing
+
+    const char *icon_path = "assets/icons/drawer/chromium.png";
+    uint32_t accent = 0x4285f4;
+    for (const auto &app : kHandoffApps) {
+        if (url.find(app.frag) != std::string::npos) {
+            icon_path = app.icon;
+            accent = app.color;
+            break;
+        }
+    }
+
+    /* Cover the app area only. The status bar and its island stay on screen
+     * for the whole motion, which is the anchor that makes the card look like
+     * it is being swallowed by the island. */
+    handoff_cover_ = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(handoff_cover_);
+    lv_obj_set_size(handoff_cover_, width_, height_ - kHandoffBarH);
+    lv_obj_set_pos(handoff_cover_, 0, kHandoffBarH);
+    lv_obj_set_style_bg_color(handoff_cover_, Color(0x000000), 0);
+    lv_obj_set_style_bg_opa(handoff_cover_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(handoff_cover_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(handoff_cover_, LV_OBJ_FLAG_CLICKABLE);  // swallow taps
+
+    handoff_card_ = lv_obj_create(handoff_cover_);
+    lv_obj_remove_style_all(handoff_card_);
+    lv_obj_set_style_bg_color(handoff_card_, Color(0x1c1c1e), 0);
+    lv_obj_set_style_bg_opa(handoff_card_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(handoff_card_, 2, 0);
+    lv_obj_set_style_border_color(handoff_card_, Color(accent), 0);
+    lv_obj_set_style_border_opa(handoff_card_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(handoff_card_, LV_OBJ_FLAG_SCROLLABLE);
+
+    handoff_icon_image_ = LvglImageFromFile(icon_path);
+    if (handoff_icon_image_ &&
+        PngSize(icon_path, &handoff_icon_w_, &handoff_icon_h_)) {
+        handoff_icon_ = lv_image_create(handoff_card_);
+        lv_image_set_src(handoff_icon_, handoff_icon_image_->image_dsc());
+        lv_image_set_pivot(handoff_icon_, 0, 0);
+    }
+
+    OnHandoffCollapse(this, 1000);   // paint the full-panel frame first
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, this);
+    lv_anim_set_values(&a, 1000, 0);
+    lv_anim_set_time(&a, kHandoffCollapseMs);
+    lv_anim_set_exec_cb(&a, OnHandoffCollapse);
+    /* ease-in == kiosk_bar.c's 1 - p*p: the card lingers, then snaps away. */
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
+    lv_anim_start(&a);
+    return kHandoffCollapseMs;
+}
+
 void Ds02HomeDisplay::OpenChromium(const std::string &url) {
     /* Hand the panel to a Chromium kiosk. We can't run a browser inside the
      * firmware (it owns /dev/fb0 via FBDEV with no display server), so the
@@ -1143,7 +1259,6 @@ void Ds02HomeDisplay::OpenChromium(const std::string &url) {
         ShowNotification("Chromium chưa được cài: sudo apt install chromium-browser", 3500);
         return;
     }
-    ShowNotification("Đang mở Chromium...", 1200);
     // Hand the start URL to launch_chromium.sh through a file: the supervisor
     // path (exit 42) can't inherit our environment.
     if (!url.empty()) {
@@ -1154,8 +1269,14 @@ void Ds02HomeDisplay::OpenChromium(const std::string &url) {
     } else {
         ::unlink("/tmp/jetson_chromium_url"); // stale URL from a previous run
     }
-    std::thread([]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    // The collapsing card replaces the old "Đang mở Chromium..." toast: it is
+    // the same feedback, but it also leaves the panel black, which is exactly
+    // the frame the framebuffer should hold while Xorg comes up.
+    const int collapse_ms = PlayChromiumHandoff(url);
+    std::thread([collapse_ms]() {
+        // Wait for the collapse to land before killing the renderer, or the
+        // hand-off freezes on a half-shrunk card.
+        std::this_thread::sleep_for(std::chrono::milliseconds(collapse_ms + 80));
         jetson::LvglRuntime::Instance().Stop();  // release /dev/fb0 writes
         sync();
         if (std::getenv("JETSON_FW_SUPERVISED"))

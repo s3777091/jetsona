@@ -20,12 +20,56 @@ static bool isGif(const void *d) {
     return p && p[0] == 0x47 && p[1] == 0x49 && p[2] == 0x46 && p[3] == 0x38;
 }
 
+/* Parse pixel dimensions from an encoded PNG/JPEG header. LVGL's TJPGD decoder
+ * reads width/height straight from this descriptor in its info stage for an
+ * in-memory (LV_IMAGE_SRC_VARIABLE) JPEG -- unlike lodepng, which parses the PNG
+ * IHDR itself. If we leave them at 0 the JPEG is treated as 0x0 and nothing is
+ * drawn, so populate them here. Returns false when the header can't be parsed. */
+static bool parseEncodedDims(const uint8_t *d, size_t n, uint32_t *w, uint32_t *h) {
+    if (!d || n < 24) return false;
+    if (d[0] == 0x89 && d[1] == 0x50) {  // PNG: IHDR width/height at bytes 16..23
+        *w = ((uint32_t)d[16] << 24) | ((uint32_t)d[17] << 16) |
+             ((uint32_t)d[18] << 8) | d[19];
+        *h = ((uint32_t)d[20] << 24) | ((uint32_t)d[21] << 16) |
+             ((uint32_t)d[22] << 8) | d[23];
+        return *w && *h;
+    }
+    if (d[0] != 0xff || d[1] != 0xd8) return false;  // not JPEG
+    size_t p = 2;
+    while (p + 8 < n) {
+        if (d[p] != 0xff) { ++p; continue; }
+        while (p < n && d[p] == 0xff) ++p;  // skip fill bytes
+        if (p >= n) break;
+        const uint8_t marker = d[p++];
+        if (marker == 0xd8 || marker == 0xd9) continue;
+        if (p + 2 > n) break;
+        const size_t len = ((size_t)d[p] << 8) | d[p + 1];
+        if (len < 2 || p + len > n) break;
+        const bool sof = (marker >= 0xc0 && marker <= 0xc3) ||
+                         (marker >= 0xc5 && marker <= 0xc7) ||
+                         (marker >= 0xc9 && marker <= 0xcb) ||
+                         (marker >= 0xcd && marker <= 0xcf);
+        if (sof && len >= 7) {
+            *h = ((uint32_t)d[p + 3] << 8) | d[p + 4];
+            *w = ((uint32_t)d[p + 5] << 8) | d[p + 6];
+            return *w && *h;
+        }
+        p += len;
+    }
+    return false;
+}
+
 LvglRawImage::LvglRawImage(void *data, size_t size) : data_(data), size_(size) {
     std::memset(&image_dsc_, 0, sizeof(image_dsc_));
     image_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
     image_dsc_.header.cf = LV_COLOR_FORMAT_RAW;  // PNG/JPG/GIF decoders identify format by signature
     image_dsc_.data_size = (uint32_t)size;
     image_dsc_.data = (const uint8_t *)data;
+    uint32_t w = 0, h = 0;
+    if (parseEncodedDims((const uint8_t *)data, size, &w, &h)) {
+        image_dsc_.header.w = w;
+        image_dsc_.header.h = h;
+    }
 }
 
 LvglRawImage::~LvglRawImage() {

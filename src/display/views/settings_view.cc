@@ -1,5 +1,4 @@
 #include "display/views/settings_view.h"
-#include "display/common/airplane_icon.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/signal_bars.h"
 #include "display/core/app_icons.h"
@@ -8,6 +7,7 @@
 #include "lvgl_runtime.h"
 #include "net/airplane_mode.h"
 #include "net/vpn_manager.h"
+#include "platform/fan_control.h"
 #include "platform/shell_command.h"
 #include "settings.h"
 #include "esp_log.h"
@@ -370,6 +370,18 @@ void SetWifiSheetTranslateY(void *obj, int32_t value) {
     lv_obj_set_style_translate_y(static_cast<lv_obj_t *>(obj), value, 0);
 }
 
+// lv_obj_create() hands every plain container LV_OBJ_FLAG_CLICKABLE, and LVGL
+// does not bubble clicks unless LV_OBJ_FLAG_EVENT_BUBBLE is set. A decorative
+// sub-container laid over a clickable row therefore eats the press and the
+// row's own LV_EVENT_CLICKED never fires. Call this on anything inside a row
+// that is purely visual so the press lands on the row itself.
+void MakeDecorative(lv_obj_t *obj) {
+    if (!obj) return;
+    lv_obj_clear_flag(obj, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE |
+                                           LV_OBJ_FLAG_CLICK_FOCUSABLE |
+                                           LV_OBJ_FLAG_SCROLLABLE));
+}
+
 // Bluetooth commands finish on detached worker threads.  Queue their result
 // handling onto LVGL's timer thread so list cleanup/layout, switch state
 // changes, and Dynamic-Island animations never run concurrently with an LVGL
@@ -419,6 +431,13 @@ SettingsView::SettingsView(lv_obj_t *parent, int width, int height,
     // "Cài đặt" on the device.
     if (title_label_) lv_obj_add_flag(title_label_, LV_OBJ_FLAG_HIDDEN);
     BuildShell();
+}
+
+SettingsView::~SettingsView() {
+    // Stop the fan readout timer before the base class deletes the overlay:
+    // it holds a `this` that stops being a SettingsView once this body returns.
+    LvLockGuard lock;
+    StopFanPoll();
 }
 
 void SettingsView::ShowWifiPage() {
@@ -519,7 +538,9 @@ void SettingsView::AddAirplaneRow() {
     lv_obj_clear_flag(airplane_icon_bg_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    auto *plane = jetson::ui::CreateAirplaneIcon(airplane_icon_bg_, lv_color_white());
+    // airplans.png is already drawn near-white, so it reads on both the amber
+    // (on) and grey (off) tile without a recolor.
+    auto *plane = jetson::ui::CreateAppIcon(airplane_icon_bg_, "airplans", 20);
     lv_obj_center(plane);
 
     auto *label = lv_label_create(airplane_row_);
@@ -576,9 +597,9 @@ void SettingsView::AddVpnRow() {
     lv_obj_clear_flag(vpn_icon_bg_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
+    // vpn.png is a colored shield; keep its own artwork instead of flattening
+    // it to white (the tile behind it already carries the on/off state).
     auto *icon = jetson::ui::CreateAppIcon(vpn_icon_bg_, "vpn", 20);
-    lv_obj_set_style_image_recolor(icon, lv_color_white(), 0);
-    lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
     lv_obj_center(icon);
 
     auto *label = lv_label_create(vpn_row_);
@@ -683,6 +704,9 @@ void SettingsView::ShowCategory(Cat c) {
 }
 
 void SettingsView::ClearDetail() {
+    // The fan readout timer points at widgets in this pane; kill it before they
+    // are deleted rather than letting it tick against dangling pointers.
+    StopFanPoll();
     // TelexInput deletes its C++ wrapper from the LV_EVENT_DELETE callback.
     // Delete its root first, then clean the remainder of the pane.
     if (kbd_demo_ && kbd_demo_->obj()) lv_obj_delete(kbd_demo_->obj());
@@ -1347,6 +1371,7 @@ void SettingsView::BuildGeneral() {
         case GeneralPage::CloudFonts: BuildCloudFonts(); break;
         case GeneralPage::Power: BuildGeneralPower(); break;
         case GeneralPage::LockTimeout: BuildGeneralLockTimeout(); break;
+        case GeneralPage::Fan: BuildGeneralFan(); break;
         case GeneralPage::About: BuildGeneralAbout(); break;
     }
 }
@@ -1368,6 +1393,24 @@ void SettingsView::BuildGeneralMain() {
 
     auto *device = DisplayCard();
     MakeDisplayNavigationRow(device, "Nguồn & Khóa", nullptr, OnOpenGeneralPower);
+    DisplayDivider(device);
+    const auto fan = jetson::fan::Read();
+    char fan_value[24];
+    if (!fan.available) {
+        std::snprintf(fan_value, sizeof(fan_value), "Không có");
+    } else if (fan.mode == jetson::fan::Mode::Manual) {
+        std::snprintf(fan_value, sizeof(fan_value), "%d%%",
+                      jetson::fan::PwmToPercent(fan.manual_pwm));
+    } else if (fan.mode == jetson::fan::Mode::Auto) {
+        // In auto the profile is the setting worth surfacing, not the word
+        // "Tự động" -- it is what decides how loud the thing is.
+        std::snprintf(fan_value, sizeof(fan_value), "%s",
+                      jetson::fan::ProfileLabel(fan.profile));
+    } else {
+        std::snprintf(fan_value, sizeof(fan_value), "%s",
+                      jetson::fan::ModeLabel(fan.mode));
+    }
+    MakeDisplayNavigationRow(device, "Quạt tản nhiệt", fan_value, OnOpenGeneralFan);
     DisplayDivider(device);
     MakeDisplayNavigationRow(device, "Giới thiệu", BOARD_NAME, OnOpenGeneralAbout);
     DisplayCaption("Các mục trên thay đổi trực tiếp cấu hình của firmware và được lưu sau khi khởi động lại.");
@@ -1630,6 +1673,141 @@ void SettingsView::BuildGeneralLockTimeout() {
     }
 }
 
+void SettingsView::BuildGeneralFan() {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    GeneralPageHeader("Quạt tản nhiệt");
+    const auto fan = jetson::fan::Read();
+
+    if (!fan.available) {
+        DisplayCaption("Không tìm thấy quạt PWM trên bo mạch này.");
+        return;
+    }
+
+    auto *live = DisplayCard();
+    auto *live_row = DisplayRow(live, "Đang chạy", nullptr, 58);
+    fan_readout_label_ = lv_label_create(live_row);
+    lv_obj_set_style_text_font(fan_readout_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(fan_readout_label_, Color(p.sub_text), 0);
+    lv_obj_set_style_text_align(fan_readout_label_, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_clear_flag(fan_readout_label_, LV_OBJ_FLAG_CLICKABLE);
+
+    auto *mode_title = lv_label_create(detail_);
+    lv_obj_set_style_text_font(mode_title, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(mode_title, Color(p.sub_text), 0);
+    lv_label_set_text(mode_title, "CHẾ ĐỘ");
+
+    auto *mode_card = DisplayCard();
+    MakeOptionRow(mode_card, "Tự động", "Theo nhiệt độ CPU và GPU",
+                  fan.mode == jetson::fan::Mode::Auto, OnFanModeSelected, "auto");
+    DisplayDivider(mode_card);
+    MakeOptionRow(mode_card, "Thủ công", "Giữ nguyên tốc độ bạn chọn",
+                  fan.mode == jetson::fan::Mode::Manual, OnFanModeSelected, "manual");
+    DisplayDivider(mode_card);
+    MakeOptionRow(mode_card, "Tắt", "Chỉ dùng khi máy đang rất mát",
+                  fan.mode == jetson::fan::Mode::Off, OnFanModeSelected, "off");
+
+    // The profile only shapes the auto curve, so it is noise on the manual and
+    // off pages -- show it only where it does something.
+    if (fan.mode == jetson::fan::Mode::Auto) {
+        auto *profile_title = lv_label_create(detail_);
+        lv_obj_set_style_text_font(profile_title, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(profile_title, Color(p.sub_text), 0);
+        lv_label_set_text(profile_title, "HỒ SƠ QUẠT");
+
+        auto *profile_card = DisplayCard();
+        MakeOptionRow(profile_card, "Im lặng", "Gần như không nghe, tăng tốc từ 50°C",
+                      fan.profile == jetson::fan::Profile::Quiet,
+                      OnFanProfileSelected, "quiet");
+        DisplayDivider(profile_card);
+        MakeOptionRow(profile_card, "Cân bằng", "Chạy vừa, tăng tốc từ 46°C",
+                      fan.profile == jetson::fan::Profile::Balanced,
+                      OnFanProfileSelected, "balanced");
+        DisplayDivider(profile_card);
+        MakeOptionRow(profile_card, "Mát", "Ồn hơn, giữ máy mát nhất",
+                      fan.profile == jetson::fan::Profile::Cool,
+                      OnFanProfileSelected, "cool");
+        DisplayCaption("Ở mức nghỉ quạt gần như không giúp hạ nhiệt: chạy hết cỡ chỉ mát hơn khoảng 1°C so với tắt hẳn, nên Im lặng là mặc định.");
+    }
+
+    auto *speed_title = lv_label_create(detail_);
+    lv_obj_set_style_text_font(speed_title, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(speed_title, Color(p.sub_text), 0);
+    lv_label_set_text(speed_title, "TỐC ĐỘ");
+
+    const bool manual = fan.mode == jetson::fan::Mode::Manual;
+    int pct = jetson::fan::PwmToPercent(manual ? fan.manual_pwm : fan.target_pwm);
+    pct = std::max(pct, jetson::fan::kMinPercent);
+
+    auto *speed_card = DisplayCard();
+    auto *slider_row = DisplayRow(speed_card, "", nullptr, 58);
+    /* Fan icon from assets/icons/app/fan.png through the shared icon cache and
+     * recolored to the palette -- same reason as the brightness sun: arial.ttf
+     * carries no symbol block, so a literal glyph would spam the log. */
+    auto *fan_icon = jetson::ui::CreateAppIcon(slider_row, "fan", 28);
+    lv_obj_set_style_image_recolor(fan_icon, Color(p.sub_text), 0);
+    lv_obj_set_style_image_recolor_opa(fan_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_margin_right(fan_icon, 10, 0);
+    fan_slider_ = MakeSlider(slider_row, jetson::fan::kMinPercent, 100, pct, OnFanSpeedChanged);
+    lv_obj_set_flex_grow(fan_slider_, 1);
+    lv_obj_set_width(fan_slider_, 1);
+
+    char value[16];
+    std::snprintf(value, sizeof(value), "%d%%", pct);
+    fan_value_label_ = lv_label_create(slider_row);
+    lv_obj_set_width(fan_value_label_, 52);
+    lv_obj_set_style_text_font(fan_value_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(fan_value_label_, Color(p.text), 0);
+    lv_obj_set_style_text_align(fan_value_label_, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(fan_value_label_, value);
+
+    // In auto/off the slider is a readout of what the curve is doing, so make
+    // it look and behave inert instead of silently ignoring drags.
+    if (!manual) {
+        lv_obj_add_state(fan_slider_, LV_STATE_DISABLED);
+        lv_obj_set_style_opa(fan_slider_, LV_OPA_50, 0);
+    }
+
+    DisplayCaption(manual
+        ? "Quạt giữ nguyên tốc độ này. Kéo thấp quá có thể làm máy nóng khi tải nặng."
+        : "Chuyển sang Thủ công để tự kéo tốc độ. Ở chế độ Tự động, tốc độ do hồ sơ quạt quyết định.");
+
+    if (!fan.daemon) {
+        DisplayCaption("Chưa cài dịch vụ jetson-fan, thiết lập sẽ mất sau khi khởi động lại.");
+    }
+
+    RefreshFanReadout();
+    fan_poll_ = lv_timer_create(OnFanPollTick, 2000, this);
+}
+
+/* Call with the LVGL lock held (lv_lock is not recursive). ClearDetail covers
+ * navigating away; the destructor covers the whole Settings window closing --
+ * an LV_EVENT_DELETE hook could not, because the overlay is torn down by
+ * ~OverlayView, after the SettingsView sub-object is already gone. */
+void SettingsView::StopFanPoll() {
+    if (fan_poll_) lv_timer_del(fan_poll_);
+    fan_poll_ = nullptr;
+    fan_readout_label_ = nullptr;
+    fan_slider_ = nullptr;
+    fan_value_label_ = nullptr;
+}
+
+void SettingsView::RefreshFanReadout() {
+    if (!fan_readout_label_) return;
+    const auto fan = jetson::fan::Read();
+    char text[96];
+    if (fan.rpm > 0) {
+        std::snprintf(text, sizeof(text), "%d vòng/phút • %d%% • %d°C",
+                      fan.rpm, jetson::fan::PwmToPercent(fan.target_pwm), fan.temp_c);
+    } else if (fan.target_pwm > 0) {
+        // Tachometer off (tach_enable=0) -- the fan is driven but unmeasured.
+        std::snprintf(text, sizeof(text), "%d%% • %d°C",
+                      jetson::fan::PwmToPercent(fan.target_pwm), fan.temp_c);
+    } else {
+        std::snprintf(text, sizeof(text), "Đang dừng • %d°C", fan.temp_c);
+    }
+    lv_label_set_text(fan_readout_label_, text);
+}
+
 void SettingsView::BuildGeneralAbout() {
     GeneralPageHeader("Giới thiệu");
     char hostname[128]{};
@@ -1830,7 +2008,7 @@ void SettingsView::WifiCreateRow(const jetson::WifiNetwork &n) {
     lv_obj_remove_style_all(left);
     lv_obj_set_height(left, 30);
     lv_obj_set_flex_grow(left, 1);
-    lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
+    MakeDecorative(left);
     lv_obj_set_flex_flow(left, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(left, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1852,7 +2030,7 @@ void SettingsView::WifiCreateRow(const jetson::WifiNetwork &n) {
     auto *right = lv_obj_create(row);
     lv_obj_remove_style_all(right);
     lv_obj_set_size(right, 132, 32);
-    lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
+    MakeDecorative(right);
     lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(right, 8, 0);
     lv_obj_set_flex_align(right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
@@ -1861,9 +2039,10 @@ void SettingsView::WifiCreateRow(const jetson::WifiNetwork &n) {
         auto *lock = lv_obj_create(right);
         lv_obj_remove_style_all(lock);
         lv_obj_set_size(lock, 16, 20);
-        lv_obj_clear_flag(lock, LV_OBJ_FLAG_SCROLLABLE);
+        MakeDecorative(lock);
         auto *shackle = lv_obj_create(lock);
         lv_obj_remove_style_all(shackle);
+        MakeDecorative(shackle);
         lv_obj_set_size(shackle, 10, 10);
         lv_obj_set_style_radius(shackle, 6, 0);
         lv_obj_set_style_border_width(shackle, 2, 0);
@@ -1872,6 +2051,7 @@ void SettingsView::WifiCreateRow(const jetson::WifiNetwork &n) {
         lv_obj_align(shackle, LV_ALIGN_TOP_MID, 0, 0);
         auto *lockBody = lv_obj_create(lock);
         lv_obj_remove_style_all(lockBody);
+        MakeDecorative(lockBody);
         lv_obj_set_size(lockBody, 14, 11);
         lv_obj_set_style_radius(lockBody, 2, 0);
         lv_obj_set_style_bg_color(lockBody, Color(p.sub_text), 0);
@@ -2214,10 +2394,11 @@ void SettingsView::WifiOpenDetails(const jetson::WifiDetails &details) {
     lv_anim_start(&slide);
 }
 
-void SettingsView::WifiDoConnect(const std::string &ssid, const std::string &pw) {
+void SettingsView::WifiDoConnect(const std::string &ssid, const std::string &pw,
+                                 bool offer_password_retry) {
     if (wifi_busy_.exchange(true)) return;
     SetStatus(("Đang kết nối " + ssid + "...").c_str());
-    std::thread([self = Self(), ssid, pw]() {
+    std::thread([self = Self(), ssid, pw, offer_password_retry]() {
         bool ok = self->wifi_.Connect(ssid, pw);
         std::vector<jetson::WifiNetwork> nets;
         std::string active;
@@ -2238,6 +2419,12 @@ void SettingsView::WifiDoConnect(const std::string &ssid, const std::string &pw)
         } else {
             self->SetStatus(("Lỗi: " + error).c_str());
             ESP_LOGE(TAG, "WiFi connection failed for %s: %s", ssid.c_str(), error.c_str());
+            if (offer_password_retry && self->current_ == Cat::Wifi && self->overlay_) {
+                auto it = std::find_if(
+                    self->wifi_nets_.begin(), self->wifi_nets_.end(),
+                    [&ssid](const jetson::WifiNetwork &n) { return n.ssid == ssid; });
+                if (it != self->wifi_nets_.end()) self->WifiOpenConnectSheet(*it);
+            }
         }
     }).detach();
 }
@@ -2427,7 +2614,7 @@ void SettingsView::BtCreateRow(const jetson::BtDevice &d) {
     lv_obj_set_width(left, 1);
     lv_obj_set_height(left, 42);
     lv_obj_set_flex_grow(left, 1);
-    lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
+    MakeDecorative(left);
     lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(left, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_START);
@@ -2448,7 +2635,7 @@ void SettingsView::BtCreateRow(const jetson::BtDevice &d) {
     auto *right = lv_obj_create(row);
     lv_obj_remove_style_all(right);
     lv_obj_set_size(right, 168, 32);
-    lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
+    MakeDecorative(right);
     lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(right, 8, 0);
     lv_obj_set_flex_align(right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -3356,7 +3543,9 @@ void SettingsView::OnWifiRowClicked(lv_event_t *e) {
     if (network.secured && !network.known)
         ctx->self->WifiOpenConnectSheet(network);
     else
-        ctx->self->WifiDoConnect(network.ssid, "");
+        // A saved profile connects silently; if its stored password has gone
+        // stale, WifiDoConnect falls back to asking for a new one.
+        ctx->self->WifiDoConnect(network.ssid, "", network.secured);
 }
 
 void SettingsView::OnWifiInfoClicked(lv_event_t *e) {
@@ -3530,9 +3719,59 @@ GENERAL_NAV_HANDLER(OnOpenMyFonts, MyFonts)
 GENERAL_NAV_HANDLER(OnOpenCloudFonts, CloudFonts)
 GENERAL_NAV_HANDLER(OnOpenGeneralPower, Power)
 GENERAL_NAV_HANDLER(OnOpenGeneralLockTimeout, LockTimeout)
+GENERAL_NAV_HANDLER(OnOpenGeneralFan, Fan)
 GENERAL_NAV_HANDLER(OnOpenGeneralAbout, About)
 
 #undef GENERAL_NAV_HANDLER
+
+void SettingsView::OnFanModeSelected(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *ctx = static_cast<OptCtx *>(lv_event_get_user_data(e));
+    if (!ctx) return;
+    auto mode = jetson::fan::Mode::Auto;
+    if (ctx->value == "manual") mode = jetson::fan::Mode::Manual;
+    else if (ctx->value == "off") mode = jetson::fan::Mode::Off;
+    jetson::fan::SetMode(mode);
+    ctx->self->SetStatus((std::string("Quạt: ") + jetson::fan::ModeLabel(mode)).c_str());
+    // Rebuild so the checkmark moves and the slider enables/disables with the
+    // new mode. This also tears down and restarts the readout timer.
+    ctx->self->ShowCategory(Cat::General);
+}
+
+void SettingsView::OnFanProfileSelected(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *ctx = static_cast<OptCtx *>(lv_event_get_user_data(e));
+    if (!ctx) return;
+    auto profile = jetson::fan::Profile::Quiet;
+    if (ctx->value == "cool") profile = jetson::fan::Profile::Cool;
+    else if (ctx->value == "balanced") profile = jetson::fan::Profile::Balanced;
+    jetson::fan::SetProfile(profile);
+    ctx->self->SetStatus(
+        (std::string("Hồ sơ quạt: ") + jetson::fan::ProfileLabel(profile)).c_str());
+    ctx->self->ShowCategory(Cat::General);
+}
+
+void SettingsView::OnFanSpeedChanged(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (!self->fan_slider_) return;
+    int pct = lv_slider_get_value(self->fan_slider_);
+    if (pct < jetson::fan::kMinPercent) {
+        pct = jetson::fan::kMinPercent;
+        lv_slider_set_value(self->fan_slider_, pct, LV_ANIM_OFF);
+    }
+    jetson::fan::SetManualPwm(jetson::fan::PercentToPwm(pct));
+    if (self->fan_value_label_) {
+        char value[16];
+        std::snprintf(value, sizeof(value), "%d%%", pct);
+        lv_label_set_text(self->fan_value_label_, value);
+    }
+    self->SetStatus(("Quạt: " + std::to_string(pct) + "%").c_str());
+}
+
+void SettingsView::OnFanPollTick(lv_timer_t *t) {
+    static_cast<SettingsView *>(lv_timer_get_user_data(t))->RefreshFanReadout();
+}
 
 void SettingsView::OnLanguageSelected(lv_event_t *e) {
     LvLockGuard lock;

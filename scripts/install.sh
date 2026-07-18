@@ -88,15 +88,31 @@ if [ -f "$JETSON_DIR/.env" ]; then
 fi
 sudo cp "$JETSON_DIR/scripts/jetson-fw.service" /etc/systemd/system/
 
-# Cooling fan helper (NOT auto-enabled — requires MOSFET rewiring first).
+# Legacy 12V-fan-on-GPIO helper (NOT auto-enabled — requires MOSFET rewiring
+# first). Unrelated to the PWM fan header below; kept for boards wired that way.
 sudo cp "$JETSON_DIR/scripts/fan.sh"        /opt/jetson-fw/
 sudo chmod +x /opt/jetson-fw/fan.sh
 sudo cp "$JETSON_DIR/scripts/fan.service"   /etc/systemd/system/
+
+# PWM fan curve for the 4-pin fan on the carrier's J15 header. The kernel
+# pwm-fan driver leaves target_pwm at 0 until 51 C, so an idle board looks like
+# it has a dead fan; this daemon drives the duty cycle itself. Settings >
+# Cài đặt chung > Quạt talks to it through /etc/jetson-fan.conf, which is left
+# world-writable on purpose so the firmware can change modes without root.
+sudo cp "$JETSON_DIR/scripts/jetson-fan-curve.sh" /usr/local/sbin/
+sudo chmod +x /usr/local/sbin/jetson-fan-curve.sh
+sudo cp "$JETSON_DIR/scripts/jetson-fan.service"  /etc/systemd/system/
+if [ ! -f /etc/jetson-fan.conf ]; then
+    sudo cp "$JETSON_DIR/scripts/jetson-fan.conf" /etc/jetson-fan.conf
+fi
+sudo chmod 0666 /etc/jetson-fan.conf
 
 echo "==> Enabling systemd service"
 sudo systemctl daemon-reload
 sudo systemctl enable jetson-fw
 sudo systemctl restart jetson-fw
+sudo systemctl enable jetson-fan
+sudo systemctl restart jetson-fan
 
 # Optional: branded login banner on the HDMI console (replaces the bare
 # "jetson login:" prompt shown during boot / service restart). Backs up
