@@ -688,8 +688,10 @@ void StatusBar::RebuildWifiMenu() {
     lv_obj_set_style_border_side(settings, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_border_color(settings, Color(0x344154), 0);
     applied_wifi_scan_revision_ = wifi_scan_revision_.load();
-    if (quick_island_open_ && active_quick_menu_ == wifi_menu_)
+    if (quick_island_open_ && active_quick_menu_ == wifi_menu_) {
+        AnimateDrop(wifi_menu_, true);
         ResizeQuickIsland(wifi_menu_);
+    }
 }
 
 void StatusBar::RebuildBluetoothMenu() {
@@ -777,8 +779,10 @@ void StatusBar::RebuildBluetoothMenu() {
     lv_obj_set_style_border_side(settings, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_border_color(settings, Color(0x344154), 0);
     applied_bt_scan_revision_ = bt_scan_revision_.load();
-    if (quick_island_open_ && active_quick_menu_ == bt_menu_)
+    if (quick_island_open_ && active_quick_menu_ == bt_menu_) {
+        AnimateDrop(bt_menu_, true);
         ResizeQuickIsland(bt_menu_);
+    }
 }
 
 void StatusBar::BuildQuickMenus() {
@@ -936,7 +940,11 @@ void StatusBar::ShowQuickMenu(lv_obj_t *menu, lv_obj_t *anchor) {
     lv_obj_clear_flag(menu, LV_OBJ_FLAG_HIDDEN);
     lv_obj_center(menu);
     AnimateDrop(menu, true);
-    lv_obj_set_style_border_color(pill_, Color(0x0a84ff), 0);
+    uint32_t accent = 0x0a84ff;
+    if (menu == brightness_menu_) accent = 0xff9f0a;
+    else if (menu == power_menu_) accent = 0xff5364;
+    else if (optimize_widget_ && menu == optimize_widget_->Content()) accent = 0x00c3d7;
+    lv_obj_set_style_border_color(pill_, Color(accent), 0);
     lv_obj_set_style_border_opa(pill_, LV_OPA_50, 0);
     ResizeQuickIsland(menu, true);
     ArmQuickMenuTimer();
