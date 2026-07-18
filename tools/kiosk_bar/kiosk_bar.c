@@ -1700,6 +1700,15 @@ static void open_app(int i)
     pid_t pid = fork();
     if (pid == 0) {
         drop_chromium_privileges();
+        signal(SIGCHLD, SIG_DFL);
+        /* The bar lives outside Chromium's private D-Bus session. Give each
+         * short profile-singleton relaunch its own valid session address too;
+         * otherwise it emits the same bus.cc "Unknown address type" warning
+         * before forwarding the new app window to the main browser. */
+        execlp("dbus-run-session", "dbus-run-session", "--", bin,
+               profflag, appflag, (char *)NULL);
+        /* Older installations without the dbus package still retain the
+         * previous, functional relaunch behaviour. */
         execlp(bin, bin, profflag, appflag, (char *)NULL);
         _exit(127);
     }

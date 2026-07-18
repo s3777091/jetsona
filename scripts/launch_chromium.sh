@@ -7,7 +7,7 @@
 #
 # Runtime prerequisite (install once on the Jetson):
 #   sudo apt install -y xserver-xorg-video-all xserver-xorg-input-libinput \
-#       x11-xkb-utils x11-xserver-utils xinit chromium-browser libx11-dev
+#       x11-xkb-utils x11-xserver-utils xinit dbus chromium-browser libx11-dev
 # (libx11-dev is a build dependency for tools/kiosk_bar, the Dynamic Island
 # strip + micro-WM that runs on top of Chromium.)
 # The HDMI LCD is driven by the stock tegra/nvidia X driver; this script just
@@ -27,11 +27,18 @@ export JETSON_SETTINGS_FILE="${JETSON_SETTINGS_FILE:-${HOME:-/root}/.jetson-fw/s
 # firmware.
 if [ "${1:-}" = "--x-client" ]; then
     shift
-    unset DBUS_SESSION_BUS_ADDRESS
+    # A systemd/bare-X hand-off has no desktop session bus. Leaving a stale
+    # address here (or relying on D-Bus' X11 autolaunch fallback) makes
+    # Chromium repeatedly report "Unknown address type". Each Chromium
+    # invocation below is therefore given a small private session bus by
+    # dbus-run-session. Clear both inherited overrides first; the system bus
+    # then uses its standard well-known Unix socket.
+    unset DBUS_SESSION_BUS_ADDRESS DBUS_SYSTEM_BUS_ADDRESS
     export HOME="${CHROMIUM_KIOSK_HOME:-/tmp/chromium-kiosk-home}"
     export XDG_CONFIG_HOME="${CHROMIUM_KIOSK_CONFIG_HOME:-$HOME/.config}"
     export XDG_CACHE_HOME="${CHROMIUM_KIOSK_CACHE_HOME:-$HOME/.cache}"
-    mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+    export XDG_RUNTIME_DIR="${CHROMIUM_KIOSK_RUNTIME_DIR:-/tmp/chromium-kiosk-runtime}"
+    mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
 
     # Xorg remains privileged because it owns the physical display, while the
     # browser runs as the dedicated unprivileged account created by install.sh.
@@ -45,6 +52,10 @@ if [ "${1:-}" = "--x-client" ]; then
         echo "launch_chromium: runuser/xhost missing (install util-linux x11-xserver-utils)" >&2
         exit 1
     fi
+    if ! command -v dbus-run-session >/dev/null 2>&1; then
+        echo "launch_chromium: dbus-run-session missing (install package 'dbus')" >&2
+        exit 1
+    fi
     if ! xhost "+SI:localuser:$CHROMIUM_RUN_USER" >/dev/null 2>&1; then
         echo "launch_chromium: cannot authorize $CHROMIUM_RUN_USER on $DISPLAY" >&2
         exit 1
@@ -52,11 +63,14 @@ if [ "${1:-}" = "--x-client" ]; then
     chromium_run()
     {
         runuser -u "$CHROMIUM_RUN_USER" -- env \
+            -u DBUS_SESSION_BUS_ADDRESS \
+            -u DBUS_SYSTEM_BUS_ADDRESS \
             HOME="$HOME" \
             XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
             XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+            XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
             DISPLAY="$DISPLAY" \
-            "$@"
+            dbus-run-session -- "$@"
     }
 
     # Paint the root window the same black the firmware left in the
@@ -236,12 +250,14 @@ fi
 run_group="$(id -g "$CHROMIUM_RUN_USER")"
 export CHROMIUM_RUN_USER CHROMIUM_RUN_UID="$run_identity" CHROMIUM_RUN_GID="$run_group"
 RUNTIME_HOME="${CHROMIUM_KIOSK_HOME:-/var/lib/jetson-fw/chromium-home}"
+RUNTIME_DIR="${CHROMIUM_KIOSK_RUNTIME_DIR:-/tmp/chromium-kiosk-runtime}"
 mkdir -p "$RUNTIME_HOME" "$RUNTIME_HOME/.config" "$RUNTIME_HOME/.cache" \
-         /tmp/chromium-kiosk-cache
+         "$RUNTIME_DIR" /tmp/chromium-kiosk-cache
 chown -R "$run_identity:$run_group" "$PROFILE_DIR" "$RUNTIME_HOME" \
-         /tmp/chromium-kiosk-cache
-chmod 700 "$PROFILE_DIR" "$RUNTIME_HOME"
+         "$RUNTIME_DIR" /tmp/chromium-kiosk-cache
+chmod 700 "$PROFILE_DIR" "$RUNTIME_HOME" "$RUNTIME_DIR"
 export CHROMIUM_KIOSK_HOME="$RUNTIME_HOME"
+export CHROMIUM_KIOSK_RUNTIME_DIR="$RUNTIME_DIR"
 # The supervisor serializes kiosk sessions, so any singleton left in the
 # (now persistent) profile is from a dead process. Clearing it up front keeps
 # the extra-URL relaunches from racing a stale lock into a second browser.
@@ -333,13 +349,25 @@ fi
 # the firmware has already exited, so it is free. Keep the X cursor visible:
 # unlike the firmware, Chromium does not draw its own mouse cursor, so
 # -nocursor makes a working mouse look disconnected.
+filter_xinit_stderr()
+{
+    # xinit prints this even during the launcher's intentional X shutdown.
+    # Preserve every useful Xorg/client diagnostic and discard only that one
+    # expected lifecycle message.
+    while IFS= read -r line; do
+        [ "$line" = "xinit: connection to X server lost" ] ||
+            printf '%s\n' "$line" >&2
+    done
+}
+
 if command -v xinit >/dev/null 2>&1; then
     # -background none: do not repaint the root at startup, so the firmware's
     # final black frame survives in the framebuffer until the bar draws over
     # it. Without it X clears to its grey stipple and the hand-off flashes.
     exec xinit "$SCRIPT_DIR/launch_chromium.sh" --x-client \
         "$CHROMIUM" "${CHROMIUM_FLAGS[@]}" -- \
-        "$DISPLAY_NO" vt1 -nolisten tcp -s 0 -dpms -background none
+        "$DISPLAY_NO" vt1 -nolisten tcp -s 0 -dpms -background none \
+        2> >(filter_xinit_stderr)
 fi
 
 # Fallback: start Xorg ourselves, run Chromium, then tear X down.
