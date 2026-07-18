@@ -911,7 +911,7 @@ void StatusBar::HideQuickMenus(lv_obj_t *except) {
 void StatusBar::ShowQuickMenu(lv_obj_t *menu, lv_obj_t *anchor) {
     (void)anchor;
     if (!menu || !pill_ || !quick_host_) return;
-    if (quick_island_open_ && active_quick_menu_ == menu) {
+    if (quick_island_open_ && !quick_island_closing_ && active_quick_menu_ == menu) {
         CloseQuickIsland(true);
         return;
     }
@@ -929,6 +929,7 @@ void StatusBar::ShowQuickMenu(lv_obj_t *menu, lv_obj_t *anchor) {
 
     active_quick_menu_ = menu;
     quick_island_open_ = true;
+    quick_island_closing_ = false;
     island_expanded_ = true;
     lv_obj_clear_flag(quick_host_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_opa(quick_host_, LV_OPA_COVER, 0);
@@ -967,6 +968,7 @@ void StatusBar::CloseQuickIsland(bool animated) {
     }
     if (!animated) {
         quick_island_open_ = false;
+        quick_island_closing_ = false;
         for (auto *menu : {wifi_menu_, bt_menu_, sound_menu_, brightness_menu_, power_menu_})
             if (menu) lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
         if (optimize_widget_) optimize_widget_->HidePopup();
@@ -987,6 +989,7 @@ void StatusBar::CloseQuickIsland(bool animated) {
         return;
     }
 
+    quick_island_closing_ = true;
     AnimateIslandSize(media_available_ ? kMediaCompactW : kPillW,
                       media_available_ ? kMediaCompactH : kPillH, true);
 }
@@ -1770,6 +1773,7 @@ void StatusBar::OnIslandCollapsed(lv_anim_t *a) {
     }
     self->active_quick_menu_ = nullptr;
     self->quick_island_open_ = false;
+    self->quick_island_closing_ = false;
     self->notification_visible_ = false;
     self->media_expanded_open_ = false;
     self->island_expanded_ = false;

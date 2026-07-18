@@ -141,6 +141,7 @@ private:
     lv_obj_t *quick_host_ = nullptr;
     lv_obj_t *active_quick_menu_ = nullptr;
     bool quick_island_open_ = false;
+    bool quick_island_closing_ = false;
     bool suppress_quick_events_ = false;
     lv_timer_t *quick_menu_timer_ = nullptr;
 
