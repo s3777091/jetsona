@@ -5,6 +5,7 @@
 #include "net/airplane_mode.h"
 #include "net/bluetooth_manager.h"
 #include "net/wifi_manager.h"
+#include "platform/perf_governor.h"
 
 #include <chrono>
 #include <thread>
@@ -37,6 +38,9 @@ bool Application::Initialize() {
 
     Display *display = board.GetDisplay();
     if (display) {
+        // Build the whole home UI at full clock; the token dies with this
+        // scope and the boot-prefetch job re-boosts for its own work.
+        auto boost = jetson::PerfGovernor::Instance().Acquire("boot-ui");
         display->SetupUI();
         display->SetStatus("Ready");
     }

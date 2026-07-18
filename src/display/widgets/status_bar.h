@@ -3,7 +3,7 @@
 /* iPhone-like Dynamic Island, parented to `lv_layer_top()` so it renders above
  * every full-screen view. The ordinary system information is deliberately
  * outside the island: time/date/weather at the left, a compact
- * connectivity/battery/action cluster at the right, and an opaque black island
+ * quick-settings cluster at the right, and an opaque black island
  * pill in the center.
  *
  * A notification "blooms" the *same* pill into a larger rounded surface,
@@ -20,9 +20,15 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
+
+#include "display/widgets/optimize_widget.h"
+#include "net/bluetooth_manager.h"
+#include "net/wifi_manager.h"
 
 class LvglImage;
 
@@ -37,6 +43,13 @@ public:
 
     void SetWifiAction(Action cb) { wifi_action_ = std::move(cb); }
     void SetBluetoothAction(Action cb) { bt_action_ = std::move(cb); }
+    void SetVolumeAction(std::function<void(int, bool)> cb) {
+        volume_action_ = std::move(cb);
+    }
+    void SetBrightnessAction(std::function<void(int)> cb) {
+        brightness_action_ = std::move(cb);
+    }
+    void SetSleepAction(Action cb) { sleep_action_ = std::move(cb); }
     void SetLockAction(Action cb) { lock_action_ = std::move(cb); }
     void SetRebootAction(Action cb) { reboot_action_ = std::move(cb); }
     void SetShutdownAction(Action cb) { shutdown_action_ = std::move(cb); }
@@ -95,10 +108,10 @@ private:
     lv_obj_t *airplane_icon_ = nullptr;
     lv_obj_t *vpn_icon_ = nullptr;
     // PNG icons from assets/icons/app (label fallbacks when a PNG is missing).
-    // wifi_icon_ is the single link slot: wifi / no-wifi / ethernet.
     lv_obj_t *wifi_icon_ = nullptr;
     lv_obj_t *bt_icon_ = nullptr;
-    lv_obj_t *charge_icon_ = nullptr; // charge-batery PNG, shown while charging
+    lv_obj_t *sound_icon_ = nullptr;
+    lv_obj_t *brightness_icon_ = nullptr;
     lv_obj_t *battery_icon_root_ = nullptr;
     lv_obj_t *battery_icon_body_ = nullptr;
     lv_obj_t *battery_icon_fill_ = nullptr;
@@ -107,6 +120,45 @@ private:
     lv_obj_t *lang_label_ = nullptr;
     lv_obj_t *power_icon_ = nullptr;
     lv_obj_t *datetime_label_ = nullptr;
+
+    // Compact quick settings. Exactly one of these popovers is visible at a
+    // time; cache owns the first status icon and its own disk/RAM popover.
+    std::unique_ptr<OptimizeWidget> optimize_widget_;
+    lv_obj_t *wifi_menu_ = nullptr;
+    lv_obj_t *bt_menu_ = nullptr;
+    lv_obj_t *sound_menu_ = nullptr;
+    lv_obj_t *brightness_menu_ = nullptr;
+    lv_obj_t *wifi_switch_ = nullptr;
+    lv_obj_t *bt_switch_ = nullptr;
+    lv_obj_t *sound_slider_ = nullptr;
+    lv_obj_t *sound_value_ = nullptr;
+    lv_obj_t *sound_mute_icon_ = nullptr;
+    lv_obj_t *brightness_slider_ = nullptr;
+    lv_obj_t *brightness_value_ = nullptr;
+    bool suppress_quick_events_ = false;
+    lv_timer_t *quick_menu_timer_ = nullptr;
+
+    struct QuickRowContext {
+        StatusBar *self = nullptr;
+        std::string id;
+        bool active = false;
+        bool secured = false;
+        bool known = false;
+    };
+    std::vector<std::unique_ptr<QuickRowContext>> wifi_row_ctx_;
+    std::vector<std::unique_ptr<QuickRowContext>> bt_row_ctx_;
+
+    std::mutex quick_scan_mutex_;
+    std::vector<jetson::WifiNetwork> quick_wifi_networks_;
+    std::vector<jetson::BtDevice> quick_bt_devices_;
+    std::thread wifi_scan_thread_;
+    std::thread bt_scan_thread_;
+    std::atomic<bool> wifi_scan_busy_{false};
+    std::atomic<bool> bt_scan_busy_{false};
+    std::atomic<uint32_t> wifi_scan_revision_{0};
+    std::atomic<uint32_t> bt_scan_revision_{0};
+    uint32_t applied_wifi_scan_revision_ = 0;
+    uint32_t applied_bt_scan_revision_ = 0;
 
     lv_timer_t *notif_timer_ = nullptr;
 
@@ -142,6 +194,7 @@ private:
     std::thread conn_poll_thread_;
     std::atomic<bool> conn_poll_stop_{false};
     std::atomic<int> polled_wifi_signal_{-2};
+    std::atomic<int> polled_wifi_enabled_{-1};
     // -1 unknown, 0 no cable/link, 1 LAN cable link up. Unlike the radios this
     // is a cheap sysfs read, so the worker refreshes it on every 500 ms tick
     // and the ethernet icon reacts to a plug/unplug almost immediately.
@@ -150,11 +203,14 @@ private:
     // jetson::BtDeviceKind of the connected device (-1 = not polled yet).
     std::atomic<int> polled_bt_device_{-1};
     int cached_wifi_signal_ = -3;            // last value applied to the UI
+    int cached_wifi_enabled_ = -2;
     int cached_eth_connected_ = -2;
     int cached_bt_powered_ = -2;
     int cached_bt_device_ = -2;
 
-    Action wifi_action_, bt_action_, lock_action_, reboot_action_, shutdown_action_;
+    Action wifi_action_, bt_action_, sleep_action_, lock_action_, reboot_action_, shutdown_action_;
+    std::function<void(int, bool)> volume_action_;
+    std::function<void(int)> brightness_action_;
     Action island_action_;
 
     void Refresh();
@@ -163,6 +219,15 @@ private:
     void RefreshLang();
     void RefreshConnectivity();
     void BuildPowerMenu();
+    void BuildQuickMenus();
+    lv_obj_t *CreateQuickMenu(int width);
+    void RebuildWifiMenu();
+    void RebuildBluetoothMenu();
+    void StartWifiScan();
+    void StartBluetoothScan();
+    void ShowQuickMenu(lv_obj_t *menu, lv_obj_t *anchor);
+    void HideQuickMenus(lv_obj_t *except = nullptr);
+    void ArmQuickMenuTimer();
     void ShowPowerMenu();
     void HidePowerMenu();
     void ShowIslandMessage(const char *title, const char *text,
@@ -185,8 +250,20 @@ private:
     static void OnPowerMenuDeleted(lv_event_t *e);
     static void OnNotifTimer(lv_timer_t *t);
     static void OnPowerMenuTimer(lv_timer_t *t);
+    static void OnQuickMenuTimer(lv_timer_t *t);
     static void OnWifiClick(lv_event_t *e);
     static void OnBtClick(lv_event_t *e);
+    static void OnSoundClick(lv_event_t *e);
+    static void OnBrightnessClick(lv_event_t *e);
+    static void OnWifiToggle(lv_event_t *e);
+    static void OnBluetoothToggle(lv_event_t *e);
+    static void OnWifiRow(lv_event_t *e);
+    static void OnBluetoothRow(lv_event_t *e);
+    static void OnWifiSettings(lv_event_t *e);
+    static void OnBluetoothSettings(lv_event_t *e);
+    static void OnVolumeChanged(lv_event_t *e);
+    static void OnMuteClick(lv_event_t *e);
+    static void OnBrightnessChanged(lv_event_t *e);
     static void OnIslandClick(lv_event_t *e);
     static void OnIslandLongPress(lv_event_t *e);
     static void OnMediaPrevious(lv_event_t *e);

@@ -1,7 +1,10 @@
 #include "display/views/settings_view.h"
+#include "display/common/airplane_icon.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/signal_bars.h"
 #include "display/core/app_icons.h"
+#include "display/theme/terminal_theme.h"
+#include "display/views/terminal_view.h"
 #include "fonts.h"
 #include "display/theme/ui_theme.h"
 #include "lvgl_runtime.h"
@@ -478,19 +481,23 @@ void SettingsView::BuildShell() {
     lv_obj_set_scroll_dir(sidebar_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(sidebar_, LV_SCROLLBAR_MODE_ACTIVE);
 
+    // PNG icons from assets/icons/app.
+    struct Entry { Cat cat; const char *icon; const char *label; };
+    const Entry connectivity[] = {
+        {Cat::Wifi, "wifi", "WiFi"},
+        {Cat::Bluetooth, "bluetooth", "Bluetooth"},
+    };
+    for (const auto &e : connectivity) AddSidebarRow(e.cat, e.icon, e.label);
+
     AddAirplaneRow();
     AddVpnRow();
 
-    // PNG icons from assets/icons/app.
-    struct Entry { Cat cat; const char *icon; const char *label; };
-    const Entry cats[] = {
-        {Cat::Display, "screen", "Màn hình"},
+    const Entry categories[] = {
         {Cat::Sound, "speaker", "Âm thanh"},
-        {Cat::Wifi, "wifi", "WiFi"},
-        {Cat::Bluetooth, "bluetooth", "Bluetooth"},
         {Cat::General, "settings", "Cài đặt chung"},
+        {Cat::Applications, "app", "Ứng dụng"},
     };
-    for (const auto &e : cats) AddSidebarRow(e.cat, e.icon, e.label);
+    for (const auto &e : categories) AddSidebarRow(e.cat, e.icon, e.label);
 
     // ---- Detail pane ----
     detail_ = lv_obj_create(body_);
@@ -510,7 +517,7 @@ void SettingsView::BuildShell() {
     lv_obj_set_scroll_dir(detail_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(detail_, LV_SCROLLBAR_MODE_ACTIVE);
 
-    ShowCategory(Cat::Display);
+    ShowCategory(Cat::Wifi);
 }
 
 void SettingsView::AddAirplaneRow() {
@@ -538,9 +545,10 @@ void SettingsView::AddAirplaneRow() {
     lv_obj_clear_flag(airplane_icon_bg_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // airplans.png is already drawn near-white, so it reads on both the amber
-    // (on) and grey (off) tile without a recolor.
-    auto *plane = jetson::ui::CreateAppIcon(airplane_icon_bg_, "airplans", 20);
+    // This is critical system state, so use the code-native glyph instead of
+    // relying on the runtime PNG decoder and deployed asset set.
+    auto *plane =
+        jetson::ui::CreateAirplaneIcon(airplane_icon_bg_, lv_color_white());
     lv_obj_center(plane);
 
     auto *label = lv_label_create(airplane_row_);
@@ -549,7 +557,7 @@ void SettingsView::AddAirplaneRow() {
     lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(label, Color(p.text), 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-    lv_label_set_text(label, "Chế độ\nmáy bay");
+    lv_label_set_text(label, "Plan\nmode");
 
     airplane_switch_ = MakeSwitch(airplane_row_, airplane_enabled_, OnAirplaneSwitch);
     lv_obj_set_size(airplane_switch_, 42, 24);
@@ -699,6 +707,7 @@ void SettingsView::ShowCategory(Cat c) {
         case Cat::Wifi: BuildWifi(); break;
         case Cat::Bluetooth: BuildBluetooth(); break;
         case Cat::General: BuildGeneral(); break;
+        case Cat::Applications: BuildApplications(); break;
     }
     HighlightSide(c);
 }
@@ -724,6 +733,7 @@ void SettingsView::ClearDetail() {
     bright_value_label_ = nullptr;
     text_size_slider_ = nullptr;
     text_size_value_label_ = nullptr;
+    terminal_size_value_label_ = nullptr;
     night_warmth_slider_ = nullptr;
     vol_slider_ = nullptr;
     mute_switch_ = nullptr;
@@ -1226,10 +1236,211 @@ void SettingsView::BuildSound() {
     mute_switch_ = MakeSwitch(row, !muted, OnMuteToggle); // on = audible
 }
 
+void SettingsView::BuildApplications() {
+    if (application_page_ == ApplicationPage::Terminal) {
+        BuildTerminalSettings();
+    } else {
+        BuildApplicationsMain();
+    }
+}
+
+void SettingsView::BuildApplicationsMain() {
+    DisplayPageHeader("Ứng dụng", false);
+    auto *card = DisplayCard();
+    auto *row = DisplayRow(card, "", nullptr, 72);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(row, 4);
+    lv_obj_add_event_cb(row, OnOpenTerminalSettings, LV_EVENT_CLICKED, this);
+
+    auto *icon = jetson::ui::CreateAppIcon(row, "terminal", 36);
+    lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *labels = lv_obj_create(row);
+    lv_obj_remove_style_all(labels);
+    lv_obj_set_width(labels, 1);
+    lv_obj_set_flex_grow(labels, 1);
+    lv_obj_set_height(labels, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(labels, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(labels, 2, 0);
+    lv_obj_clear_flag(labels, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                               LV_OBJ_FLAG_CLICKABLE));
+
+    auto *title = lv_label_create(labels);
+    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title, Color(p.text), 0);
+    lv_label_set_text(title, "Terminal");
+
+    auto *subtitle = lv_label_create(labels);
+    lv_obj_set_style_text_font(subtitle, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(subtitle, Color(p.sub_text), 0);
+    lv_label_set_text(subtitle, "Cài đặt theme");
+
+    auto *chevron = lv_label_create(row);
+    lv_obj_set_style_text_font(chevron, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(chevron, Color(p.sub_text), 0);
+    lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
+    lv_obj_clear_flag(chevron, LV_OBJ_FLAG_CLICKABLE);
+}
+
+void SettingsView::ApplicationsPageHeader(const char *title) {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *header = lv_obj_create(detail_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 42);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto *back = lv_obj_create(header);
+    lv_obj_remove_style_all(back);
+    lv_obj_set_size(back, 36, 36);
+    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(back, Color(p.button), 0);
+    lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_add_event_cb(back, OnApplicationsBack, LV_EVENT_CLICKED, this);
+
+    auto *arrow = lv_label_create(back);
+    lv_obj_set_style_text_font(arrow, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(arrow, Color(p.text), 0);
+    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
+    lv_obj_center(arrow);
+
+    auto *label = lv_label_create(header);
+    lv_obj_set_style_text_font(label, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(label, Color(p.text), 0);
+    lv_label_set_text(label, title);
+    lv_obj_align(label, LV_ALIGN_LEFT_MID, 48, 0);
+}
+
+lv_obj_t *SettingsView::CreateTerminalThemePreview(
+    lv_obj_t *parent, const jetson::TerminalTheme &theme) {
+    auto *preview = lv_obj_create(parent);
+    lv_obj_remove_style_all(preview);
+    lv_obj_set_size(preview, 82, 48);
+    lv_obj_set_style_radius(preview, 8, 0);
+    lv_obj_set_style_bg_color(preview, Color(theme.background), 0);
+    lv_obj_set_style_bg_opa(preview, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(preview, 1, 0);
+    lv_obj_set_style_border_color(preview, Color(theme.muted), 0);
+    lv_obj_set_style_border_opa(preview, LV_OPA_80, 0);
+    lv_obj_clear_flag(preview, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                               LV_OBJ_FLAG_CLICKABLE));
+
+    auto bar = [preview](int x, int y, int w, uint32_t color) {
+        auto *line = lv_obj_create(preview);
+        lv_obj_remove_style_all(line);
+        lv_obj_set_size(line, w, 5);
+        lv_obj_set_pos(line, x, y);
+        lv_obj_set_style_radius(line, 2, 0);
+        lv_obj_set_style_bg_color(line, Color(color), 0);
+        lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(line, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                                LV_OBJ_FLAG_CLICKABLE));
+    };
+    bar(8, 8, 64, theme.foreground);
+    bar(8, 17, 54, theme.muted);
+    bar(8, 29, 19, theme.accent);
+    bar(31, 29, 16, theme.foreground);
+    bar(51, 29, 13, theme.muted);
+    bar(68, 29, 5, theme.cursor);
+    return preview;
+}
+
+void SettingsView::MakeTerminalThemeRow(lv_obj_t *card,
+                                        const jetson::TerminalTheme &theme,
+                                        bool selected) {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *row = DisplayRow(card, "", nullptr, 66);
+    lv_obj_set_style_pad_left(row, 8, 0);
+    lv_obj_set_style_pad_right(row, 12, 0);
+    if (selected) {
+        lv_obj_set_style_bg_color(row, Color(p.accent), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_10, 0);
+    }
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(row, 3);
+
+    CreateTerminalThemePreview(row, theme);
+
+    auto *name = lv_label_create(row);
+    lv_obj_set_width(name, 1);
+    lv_obj_set_flex_grow(name, 1);
+    lv_obj_set_style_text_font(name, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(name, Color(selected ? p.accent : p.text), 0);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_label_set_text(name, theme.name);
+    lv_obj_clear_flag(name, LV_OBJ_FLAG_CLICKABLE);
+
+    auto *check = lv_label_create(row);
+    lv_obj_set_width(check, 24);
+    lv_obj_set_style_text_align(check, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(check, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(check, Color(p.accent), 0);
+    lv_label_set_text(check, selected ? LV_SYMBOL_OK : "");
+    lv_obj_clear_flag(check, LV_OBJ_FLAG_CLICKABLE);
+
+    auto *ctx = new ThemeCtx{this, theme.id};
+    lv_obj_add_event_cb(row, OnTerminalThemeSelected, LV_EVENT_CLICKED, ctx);
+    lv_obj_add_event_cb(row, OnThemeDeleted, LV_EVENT_DELETE, ctx);
+}
+
+void SettingsView::BuildTerminalSettings() {
+    ApplicationsPageHeader("Terminal");
+
+    Settings terminal("terminal", false);
+    const int size = std::clamp(
+        terminal.GetInt("text_size", jetson::kDefaultTerminalTextSize),
+        jetson::kMinTerminalTextSize, jetson::kMaxTerminalTextSize);
+    const auto &selected_theme = jetson::FindTerminalTheme(terminal.GetString(
+        "theme", jetson::kDefaultTerminalTheme));
+
+    auto *appearance = DisplayCard();
+    auto *size_row = DisplayRow(appearance, "Text Size", nullptr, 58);
+
+    auto make_size_button = [this, size_row](const char *text, lv_event_cb_t cb) {
+        const auto &palette = jetson::UiTheme::Instance().Palette();
+        auto *button = lv_obj_create(size_row);
+        lv_obj_remove_style_all(button);
+        lv_obj_set_size(button, 44, 42);
+        lv_obj_set_style_radius(button, 10, 0);
+        lv_obj_set_style_bg_color(button, Color(palette.button), 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, this);
+        auto *label = lv_label_create(button);
+        lv_obj_set_style_text_font(label, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(palette.text), 0);
+        lv_label_set_text(label, text);
+        lv_obj_center(label);
+    };
+    make_size_button("−", OnTerminalTextSmaller);
+
+    terminal_size_value_label_ = lv_label_create(size_row);
+    lv_obj_set_width(terminal_size_value_label_, 52);
+    lv_obj_set_style_text_align(terminal_size_value_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(terminal_size_value_label_, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(terminal_size_value_label_,
+                                Color(jetson::UiTheme::Instance().Palette().text), 0);
+    lv_label_set_text_fmt(terminal_size_value_label_, "%d", size);
+
+    make_size_button("+", OnTerminalTextLarger);
+    DisplayDivider(appearance);
+    DisplayRow(appearance, "Font", jetson::BuiltinTerminalFontName().c_str(), 58);
+
+    DisplayCaption("THEME");
+    auto *themes = DisplayCard();
+    for (size_t i = 0; i < jetson::TerminalThemeCount(); ++i) {
+        const auto &theme = jetson::TerminalThemeAt(i);
+        MakeTerminalThemeRow(themes, theme, std::strcmp(selected_theme.id, theme.id) == 0);
+        if (i + 1 < jetson::TerminalThemeCount()) DisplayDivider(themes);
+    }
+}
+
 void SettingsView::BuildWifi() {
     // One compact control row: title, reload (only while on), and power.
     // Merely opening the page probes radio state but never enables or scans it.
-    auto *top = MakeRow("WiFi", airplane_enabled_ ? "Đang tắt bởi chế độ máy bay" : nullptr);
+    auto *top = MakeRow("WiFi", airplane_enabled_ ? "Đang tắt bởi Plan mode" : nullptr);
     wifi_reload_btn_ = MakeReloadButton(top, OnWifiRescan);
     wifi_switch_ = MakeSwitch(top, false, OnWifiSwitch);
     WifiRefreshSwitch();
@@ -1260,7 +1471,7 @@ void SettingsView::BuildWifi() {
 
 void SettingsView::BuildBluetooth() {
     auto *top = MakeRow("Bluetooth",
-                        airplane_enabled_ ? "Đang tắt bởi chế độ máy bay" : nullptr);
+                        airplane_enabled_ ? "Đang tắt bởi Plan mode" : nullptr);
     bt_reload_btn_ = MakeReloadButton(top, OnBtRescan);
     bt_switch_ = MakeSwitch(top, false, OnBtSwitch);
     BtRefreshSwitch();
@@ -1911,7 +2122,7 @@ void SettingsView::WifiRescan() {
         wifi_nets_.clear();
         WifiRefreshSwitch();
         WifiRenderList();
-        SetStatus("WiFi bị tắt bởi chế độ máy bay");
+        SetStatus("WiFi bị tắt bởi Plan mode");
         return;
     }
     if (wifi_busy_.exchange(true)) return;
@@ -1976,7 +2187,7 @@ void SettingsView::WifiRenderList() {
         lv_obj_set_style_text_font(e, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(e, Color(p.sub_text), 0);
         lv_label_set_text(e, airplane_enabled_
-                                ? "Chế độ máy bay đang bật."
+                                ? "Plan mode đang bật."
                                 : (wifi_busy_.load() && wifi_enabled_)
                                       ? "Đang quét WiFi..."
                                       : !wifi_enabled_
@@ -2502,7 +2713,7 @@ void SettingsView::BtRescan() {
         bt_devs_.clear();
         BtRefreshSwitch();
         BtRenderList();
-        SetStatus("Bluetooth bị tắt bởi chế độ máy bay");
+        SetStatus("Bluetooth bị tắt bởi Plan mode");
         return;
     }
     if (bt_busy_.exchange(true)) {
@@ -2572,7 +2783,7 @@ void SettingsView::BtRenderList() {
         lv_obj_set_style_text_font(e, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(e, Color(p.sub_text), 0);
         lv_label_set_text(e, airplane_enabled_
-                                ? "Chế độ máy bay đang bật."
+                                ? "Plan mode đang bật."
                                 : (bt_busy_.load() && bt_powered_)
                                       ? "Đang tìm kiếm thiết bị Bluetooth..."
                                       : !bt_powered_
@@ -3151,6 +3362,8 @@ void SettingsView::OnSideClicked(lv_event_t *e) {
     if (ctx) {
         if (ctx->cat == Cat::Display) ctx->self->display_page_ = DisplayPage::Main;
         if (ctx->cat == Cat::General) ctx->self->general_page_ = GeneralPage::Main;
+        if (ctx->cat == Cat::Applications)
+            ctx->self->application_page_ = ApplicationPage::Main;
         ctx->self->ShowCategory(ctx->cat);
     }
 }
@@ -3165,6 +3378,9 @@ void SettingsView::OnBtRowDeleted(lv_event_t *e) {
 }
 void SettingsView::OnOptDeleted(lv_event_t *e) {
     delete static_cast<OptCtx *>(lv_event_get_user_data(e));
+}
+void SettingsView::OnThemeDeleted(lv_event_t *e) {
+    delete static_cast<ThemeCtx *>(lv_event_get_user_data(e));
 }
 void SettingsView::OnFontDeleted(lv_event_t *e) {
     delete static_cast<FontCtx *>(lv_event_get_user_data(e));
@@ -3334,6 +3550,69 @@ void SettingsView::OnMuteToggle(lv_event_t *e) {
     self->SetStatus(audible ? "Bật tiếng" : "Tắt tiếng");
 }
 
+void SettingsView::OnOpenTerminalSettings(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->application_page_ = ApplicationPage::Terminal;
+    self->ShowCategory(Cat::Applications);
+}
+
+void SettingsView::OnApplicationsBack(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->application_page_ = ApplicationPage::Main;
+    self->ShowCategory(Cat::Applications);
+}
+
+void SettingsView::OnTerminalTextSmaller(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (!self) return;
+    Settings terminal("terminal", true);
+    const int current = std::clamp(
+        terminal.GetInt("text_size", jetson::kDefaultTerminalTextSize),
+        jetson::kMinTerminalTextSize, jetson::kMaxTerminalTextSize);
+    const int next = std::max(jetson::kMinTerminalTextSize,
+                              current - jetson::kTerminalTextSizeStep);
+    terminal.SetInt("text_size", next);
+    if (self->terminal_size_value_label_)
+        lv_label_set_text_fmt(self->terminal_size_value_label_, "%d", next);
+    TerminalView::RefreshOpenTerminals();
+    self->SetStatus(("Cỡ chữ Terminal: " + std::to_string(next)).c_str());
+}
+
+void SettingsView::OnTerminalTextLarger(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (!self) return;
+    Settings terminal("terminal", true);
+    const int current = std::clamp(
+        terminal.GetInt("text_size", jetson::kDefaultTerminalTextSize),
+        jetson::kMinTerminalTextSize, jetson::kMaxTerminalTextSize);
+    const int next = std::min(jetson::kMaxTerminalTextSize,
+                              current + jetson::kTerminalTextSizeStep);
+    terminal.SetInt("text_size", next);
+    if (self->terminal_size_value_label_)
+        lv_label_set_text_fmt(self->terminal_size_value_label_, "%d", next);
+    TerminalView::RefreshOpenTerminals();
+    self->SetStatus(("Cỡ chữ Terminal: " + std::to_string(next)).c_str());
+}
+
+void SettingsView::OnTerminalThemeSelected(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *ctx = static_cast<ThemeCtx *>(lv_event_get_user_data(e));
+    if (!ctx || !ctx->self) return;
+    auto *self = ctx->self;
+    const std::string theme_id = ctx->theme_id;
+    const auto &theme = jetson::FindTerminalTheme(theme_id);
+    Settings("terminal", true).SetString("theme", theme_id);
+    TerminalView::RefreshOpenTerminals();
+    self->SetStatus((std::string("Terminal theme: ") + theme.name).c_str());
+    self->ShowCategory(Cat::Applications);
+}
+
 void SettingsView::OnAirplaneSwitch(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
@@ -3357,8 +3636,8 @@ void SettingsView::OnAirplaneSwitch(lv_event_t *e) {
     // while busy). The worker below reverts it if the transition fails.
     self->airplane_enabled_ = enabled;
     self->AirplaneRefreshUi();
-    self->SetStatus(enabled ? "Đang bật chế độ máy bay..."
-                            : "Đang tắt chế độ máy bay...");
+    self->SetStatus(enabled ? "Đang bật Plan mode..."
+                            : "Đang tắt Plan mode...");
     std::thread([self = self->Self(), enabled]() {
         auto result = jetson::SetAirplaneMode(enabled, self->wifi_, self->bluetooth_);
 
@@ -3378,13 +3657,13 @@ void SettingsView::OnAirplaneSwitch(lv_event_t *e) {
 
         std::string message;
         if (enabled && result.success) {
-            message = "Đã bật chế độ máy bay — WiFi và Bluetooth đã tắt";
+            message = "Đã bật Plan mode — WiFi và Bluetooth đã tắt";
         } else if (enabled) {
             message = "Không thể bật: một radio vẫn đang hoạt động";
         } else if (result.success) {
-            message = "Đã tắt chế độ máy bay";
+            message = "Đã tắt Plan mode";
         } else {
-            message = "Đã tắt chế độ máy bay, nhưng chưa khôi phục đủ radio";
+            message = "Đã tắt Plan mode, nhưng chưa khôi phục đủ radio";
         }
         self->SetStatus(result.error.empty()
                             ? message.c_str()
@@ -3403,7 +3682,7 @@ void SettingsView::OnVpnSwitch(lv_event_t *e) {
                     jetson::IsAirplaneModeEnabled())) {
         self->vpn_enabled_ = false;
         self->VpnRefreshUi();
-        const char *message = "Tắt chế độ máy bay trước khi bật VPN";
+        const char *message = "Tắt Plan mode trước khi bật VPN";
         self->SetStatus(message);
         self->Notify(message);
         return;
@@ -3451,7 +3730,7 @@ void SettingsView::OnWifiSwitch(lv_event_t *e) {
     if (self->airplane_enabled_ || self->airplane_busy_.load() ||
         jetson::IsAirplaneModeEnabled()) {
         self->WifiRefreshSwitch();
-        self->SetStatus("Tắt chế độ máy bay trước khi bật WiFi");
+        self->SetStatus("Tắt Plan mode trước khi bật WiFi");
         return;
     }
     bool on = lv_obj_has_state(self->wifi_switch_, LV_STATE_CHECKED);
@@ -3562,7 +3841,7 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
     if (self->airplane_enabled_ || self->airplane_busy_.load() ||
         jetson::IsAirplaneModeEnabled()) {
         self->BtRefreshSwitch();
-        const char *message = "Tắt chế độ máy bay trước khi bật Bluetooth";
+        const char *message = "Tắt Plan mode trước khi bật Bluetooth";
         self->SetStatus(message);
         self->Notify(message);
         return;

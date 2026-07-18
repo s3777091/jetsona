@@ -30,6 +30,10 @@ constexpr int kDefaultTextSize = 26;
 int g_text_size = kDefaultTextSize;
 bool g_text_bold = false;
 std::map<std::tuple<std::string, int, bool>, lv_font_t *> g_font_cache;
+std::map<int, lv_font_t *> g_terminal_font_cache;
+std::string g_terminal_font_path;
+std::string g_terminal_font_name = "Source Code Pro";
+bool g_terminal_font_resolved = false;
 
 const lv_font_t *SymbolFallbackForSize(int size) {
     /* LVGL's built-in Montserrat fonts include the LV_SYMBOL_* private-use
@@ -251,6 +255,66 @@ const lv_font_t *BuiltinTextFaceAt(int size_px) {
     }
     g_font_cache[key] = font;
     return font;
+}
+
+const lv_font_t *BuiltinTerminalFontAt(int size_px) {
+    size_px = std::clamp(size_px, 12, 28);
+    auto cached = g_terminal_font_cache.find(size_px);
+    if (cached != g_terminal_font_cache.end()) return cached->second;
+
+    if (!g_terminal_font_resolved) {
+        struct Candidate { std::string path; const char *name; };
+        const Candidate candidates[] = {
+            {joinPath(g_assets_dir.c_str(), "fonts/SourceCodePro-Regular.ttf"),
+             "Source Code Pro"},
+            {joinPath(g_assets_dir.c_str(), "fonts/fonts/SourceCodePro-Regular.ttf"),
+             "Source Code Pro"},
+            {"/usr/share/fonts/opentype/source-code-pro/SourceCodePro-Regular.otf",
+             "Source Code Pro"},
+            {"/usr/share/fonts/truetype/source-code-pro/SourceCodePro-Regular.ttf",
+             "Source Code Pro"},
+            {"/usr/share/fonts/adobe-source-code-pro/SourceCodePro-Regular.otf",
+             "Source Code Pro"},
+            {joinPath(g_assets_dir.c_str(), "fonts/DejaVuSansMono.ttf"),
+             "DejaVu Sans Mono"},
+            {"/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+             "DejaVu Sans Mono"},
+            {"/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",
+             "Liberation Mono"},
+            {"C:/Windows/Fonts/consola.ttf", "Consolas"},
+        };
+        for (const auto &candidate : candidates) {
+            if (!FileExists(candidate.path)) continue;
+            g_terminal_font_path = candidate.path;
+            g_terminal_font_name = candidate.name;
+            break;
+        }
+        g_terminal_font_resolved = true;
+    }
+
+    lv_font_t *font = nullptr;
+    if (!g_terminal_font_path.empty()) {
+        font = lv_tiny_ttf_create_file(g_terminal_font_path.c_str(), size_px);
+        if (font) {
+            font->fallback = SymbolFallbackForSize(size_px);
+            ESP_LOGI(TAG, "terminal font: %s at %d px",
+                     g_terminal_font_path.c_str(), size_px);
+        }
+    }
+    if (!font) {
+        font = const_cast<lv_font_t *>(BuiltinTextFaceAt(std::min(size_px, 24)));
+        g_terminal_font_name = BuiltinFontName();
+        ESP_LOGW(TAG, "no monospace font found; terminal uses %s",
+                 g_terminal_font_name.c_str());
+    }
+    g_terminal_font_cache[size_px] = font;
+    return font;
+}
+
+const lv_font_t *BuiltinTerminalFont() { return BuiltinTerminalFontAt(14); }
+const std::string &BuiltinTerminalFontName() {
+    (void)BuiltinTerminalFontAt(14);
+    return g_terminal_font_name;
 }
 
 const std::string &BuiltinFontName() { return g_font_name; }

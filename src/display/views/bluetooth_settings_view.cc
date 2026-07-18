@@ -147,7 +147,8 @@ lv_obj_t *BluetoothSettingsView::CreateRow(const jetson::BtDevice &dev) {
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 12, 0);
 
     // Leading device-category icon from the scan (controller-mini /
     // headphones / unknow-device).
@@ -156,27 +157,13 @@ lv_obj_t *BluetoothSettingsView::CreateRow(const jetson::BtDevice &dev) {
     lv_obj_set_style_image_recolor(kind_icon, lv_color_white(), 0);
     lv_obj_set_style_image_recolor_opa(kind_icon, LV_OPA_COVER, 0);
 
-    // Left: name (white) over address (grey), stacked in a column.
-    auto *left = lv_obj_create(row);
-    lv_obj_remove_style_all(left);
-    lv_obj_set_flex_grow(left, 1);
-    lv_obj_set_height(left, 48);
-    lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(left, 0, 0);
-    lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(left, 2, 0);
-
-    auto *name_lbl = lv_label_create(left);
+    // Name only (no address line), vertically centered by the row's flex.
+    auto *name_lbl = lv_label_create(row);
     lv_obj_set_style_text_font(name_lbl, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(name_lbl, lv_color_white(), 0);
     lv_label_set_text(name_lbl, dev.name.c_str());
     lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_max_width(name_lbl, width_ - 180, 0);
-
-    auto *addr_lbl = lv_label_create(left);
-    lv_obj_set_style_text_font(addr_lbl, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(addr_lbl, Color(0x9aa0a6), 0);
-    lv_label_set_text(addr_lbl, dev.address.c_str());
+    lv_obj_set_flex_grow(name_lbl, 1);
 
     // Right: RSSI bars + state tag.
     jetson::ui::CreateSignalBars(row, jetson::ui::RssiToSignalPercent(dev.rssi));
@@ -239,10 +226,11 @@ void BluetoothSettingsView::StartScan() {
     }).detach();
 }
 
-void BluetoothSettingsView::DoAction(const std::string &address, bool connected) {
+void BluetoothSettingsView::DoAction(const std::string &address,
+                                     const std::string &name, bool connected) {
     if (scanning_.exchange(true)) return;
-    SetStatus(connected ? ("Đang ngắt " + address + "...").c_str()
-                        : ("Đang pair + kết nối " + address + "...").c_str());
+    SetStatus(connected ? ("Đang ngắt " + name + "...").c_str()
+                        : ("Đang pair + kết nối " + name + "...").c_str());
     std::thread([self = shared_from_this(), address, connected]() {
         bool ok = connected ? self->bluetooth_.Disconnect(address)
                             : self->bluetooth_.PairAndConnect(address);
@@ -296,7 +284,7 @@ void BluetoothSettingsView::OnRescan(lv_event_t *e) {
 void BluetoothSettingsView::OnRowClicked(lv_event_t *e) {
     LvglLockGuard lock;
     auto *ctx = static_cast<RowCtx *>(lv_event_get_user_data(e));
-    ctx->self->DoAction(ctx->address, ctx->connected);
+    ctx->self->DoAction(ctx->address, ctx->name, ctx->connected);
 }
 
 } // namespace home

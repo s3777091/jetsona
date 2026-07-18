@@ -19,6 +19,13 @@ Board::Board()
       backlight_(0, false),
       led_(),
       boot_button_(0) {
+    // Apply the persisted mixer state before constructing the display. Calling
+    // Board::GetInstance() from the display constructor would recursively
+    // enter this singleton while it is still being initialized.
+    Settings display_settings("display");
+    audio_codec_.SetOutputState(display_settings.GetInt("volume", 50),
+                                display_settings.GetBool("muted", false));
+
     int w = JETSON_DISPLAY_WIDTH;
     int h = JETSON_DISPLAY_HEIGHT;
 

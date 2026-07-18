@@ -35,6 +35,11 @@ public:
     lv_indev_t *keyboard() const { return keyboard_; }
     lv_indev_t *mouse() const { return mouse_; }
 
+    /* Modifier state from the custom evdev keyboard. Views that implement
+     * desktop-style shortcuts (for example TerminalView's Ctrl+C / Ctrl+V)
+     * can distinguish a chord from an ordinary printable c/v key. */
+    bool KeyboardCtrlPressed() const { return keyboard_ctrl_pressed_.load(); }
+
     /* Group the USB keyboard delivers key events to. The chat/terminal/wifi
      * views add their textareas here so a physical keyboard can type into them. */
     lv_group_t *keypad_group() const { return keypad_group_; }
@@ -68,6 +73,7 @@ private:
     std::thread tick_thread_;
     std::thread handler_thread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> keyboard_ctrl_pressed_{false};
 };
 
 } // namespace jetson

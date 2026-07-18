@@ -64,15 +64,26 @@ lv_obj_t *MakeUsageBar(lv_obj_t *parent, uint32_t accent, lv_obj_t **label_out) 
 
 } // namespace
 
-OptimizeWidget::OptimizeWidget(lv_obj_t *parent) {
-    root_ = lv_obj_create(parent);
+OptimizeWidget::OptimizeWidget(lv_obj_t *icon_parent, lv_obj_t *popup_parent) {
+    if (!icon_parent) return;
+    if (!popup_parent) popup_parent = lv_layer_top();
+
+    // The action itself participates in StatusBar's flex row. The usage bars
+    // live in a sibling popup so they do not change the row's height/spacing.
+    button_ = jetson::ui::CreateAppIcon(icon_parent, "clean-cache", 20);
+    lv_obj_set_style_image_recolor(button_, lv_color_white(), 0);
+    lv_obj_set_style_image_recolor_opa(button_, LV_OPA_COVER, 0);
+    lv_obj_add_flag(button_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(button_, 8);
+    lv_obj_add_event_cb(button_, OnOptimizeClicked, LV_EVENT_CLICKED, this);
+
+    root_ = lv_obj_create(popup_parent);
     lv_obj_remove_style_all(root_);
-    lv_obj_set_size(root_, LV_SIZE_CONTENT, 66);
-    // Tucked under the status strip's wifi/bt/battery cluster (top-right).
-    lv_obj_align(root_, LV_ALIGN_TOP_RIGHT, -10, 50);
-    lv_obj_set_style_radius(root_, 33, 0);
+    lv_obj_set_size(root_, 214, 70);
+    lv_obj_align_to(root_, button_, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
+    lv_obj_set_style_radius(root_, 18, 0);
     lv_obj_set_style_bg_color(root_, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(root_, LV_OPA_60, 0);
+    lv_obj_set_style_bg_opa(root_, LV_OPA_90, 0);
     lv_obj_set_style_border_width(root_, 1, 0);
     lv_obj_set_style_border_color(root_, lv_color_white(), 0);
     lv_obj_set_style_border_opa(root_, LV_OPA_50, 0);
@@ -80,60 +91,30 @@ OptimizeWidget::OptimizeWidget(lv_obj_t *parent) {
     lv_obj_set_style_shadow_width(root_, 12, 0);
     lv_obj_set_style_shadow_offset_y(root_, 3, 0);
     lv_obj_set_style_shadow_opa(root_, LV_OPA_20, 0);
-    lv_obj_set_style_pad_left(root_, 8, 0);
-    lv_obj_set_style_pad_right(root_, 10, 0);
-    lv_obj_set_style_pad_top(root_, 7, 0);
-    lv_obj_set_style_pad_bottom(root_, 7, 0);
-    lv_obj_set_style_pad_column(root_, 8, 0);
-    lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(root_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(root_, 8, 0);
+    lv_obj_set_style_pad_row(root_, 6, 0);
+    lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(root_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(root_, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
 
-    // Compact icon-only action.  The widget already communicates its purpose
-    // through the clean-cache glyph; the old "Tối ưu" caption needlessly
-    // widened the pill on the 800x480 panel.
-    button_ = lv_obj_create(root_);
-    lv_obj_remove_style_all(button_);
-    lv_obj_set_size(button_, 44, 52);
-    lv_obj_clear_flag(button_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(button_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(button_, OnOptimizeClicked, LV_EVENT_CLICKED, this);
-
-    // 40px and shadow-free: a 44px circle plus its glow reached past the
-    // capsule's rounded end and looked detached from the widget.
-    auto *circle = lv_obj_create(button_);
-    lv_obj_remove_style_all(circle);
-    lv_obj_set_size(circle, 40, 40);
-    lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(circle, Color(kAccentBlue), 0);
-    lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(circle, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-    lv_obj_center(circle);
-
-    auto *icon = jetson::ui::CreateAppIcon(circle, "clean-cache", 24);
-    lv_obj_set_style_image_recolor(icon, lv_color_white(), 0);
-    lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
-    lv_obj_center(icon);
-
-    auto *bars = lv_obj_create(root_);
-    lv_obj_remove_style_all(bars);
-    lv_obj_set_size(bars, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_row(bars, 6, 0);
-    lv_obj_set_flex_flow(bars, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(bars, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_clear_flag(bars, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
-    disk_bar_ = MakeUsageBar(bars, kAccentCyan, &disk_label_);
-    ram_bar_ = MakeUsageBar(bars, kAccentBlue, &ram_label_);
+    disk_bar_ = MakeUsageBar(root_, kAccentCyan, &disk_label_);
+    ram_bar_ = MakeUsageBar(root_, kAccentBlue, &ram_label_);
 
     Apply(ReadStats());
     timer_ = lv_timer_create(OnTimer, kRefreshMs, this);
 }
 
 OptimizeWidget::~OptimizeWidget() {
+    if (optimize_thread_.joinable()) optimize_thread_.join();
     LvglLockGuard lock;
     if (timer_) { lv_timer_del(timer_); timer_ = nullptr; }
     if (root_) { lv_obj_del(root_); root_ = nullptr; }
+}
+
+void OptimizeWidget::HidePopup() {
+    if (root_) lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
 }
 
 OptimizeWidget::Stats OptimizeWidget::ReadStats() {
@@ -173,9 +154,10 @@ void OptimizeWidget::Apply(const Stats &s) {
 void OptimizeWidget::StartOptimize() {
     bool expected = false;
     if (!optimizing_.compare_exchange_strong(expected, true)) return;
-    lv_obj_set_style_opa(button_, LV_OPA_50, 0);
+    if (optimize_thread_.joinable()) optimize_thread_.join();
+    lv_obj_set_style_image_recolor(button_, Color(0x69b7ff), 0);
 
-    std::thread([this]() {
+    optimize_thread_ = std::thread([this]() {
         const Stats before = ReadStats();
         sync();
         // Drop clean page/dentry/inode caches. Direct write first (we run as
@@ -198,7 +180,7 @@ void OptimizeWidget::StartOptimize() {
         {
             LvglLockGuard lock;
             Apply(after);
-            lv_obj_set_style_opa(button_, LV_OPA_COVER, 0);
+            lv_obj_set_style_image_recolor(button_, lv_color_white(), 0);
             if (notify_) {
                 char msg[80];
                 if (ok) std::snprintf(msg, sizeof(msg), "Đã giải phóng %ld MB RAM", freed_mb);
@@ -207,7 +189,7 @@ void OptimizeWidget::StartOptimize() {
             }
         }
         optimizing_ = false;
-    }).detach();
+    });
 }
 
 void OptimizeWidget::OnTimer(lv_timer_t *t) {
@@ -220,7 +202,19 @@ void OptimizeWidget::OnTimer(lv_timer_t *t) {
 void OptimizeWidget::OnOptimizeClicked(lv_event_t *e) {
     auto *self = static_cast<OptimizeWidget *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
-    self->StartOptimize();
+    if (!self->root_) return;
+    const bool opening = lv_obj_has_flag(self->root_, LV_OBJ_FLAG_HIDDEN);
+    if (opening) {
+        if (self->before_open_) self->before_open_();
+        lv_obj_align_to(self->root_, self->button_, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
+        lv_obj_clear_flag(self->root_, LV_OBJ_FLAG_HIDDEN);
+        self->Apply(ReadStats());
+        // No separate "clean" button: opening the real status action performs
+        // the cache drop immediately and then refreshes both usage bars.
+        self->StartOptimize();
+    } else {
+        self->HidePopup();
+    }
 }
 
 } // namespace home

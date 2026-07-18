@@ -1,4 +1,5 @@
 #include "display/widgets/status_bar.h"
+#include "display/common/airplane_icon.h"
 #include "display/common/lvgl_utils.h"
 #include "display/core/app_icons.h"
 #include "display/core/lvgl_image.h"
@@ -15,6 +16,7 @@
 #include <lvgl.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -123,14 +125,11 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_clear_flag(left_cluster_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // Keep the five items on the right in one flex cluster. Fixed absolute
-    // offsets made Wi-Fi/Bluetooth look detached from the battery, especially
-    // after the user changed the global font size.
+    // Six quick-setting icons, in the requested left-to-right order:
+    // cache, Bluetooth, Wi-Fi, sound, display brightness, power.
     right_cluster_ = lv_obj_create(status_strip_);
     lv_obj_remove_style_all(right_cluster_);
-    // Wide enough for the full set: VPN + link + bt + charging bolt +
-    // battery + lang + power (still clear of the centered island).
-    lv_obj_set_size(right_cluster_, 250, lv_pct(100));
+    lv_obj_set_size(right_cluster_, 184, lv_pct(100));
     lv_obj_align(right_cluster_, LV_ALIGN_RIGHT_MID, -10, 0);
     lv_obj_set_flex_flow(right_cluster_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(right_cluster_, LV_FLEX_ALIGN_END,
@@ -161,78 +160,15 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_set_style_text_color(datetime_label_, lv_color_white(), 0);
     lv_label_set_text(datetime_label_, "--:--  --/--");
 
-    // airplans.png and vpn.png ship with their own artwork (a near-white plane,
-    // a magenta shield), so neither goes through add_icon's white recolor --
-    // tinting them would throw away the color the assets were drawn with.
-    airplane_icon_ = jetson::ui::CreateAppIcon(right_cluster_, "airplans", kStatusIconPx);
-    lv_obj_add_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
+    optimize_widget_ = std::make_unique<OptimizeWidget>(right_cluster_, parent);
+    optimize_widget_->SetBeforeOpenCb([this]() { HideQuickMenus(); });
+    optimize_widget_->SetNotifyCb(
+        [this](const char *message) { ShowNotification(message, 2500); });
 
-    vpn_icon_ = jetson::ui::CreateAppIcon(right_cluster_, "vpn", kStatusIconPx);
-    lv_obj_add_flag(vpn_icon_, LV_OBJ_FLAG_HIDDEN);
-
-    // Single connectivity slot: "wifi"/"no-wifi", or "ethernet" while a LAN
-    // cable is plugged (RefreshConnectivity swaps the source).
-    add_icon(&wifi_icon_, "wifi", OnWifiClick);
     add_icon(&bt_icon_, "bluetooth", OnBtClick);
-
-    // Charging bolt beside the battery; hidden until the battery reports
-    // charging (RefreshBattery re-reads the sensor every 5 s). Same green as
-    // the charging fill.
-    charge_icon_ = jetson::ui::CreateAppIcon(right_cluster_, "charge-batery", 16);
-    lv_obj_set_style_image_recolor(charge_icon_, Color(0x34c759), 0);
-    lv_obj_set_style_image_recolor_opa(charge_icon_, LV_OPA_COVER, 0);
-    lv_obj_add_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
-
-    battery_icon_root_ = lv_obj_create(right_cluster_);
-    lv_obj_remove_style_all(battery_icon_root_);
-    lv_obj_set_size(battery_icon_root_, 52, 20);
-    lv_obj_clear_flag(battery_icon_root_,
-                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
-    battery_icon_body_ = lv_obj_create(battery_icon_root_);
-    lv_obj_remove_style_all(battery_icon_body_);
-    lv_obj_set_size(battery_icon_body_, 47, 20);
-    lv_obj_set_pos(battery_icon_body_, 0, 0);
-    lv_obj_set_style_radius(battery_icon_body_, 6, 0);
-    lv_obj_set_style_border_width(battery_icon_body_, 1, 0);
-    lv_obj_set_style_border_color(battery_icon_body_, lv_color_white(), 0);
-    lv_obj_set_style_bg_color(battery_icon_body_, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(battery_icon_body_, LV_OPA_70, 0);
-    lv_obj_clear_flag(battery_icon_body_,
-                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
-    battery_icon_fill_ = lv_obj_create(battery_icon_body_);
-    lv_obj_remove_style_all(battery_icon_fill_);
-    lv_obj_set_size(battery_icon_fill_, 41, 16);
-    lv_obj_set_pos(battery_icon_fill_, 2, 1);
-    lv_obj_set_style_radius(battery_icon_fill_, 4, 0);
-    lv_obj_set_style_bg_color(battery_icon_fill_, Color(0x34c759), 0);
-    lv_obj_set_style_bg_opa(battery_icon_fill_, LV_OPA_70, 0);
-    lv_obj_clear_flag(battery_icon_fill_,
-                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
-    // Percentage is drawn inside the battery body, above the colored fill.
-    battery_percent_label_ = lv_label_create(battery_icon_body_);
-    lv_obj_set_style_text_font(battery_percent_label_, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
-    lv_label_set_text(battery_percent_label_, "100");
-    lv_obj_center(battery_percent_label_);
-
-    battery_icon_nub_ = lv_obj_create(battery_icon_root_);
-    lv_obj_remove_style_all(battery_icon_nub_);
-    lv_obj_set_size(battery_icon_nub_, 3, 8);
-    lv_obj_set_pos(battery_icon_nub_, 48, 6);
-    lv_obj_set_style_radius(battery_icon_nub_, 1, 0);
-    lv_obj_set_style_bg_color(battery_icon_nub_, Color(0x34c759), 0);
-    lv_obj_set_style_bg_opa(battery_icon_nub_, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(battery_icon_nub_,
-                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
-    lang_label_ = lv_label_create(right_cluster_);
-    lv_obj_set_style_text_font(lang_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(lang_label_, lv_color_white(), 0);
-    lv_label_set_text(lang_label_, "EN");
-
+    add_icon(&wifi_icon_, "wifi", OnWifiClick);
+    add_icon(&sound_icon_, "speaker", OnSoundClick);
+    add_icon(&brightness_icon_, "sun", OnBrightnessClick);
     add_icon(&power_icon_, "start", OnPowerClick);
 
     // ---- Resting Dynamic Island (centered, solid black) ----
@@ -336,6 +272,7 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     // backdrop -- a full-screen clickable on layer_top intercepted mouse input,
     // so the menu now dismisses via the power icon toggle + an auto-close
     // timer + tapping an action). ----
+    BuildQuickMenus();
     BuildPowerMenu();
 
     lv_obj_add_event_cb(pill_, OnDeleted, LV_EVENT_DELETE, this);
@@ -354,12 +291,14 @@ StatusBar::StatusBar(lv_obj_t *parent) {
                 next_poll = std::chrono::steady_clock::now() + kConnPollInterval;
                 if (jetson::IsAirplaneModeEnabled()) {
                     polled_wifi_signal_.store(-1);
+                    polled_wifi_enabled_.store(0);
                     polled_bt_powered_.store(0);
                     polled_bt_device_.store(
                         static_cast<int>(jetson::BtDeviceKind::None));
                 } else {
-                    polled_wifi_signal_.store(
-                        jetson::WifiManager::Instance().ActiveSignal());
+                    auto &wifi = jetson::WifiManager::Instance();
+                    polled_wifi_enabled_.store(wifi.IsEnabled() ? 1 : 0);
+                    polled_wifi_signal_.store(wifi.ActiveSignal());
                     auto &bt = jetson::BluetoothManager::Instance();
                     const bool bt_on = bt.IsPowered();
                     polled_bt_powered_.store(bt_on ? 1 : 0);
@@ -637,13 +576,323 @@ void StatusBar::RefreshMedia(bool force_layout) {
     if (!notification_visible_) ShowMediaPresentation(force_layout);
 }
 
+lv_obj_t *StatusBar::CreateQuickMenu(int width) {
+    auto *menu = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(menu);
+    lv_obj_set_size(menu, width, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(menu, Color(0xe9e9f3), 0);
+    lv_obj_set_style_bg_opa(menu, LV_OPA_95, 0);
+    lv_obj_set_style_radius(menu, 14, 0);
+    lv_obj_set_style_border_width(menu, 1, 0);
+    lv_obj_set_style_border_color(menu, Color(0xffffff), 0);
+    lv_obj_set_style_border_opa(menu, LV_OPA_70, 0);
+    lv_obj_set_style_shadow_color(menu, lv_color_black(), 0);
+    lv_obj_set_style_shadow_width(menu, 14, 0);
+    lv_obj_set_style_shadow_offset_y(menu, 4, 0);
+    lv_obj_set_style_shadow_opa(menu, LV_OPA_30, 0);
+    lv_obj_set_style_pad_all(menu, 10, 0);
+    lv_obj_set_style_pad_row(menu, 4, 0);
+    lv_obj_set_flex_flow(menu, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(menu, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
+    return menu;
+}
+
+void StatusBar::RebuildWifiMenu() {
+    if (!wifi_menu_) return;
+    lv_obj_clean(wifi_menu_);
+    wifi_row_ctx_.clear();
+
+    auto *header = lv_obj_create(wifi_menu_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 34);
+    auto *title = lv_label_create(header);
+    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title, Color(0x20242b), 0);
+    lv_label_set_text(title, "Wi-Fi");
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 2, 0);
+    wifi_switch_ = lv_switch_create(header);
+    lv_obj_set_size(wifi_switch_, 42, 24);
+    lv_obj_align(wifi_switch_, LV_ALIGN_RIGHT_MID, -2, 0);
+    if (polled_wifi_enabled_.load() == 1)
+        lv_obj_add_state(wifi_switch_, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(wifi_switch_, OnWifiToggle, LV_EVENT_VALUE_CHANGED, this);
+
+    std::vector<jetson::WifiNetwork> networks;
+    {
+        std::lock_guard<std::mutex> lock(quick_scan_mutex_);
+        networks = quick_wifi_networks_;
+    }
+    if (networks.size() > 4) networks.resize(4);
+
+    auto add_text_row = [&](const char *text, bool clickable, lv_event_cb_t cb,
+                            void *data) {
+        auto *row = lv_obj_create(wifi_menu_);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), 36);
+        lv_obj_set_style_radius(row, 8, 0);
+        if (clickable) {
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, data);
+        }
+        auto *label = lv_label_create(row);
+        lv_obj_set_width(label, 178);
+        lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(0x20242b), 0);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+        lv_label_set_text(label, text);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 4, 0);
+        return row;
+    };
+
+    if (networks.empty()) {
+        add_text_row(wifi_scan_busy_.load() ? "Đang quét mạng…" : "Không tìm thấy mạng",
+                     false, nullptr, nullptr);
+    } else {
+        for (const auto &network : networks) {
+            auto ctx = std::make_unique<QuickRowContext>();
+            ctx->self = this;
+            ctx->id = network.ssid;
+            ctx->active = network.in_use;
+            ctx->secured = network.secured;
+            ctx->known = network.known;
+            QuickRowContext *raw = ctx.get();
+            wifi_row_ctx_.push_back(std::move(ctx));
+            auto *row = add_text_row(network.ssid.c_str(), true, OnWifiRow, raw);
+            auto *right = lv_label_create(row);
+            lv_obj_set_style_text_font(right, &BUILTIN_SMALL_TEXT_FONT, 0);
+            lv_obj_set_style_text_color(right,
+                Color(network.in_use ? 0x0a84ff : 0x5d6470), 0);
+            char state[32];
+            std::snprintf(state, sizeof(state), network.in_use ? "Nối %d%%" : "%s%d%%",
+                          network.signal, network.secured ? "Khóa " : "");
+            lv_label_set_text(right, state);
+            lv_obj_align(right, LV_ALIGN_RIGHT_MID, -4, 0);
+        }
+    }
+    auto *settings = add_text_row("Cài đặt Wi-Fi…", true, OnWifiSettings, this);
+    lv_obj_set_style_border_width(settings, 1, 0);
+    lv_obj_set_style_border_side(settings, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_border_color(settings, Color(0xc0c2cc), 0);
+    applied_wifi_scan_revision_ = wifi_scan_revision_.load();
+}
+
+void StatusBar::RebuildBluetoothMenu() {
+    if (!bt_menu_) return;
+    lv_obj_clean(bt_menu_);
+    bt_row_ctx_.clear();
+
+    auto *header = lv_obj_create(bt_menu_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 34);
+    auto *title = lv_label_create(header);
+    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title, Color(0x20242b), 0);
+    lv_label_set_text(title, "Bluetooth");
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 2, 0);
+    bt_switch_ = lv_switch_create(header);
+    lv_obj_set_size(bt_switch_, 42, 24);
+    lv_obj_align(bt_switch_, LV_ALIGN_RIGHT_MID, -2, 0);
+    if (polled_bt_powered_.load() == 1)
+        lv_obj_add_state(bt_switch_, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(bt_switch_, OnBluetoothToggle, LV_EVENT_VALUE_CHANGED, this);
+
+    std::vector<jetson::BtDevice> devices;
+    {
+        std::lock_guard<std::mutex> lock(quick_scan_mutex_);
+        devices = quick_bt_devices_;
+    }
+    // Keyboards are intentionally absent from this compact device menu; they
+    // remain available in the full Bluetooth settings screen.
+    devices.erase(std::remove_if(devices.begin(), devices.end(), [](const auto &d) {
+        std::string name = d.name;
+        std::transform(name.begin(), name.end(), name.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return name.find("keyboard") != std::string::npos ||
+               name.find("off-key") != std::string::npos;
+    }), devices.end());
+    if (devices.size() > 4) devices.resize(4);
+
+    auto add_row = [&](const char *text, bool clickable, lv_event_cb_t cb, void *data) {
+        auto *row = lv_obj_create(bt_menu_);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), 36);
+        lv_obj_set_style_radius(row, 8, 0);
+        if (clickable) {
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, data);
+        }
+        auto *label = lv_label_create(row);
+        lv_obj_set_width(label, 184);
+        lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(label, Color(0x20242b), 0);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+        lv_label_set_text(label, text);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 4, 0);
+        return row;
+    };
+
+    if (devices.empty()) {
+        add_row(bt_scan_busy_.load() ? "Đang tìm thiết bị…" : "Không có thiết bị gần đây",
+                false, nullptr, nullptr);
+    } else {
+        for (const auto &device : devices) {
+            auto ctx = std::make_unique<QuickRowContext>();
+            ctx->self = this;
+            ctx->id = device.address;
+            ctx->active = device.connected;
+            ctx->known = device.paired;
+            QuickRowContext *raw = ctx.get();
+            bt_row_ctx_.push_back(std::move(ctx));
+            auto *row = add_row(device.name.c_str(), true, OnBluetoothRow, raw);
+            auto *state = lv_label_create(row);
+            lv_obj_set_style_text_font(state, &BUILTIN_SMALL_TEXT_FONT, 0);
+            lv_obj_set_style_text_color(state,
+                Color(device.connected ? 0x0a84ff : 0x5d6470), 0);
+            lv_label_set_text(state, device.connected ? "Đã nối" : (device.paired ? "Đã ghép" : ""));
+            lv_obj_align(state, LV_ALIGN_RIGHT_MID, -4, 0);
+        }
+    }
+    auto *settings = add_row("Cài đặt Bluetooth…", true, OnBluetoothSettings, this);
+    lv_obj_set_style_border_width(settings, 1, 0);
+    lv_obj_set_style_border_side(settings, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_border_color(settings, Color(0xc0c2cc), 0);
+    applied_bt_scan_revision_ = bt_scan_revision_.load();
+}
+
+void StatusBar::BuildQuickMenus() {
+    wifi_menu_ = CreateQuickMenu(260);
+    bt_menu_ = CreateQuickMenu(270);
+    RebuildWifiMenu();
+    RebuildBluetoothMenu();
+
+    sound_menu_ = CreateQuickMenu(280);
+    auto *sound_title = lv_label_create(sound_menu_);
+    lv_obj_set_style_text_font(sound_title, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(sound_title, Color(0x20242b), 0);
+    lv_label_set_text(sound_title, "Âm thanh");
+    auto *sound_row = lv_obj_create(sound_menu_);
+    lv_obj_remove_style_all(sound_row);
+    lv_obj_set_size(sound_row, lv_pct(100), 38);
+    lv_obj_set_flex_flow(sound_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(sound_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(sound_row, 8, 0);
+    const bool sound_muted = Settings("display").GetBool("muted", false);
+    sound_mute_icon_ = jetson::ui::CreateAppIcon(
+        sound_row, sound_muted ? "speaker-mute" : "speaker", 20);
+    lv_obj_add_flag(sound_mute_icon_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(sound_mute_icon_, 6);
+    lv_obj_add_event_cb(sound_mute_icon_, OnMuteClick, LV_EVENT_CLICKED, this);
+    sound_slider_ = lv_slider_create(sound_row);
+    lv_obj_set_width(sound_slider_, 174);
+    lv_slider_set_range(sound_slider_, 0, 100);
+    const int volume = Clamp(Settings("display").GetInt("volume", 50), 0, 100);
+    lv_slider_set_value(sound_slider_, volume, LV_ANIM_OFF);
+    lv_obj_add_event_cb(sound_slider_, OnVolumeChanged, LV_EVENT_VALUE_CHANGED, this);
+    sound_value_ = lv_label_create(sound_row);
+    lv_obj_set_style_text_font(sound_value_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(sound_value_, Color(0x20242b), 0);
+    char volume_text[12];
+    std::snprintf(volume_text, sizeof(volume_text), "%d%%", volume);
+    lv_label_set_text(sound_value_, volume_text);
+    auto *output = lv_label_create(sound_menu_);
+    lv_obj_set_style_text_font(output, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(output, Color(0x3c4350), 0);
+    lv_label_set_text(output, "Đầu ra\n✓  Speaker Jetson");
+
+    brightness_menu_ = CreateQuickMenu(280);
+    auto *bright_title = lv_label_create(brightness_menu_);
+    lv_obj_set_style_text_font(bright_title, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(bright_title, Color(0x20242b), 0);
+    lv_label_set_text(bright_title, "Màn hình");
+    auto *bright_row = lv_obj_create(brightness_menu_);
+    lv_obj_remove_style_all(bright_row);
+    lv_obj_set_size(bright_row, lv_pct(100), 38);
+    lv_obj_set_flex_flow(bright_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bright_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(bright_row, 8, 0);
+    auto *sun = jetson::ui::CreateAppIcon(bright_row, "sun", 20);
+    lv_obj_set_style_image_recolor(sun, Color(0xff9f0a), 0);
+    lv_obj_set_style_image_recolor_opa(sun, LV_OPA_COVER, 0);
+    brightness_slider_ = lv_slider_create(bright_row);
+    lv_obj_set_width(brightness_slider_, 176);
+    lv_slider_set_range(brightness_slider_, 20, 100);
+    const int brightness = Clamp(Settings("display").GetInt("brightness", 100), 20, 100);
+    lv_slider_set_value(brightness_slider_, brightness, LV_ANIM_OFF);
+    lv_obj_add_event_cb(brightness_slider_, OnBrightnessChanged,
+                        LV_EVENT_VALUE_CHANGED, this);
+    brightness_value_ = lv_label_create(bright_row);
+    lv_obj_set_style_text_font(brightness_value_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(brightness_value_, Color(0x20242b), 0);
+    char brightness_text[12];
+    std::snprintf(brightness_text, sizeof(brightness_text), "%d%%", brightness);
+    lv_label_set_text(brightness_value_, brightness_text);
+}
+
+void StatusBar::StartWifiScan() {
+    bool expected = false;
+    if (!wifi_scan_busy_.compare_exchange_strong(expected, true)) return;
+    if (wifi_scan_thread_.joinable()) wifi_scan_thread_.join();
+    wifi_scan_thread_ = std::thread([this]() {
+        auto networks = jetson::WifiManager::Instance().Scan();
+        if (networks.size() > 4) networks.resize(4);
+        {
+            std::lock_guard<std::mutex> lock(quick_scan_mutex_);
+            quick_wifi_networks_ = std::move(networks);
+        }
+        wifi_scan_busy_.store(false);
+        wifi_scan_revision_.fetch_add(1);
+    });
+}
+
+void StatusBar::StartBluetoothScan() {
+    bool expected = false;
+    if (!bt_scan_busy_.compare_exchange_strong(expected, true)) return;
+    if (bt_scan_thread_.joinable()) bt_scan_thread_.join();
+    bt_scan_thread_ = std::thread([this]() {
+        auto devices = jetson::BluetoothManager::Instance().Scan(5);
+        {
+            std::lock_guard<std::mutex> lock(quick_scan_mutex_);
+            quick_bt_devices_ = std::move(devices);
+        }
+        bt_scan_busy_.store(false);
+        bt_scan_revision_.fetch_add(1);
+    });
+}
+
+void StatusBar::HideQuickMenus(lv_obj_t *except) {
+    for (auto *menu : {wifi_menu_, bt_menu_, sound_menu_, brightness_menu_, power_menu_})
+        if (menu && menu != except) lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
+    if (optimize_widget_) optimize_widget_->HidePopup();
+}
+
+void StatusBar::ShowQuickMenu(lv_obj_t *menu, lv_obj_t *anchor) {
+    if (!menu || !anchor) return;
+    if (!lv_obj_has_flag(menu, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    HideQuickMenus(menu);
+    lv_obj_align_to(menu, anchor, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
+    lv_obj_clear_flag(menu, LV_OBJ_FLAG_HIDDEN);
+    ArmQuickMenuTimer();
+}
+
+void StatusBar::ArmQuickMenuTimer() {
+    if (quick_menu_timer_) { lv_timer_del(quick_menu_timer_); quick_menu_timer_ = nullptr; }
+    quick_menu_timer_ = lv_timer_create(OnQuickMenuTimer, kAutoCloseMs, this);
+    lv_timer_set_repeat_count(quick_menu_timer_, 1);
+}
+
 void StatusBar::BuildPowerMenu() {
     power_menu_ = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(power_menu_);
     lv_obj_set_size(power_menu_, 220, LV_SIZE_CONTENT);
-    lv_obj_align_to(power_menu_, pill_, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
-    lv_obj_set_style_bg_color(power_menu_, Color(0x000000), 0);
-    lv_obj_set_style_bg_opa(power_menu_, LV_OPA_90, 0);
+    lv_obj_align_to(power_menu_, power_icon_, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
+    lv_obj_set_style_bg_color(power_menu_, Color(0xe9e9f3), 0);
+    lv_obj_set_style_bg_opa(power_menu_, LV_OPA_95, 0);
     lv_obj_set_style_radius(power_menu_, 14, 0);
     lv_obj_set_style_pad_all(power_menu_, 8, 0);
     lv_obj_set_style_pad_row(power_menu_, 6, 0);
@@ -664,12 +913,12 @@ void StatusBar::BuildPowerMenu() {
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         auto *lbl = lv_label_create(row);
         lv_obj_set_style_text_font(lbl, &BUILTIN_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+        lv_obj_set_style_text_color(lbl, Color(0x9d1c1c), 0);
         lv_label_set_text(lbl, label);
         lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 12, 0);
         lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, this);
     };
-    add_item("Khóa", OnPowerLock);
+    add_item("Ngủ", OnPowerLock);
     add_item("Khởi động lại", OnPowerReboot);
     add_item("Tắt máy", OnPowerShutdown);
 }
@@ -680,14 +929,24 @@ StatusBar::~StatusBar() {
     // call) cannot deadlock.
     conn_poll_stop_.store(true);
     if (conn_poll_thread_.joinable()) conn_poll_thread_.join();
+    if (wifi_scan_thread_.joinable()) wifi_scan_thread_.join();
+    if (bt_scan_thread_.joinable()) bt_scan_thread_.join();
+    // OptimizeWidget joins its cache worker before taking the LVGL lock. Do
+    // that before this destructor locks LVGL, otherwise a worker finishing its
+    // notification could wait on the same lock while we wait on its join.
+    optimize_widget_.reset();
 
     LvglLockGuard lock;
     if (timer_) { lv_timer_del(timer_); timer_ = nullptr; }
     if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
     if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
+    if (quick_menu_timer_) { lv_timer_del(quick_menu_timer_); quick_menu_timer_ = nullptr; }
     // Siblings on the same top layer are not deleted with pill_; delete them
     // explicitly. Delete callbacks null pointers if the layer tore down first.
-    if (power_menu_) { lv_obj_del(power_menu_); power_menu_ = nullptr; }
+    for (lv_obj_t **menu : {&wifi_menu_, &bt_menu_, &sound_menu_,
+                            &brightness_menu_, &power_menu_}) {
+        if (*menu) { lv_obj_del(*menu); *menu = nullptr; }
+    }
     if (pill_) { lv_obj_del(pill_); pill_ = nullptr; }
     if (status_strip_) { lv_obj_del(status_strip_); status_strip_ = nullptr; }
     if (media_artwork_) {
@@ -719,6 +978,7 @@ void StatusBar::Hide() {
     SyncIslandRest();
     if (power_menu_ && !lv_obj_has_flag(power_menu_, LV_OBJ_FLAG_HIDDEN))
         HidePowerMenu();
+    HideQuickMenus();
 }
 
 void StatusBar::Show() {
@@ -730,9 +990,16 @@ void StatusBar::Show() {
 
 void StatusBar::Refresh() {
     RefreshClock();
-    RefreshBattery();
-    RefreshLang();
     RefreshConnectivity();
+    if (sound_icon_) {
+        const bool muted = Settings("display").GetBool("muted", false);
+        jetson::ui::SetAppIcon(sound_icon_, muted ? "speaker-mute" : "speaker",
+                               kStatusIconPx);
+    }
+    if (wifi_scan_revision_.load() != applied_wifi_scan_revision_ && wifi_menu_)
+        RebuildWifiMenu();
+    if (bt_scan_revision_.load() != applied_bt_scan_revision_ && bt_menu_)
+        RebuildBluetoothMenu();
     RefreshMedia();
 }
 
@@ -740,12 +1007,14 @@ void StatusBar::RefreshConnectivity() {
     const bool airplane = jetson::IsAirplaneModeEnabled();
     const bool vpn = jetson::VpnManager::Instance().CachedEnabled();
     const int wifi_signal = polled_wifi_signal_.load();
+    const int wifi_enabled = polled_wifi_enabled_.load();
     const int eth_connected = polled_eth_connected_.load();
     const int bt_powered = polled_bt_powered_.load();
     const int bt_device_polled = polled_bt_device_.load();
     if (airplane_state_read_ && airplane == cached_airplane_mode_ &&
         vpn_state_read_ && vpn == cached_vpn_enabled_ &&
         wifi_signal == cached_wifi_signal_ &&
+        wifi_enabled == cached_wifi_enabled_ &&
         eth_connected == cached_eth_connected_ &&
         bt_powered == cached_bt_powered_ &&
         bt_device_polled == cached_bt_device_)
@@ -755,41 +1024,22 @@ void StatusBar::RefreshConnectivity() {
     vpn_state_read_ = true;
     cached_vpn_enabled_ = vpn;
     cached_wifi_signal_ = wifi_signal;
+    cached_wifi_enabled_ = wifi_enabled;
     cached_eth_connected_ = eth_connected;
     cached_bt_powered_ = bt_powered;
     cached_bt_device_ = bt_device_polled;
 
-    if (airplane_icon_) {
-        if (airplane) lv_obj_clear_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_add_flag(airplane_icon_, LV_OBJ_FLAG_HIDDEN);
-    }
-    // Radio cluster is replaced by the airplane glyph while airplane mode is
-    // on; otherwise each icon reflects the last polled state.
-    auto set_hidden = [](lv_obj_t *o, bool hidden) {
-        if (!o) return;
-        if (hidden) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
-    };
-    // A plugged LAN cable takes over the WiFi slot: wired connectivity is not
-    // a radio, so it stays visible even while airplane mode hides the rest.
-    const bool ethernet = eth_connected == 1;
-    set_hidden(wifi_icon_, airplane && !ethernet);
-    set_hidden(bt_icon_, airplane);
-    set_hidden(vpn_icon_, !vpn);
-
-    if (ethernet) {
-        jetson::ui::SetAppIcon(wifi_icon_, "ethernet", kStatusIconPx);
-    } else if (!airplane) {
-        // -2 (not polled yet) keeps the optimistic connected icon the old
-        // static glyph showed at boot.
-        jetson::ui::SetAppIcon(wifi_icon_, wifi_signal == -1 ? "no-wifi" : "wifi",
-                               kStatusIconPx);
-    }
+    // The six quick settings never disappear or reorder. Radio-off state is
+    // represented by the crossed-out asset, so the click target remains where
+    // the user expects it.
+    jetson::ui::SetAppIcon(wifi_icon_,
+        (airplane || wifi_enabled == 0 || wifi_signal == -1) ? "no-wifi" : "wifi",
+        kStatusIconPx);
     const int bt_device = airplane
         ? static_cast<int>(jetson::BtDeviceKind::None) : cached_bt_device_;
-    if (!airplane) {
+    {
         jetson::ui::SetAppIcon(bt_icon_,
-                               bt_powered == 0 ? "no-bluetooh" : "bluetooth",
+                               (airplane || bt_powered == 0) ? "no-bluetooh" : "bluetooth",
                                kStatusIconPx);
         // Powered and idle is not the same state as powered with a device on
         // it, and the glyph alone cannot tell them apart -- tint the icon blue
@@ -852,15 +1102,6 @@ void StatusBar::RefreshBattery() {
         (void)discharging;
     }
 
-    // Charging bolt appears as soon as a poll sees the charger attached.
-    if (charge_icon_) {
-        const bool show_charge = has_battery_ && cached_battery_charging_;
-        if (show_charge == lv_obj_has_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN)) {
-            if (show_charge) lv_obj_clear_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
-            else lv_obj_add_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-
     // Keep a percentage-style battery visible even on installations without a
     // readable battery sensor; those retain the neutral 100% fallback.
     const int level = has_battery_ ? cached_battery_level_ : 100;
@@ -871,7 +1112,10 @@ void StatusBar::RefreshBattery() {
             lv_obj_clear_flag(battery_icon_fill_, LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_size(battery_icon_fill_, std::max(1, 41 * level / 100), 16);
         }
-        const uint32_t fill_color = cached_battery_charging_ || level > 50
+        // Colour tracks the charge only, never the plug: a pack sitting at 30%
+        // is still low while it charges, so it stays yellow and only turns
+        // green past 70.
+        const uint32_t fill_color = level >= 70
                                         ? 0x34c759
                                         : (level > 20 ? 0xffcc00 : 0xff3b30);
         lv_obj_set_style_bg_color(battery_icon_fill_, Color(fill_color), 0);
@@ -880,8 +1124,11 @@ void StatusBar::RefreshBattery() {
             lv_obj_set_style_bg_color(battery_icon_nub_, Color(fill_color), 0);
     }
     if (battery_percent_label_) {
-        char buf[8];
-        std::snprintf(buf, sizeof(buf), "%d", level);
+        char buf[16];
+        if (has_battery_ && cached_battery_charging_)
+            std::snprintf(buf, sizeof(buf), LV_SYMBOL_CHARGE "%d", level);
+        else
+            std::snprintf(buf, sizeof(buf), "%d", level);
         lv_label_set_text(battery_percent_label_, buf);
         lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
     }
@@ -1054,7 +1301,8 @@ void StatusBar::ShowWelcome(int duration_ms) {
 void StatusBar::ShowPowerMenu() {
     if (!power_menu_) return;
     CollapseIsland(false);
-    lv_obj_align_to(power_menu_, pill_, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
+    HideQuickMenus(power_menu_);
+    lv_obj_align_to(power_menu_, power_icon_, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 8);
     AnimateDrop(power_menu_, true);
     if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
     power_menu_timer_ = lv_timer_create(OnPowerMenuTimer, kAutoCloseMs, this);
@@ -1089,12 +1337,21 @@ void StatusBar::OnPowerMenuTimer(lv_timer_t *t) {
     self->HidePowerMenu();
 }
 
+void StatusBar::OnQuickMenuTimer(lv_timer_t *t) {
+    auto *self = static_cast<StatusBar *>(lv_timer_get_user_data(t));
+    LvglLockGuard lock;
+    self->quick_menu_timer_ = nullptr;
+    lv_timer_del(t);
+    self->HideQuickMenus();
+}
+
 void StatusBar::OnDeleted(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     if (!self) return;
     if (self->timer_) { lv_timer_del(self->timer_); self->timer_ = nullptr; }
     if (self->notif_timer_) { lv_timer_del(self->notif_timer_); self->notif_timer_ = nullptr; }
     if (self->power_menu_timer_) { lv_timer_del(self->power_menu_timer_); self->power_menu_timer_ = nullptr; }
+    if (self->quick_menu_timer_) { lv_timer_del(self->quick_menu_timer_); self->quick_menu_timer_ = nullptr; }
     self->pill_ = nullptr;
 }
 
@@ -1106,7 +1363,169 @@ void StatusBar::OnPowerMenuDeleted(lv_event_t *e) {
 void StatusBar::OnWifiClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
+    self->StartWifiScan();
+    self->RebuildWifiMenu();
+    self->ShowQuickMenu(self->wifi_menu_, self->wifi_icon_);
+}
+
+void StatusBar::OnSoundClick(lv_event_t *e) {
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    LvglLockGuard lock;
+    const int volume = Clamp(Settings("display").GetInt("volume", 50), 0, 100);
+    const bool muted = Settings("display").GetBool("muted", false);
+    self->suppress_quick_events_ = true;
+    if (self->sound_slider_) lv_slider_set_value(self->sound_slider_, volume, LV_ANIM_OFF);
+    self->suppress_quick_events_ = false;
+    if (self->sound_mute_icon_)
+        jetson::ui::SetAppIcon(self->sound_mute_icon_, muted ? "speaker-mute" : "speaker", 20);
+    if (self->sound_value_) {
+        char text[12];
+        std::snprintf(text, sizeof(text), "%d%%", volume);
+        lv_label_set_text(self->sound_value_, text);
+    }
+    self->ShowQuickMenu(self->sound_menu_, self->sound_icon_);
+}
+
+void StatusBar::OnBrightnessClick(lv_event_t *e) {
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    LvglLockGuard lock;
+    const int brightness = Clamp(Settings("display").GetInt("brightness", 100), 20, 100);
+    self->suppress_quick_events_ = true;
+    if (self->brightness_slider_)
+        lv_slider_set_value(self->brightness_slider_, brightness, LV_ANIM_OFF);
+    self->suppress_quick_events_ = false;
+    if (self->brightness_value_) {
+        char text[12];
+        std::snprintf(text, sizeof(text), "%d%%", brightness);
+        lv_label_set_text(self->brightness_value_, text);
+    }
+    self->ShowQuickMenu(self->brightness_menu_, self->brightness_icon_);
+}
+
+void StatusBar::OnWifiToggle(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    const bool enabled = lv_obj_has_state(
+        static_cast<lv_obj_t *>(lv_event_get_target(e)), LV_STATE_CHECKED);
+    std::thread([self, enabled]() {
+        const bool changed = jetson::WifiManager::Instance().Enable(enabled);
+        if (enabled && changed) self->StartWifiScan();
+    }).detach();
+    self->polled_wifi_enabled_.store(enabled ? 1 : 0);
+    self->ArmQuickMenuTimer();
+}
+
+void StatusBar::OnBluetoothToggle(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    const bool enabled = lv_obj_has_state(
+        static_cast<lv_obj_t *>(lv_event_get_target(e)), LV_STATE_CHECKED);
+    std::thread([self, enabled]() {
+        auto &bt = jetson::BluetoothManager::Instance();
+        if (enabled) {
+            if (bt.PowerOn()) self->StartBluetoothScan();
+        } else {
+            (void)bt.PowerOff();
+        }
+    }).detach();
+    self->polled_bt_powered_.store(enabled ? 1 : 0);
+    self->ArmQuickMenuTimer();
+}
+
+void StatusBar::OnWifiRow(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *ctx = static_cast<QuickRowContext *>(lv_event_get_user_data(e));
+    if (!ctx || !ctx->self) return;
+    auto *self = ctx->self;
+    const std::string ssid = ctx->id;
+    const bool active = ctx->active;
+    if (!active && ctx->secured && !ctx->known) {
+        self->HideQuickMenus();
+        // Password entry belongs to the full Wi-Fi sheet; the compact list
+        // still handles saved/open networks directly.
+        if (self->wifi_action_) self->wifi_action_();
+        return;
+    }
+    self->HideQuickMenus();
+    std::thread([ssid, active]() {
+        auto &wifi = jetson::WifiManager::Instance();
+        if (active) (void)wifi.Disconnect(); else (void)wifi.Connect(ssid, "");
+    }).detach();
+}
+
+void StatusBar::OnBluetoothRow(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *ctx = static_cast<QuickRowContext *>(lv_event_get_user_data(e));
+    if (!ctx || !ctx->self) return;
+    const std::string address = ctx->id;
+    const bool connected = ctx->active;
+    ctx->self->HideQuickMenus();
+    std::thread([address, connected]() {
+        auto &bt = jetson::BluetoothManager::Instance();
+        if (connected) (void)bt.Disconnect(address);
+        else (void)bt.PairAndConnect(address);
+    }).detach();
+}
+
+void StatusBar::OnWifiSettings(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    self->HideQuickMenus();
     if (self->wifi_action_) self->wifi_action_();
+}
+
+void StatusBar::OnBluetoothSettings(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    self->HideQuickMenus();
+    if (self->bt_action_) self->bt_action_();
+}
+
+void StatusBar::OnVolumeChanged(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    if (self->suppress_quick_events_) return;
+    const int value = lv_slider_get_value(self->sound_slider_);
+    const bool muted = value == 0;
+    Settings settings("display", true);
+    settings.SetInt("volume", value);
+    settings.SetBool("muted", muted);
+    if (self->sound_value_) {
+        char text[12];
+        std::snprintf(text, sizeof(text), "%d%%", value);
+        lv_label_set_text(self->sound_value_, text);
+    }
+    if (self->sound_mute_icon_)
+        jetson::ui::SetAppIcon(self->sound_mute_icon_, muted ? "speaker-mute" : "speaker", 20);
+    if (self->volume_action_) self->volume_action_(value, muted);
+    self->ArmQuickMenuTimer();
+}
+
+void StatusBar::OnMuteClick(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    Settings settings("display", true);
+    const bool muted = !settings.GetBool("muted", false);
+    settings.SetBool("muted", muted);
+    const int volume = Clamp(settings.GetInt("volume", 50), 0, 100);
+    jetson::ui::SetAppIcon(self->sound_mute_icon_, muted ? "speaker-mute" : "speaker", 20);
+    if (self->volume_action_) self->volume_action_(volume, muted);
+    self->ArmQuickMenuTimer();
+}
+
+void StatusBar::OnBrightnessChanged(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    if (self->suppress_quick_events_) return;
+    const int value = lv_slider_get_value(self->brightness_slider_);
+    Settings("display", true).SetInt("brightness", value);
+    if (self->brightness_value_) {
+        char text[12];
+        std::snprintf(text, sizeof(text), "%d%%", value);
+        lv_label_set_text(self->brightness_value_, text);
+    }
+    if (self->brightness_action_) self->brightness_action_(value);
+    self->ArmQuickMenuTimer();
 }
 
 void StatusBar::OnIslandClick(lv_event_t *e) {
@@ -1176,7 +1595,9 @@ int StatusBar::IslandCenterY() const {
 void StatusBar::OnBtClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
-    if (self->bt_action_) self->bt_action_();
+    if (self->polled_bt_powered_.load() == 1) self->StartBluetoothScan();
+    self->RebuildBluetoothMenu();
+    self->ShowQuickMenu(self->bt_menu_, self->bt_icon_);
 }
 
 void StatusBar::OnPowerClick(lv_event_t *e) {
@@ -1193,7 +1614,8 @@ void StatusBar::OnPowerLock(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
     self->HidePowerMenu();
-    if (self->lock_action_) self->lock_action_();
+    if (self->sleep_action_) self->sleep_action_();
+    else if (self->lock_action_) self->lock_action_();
 }
 
 void StatusBar::OnPowerReboot(lv_event_t *e) {

@@ -6,7 +6,10 @@
 #include "fonts.h"
 #include "media/player_controller.h"
 #include "media/user_library.h"
+#include "net/zing_discover_cache.h"
 #include "net/zing_music_client.h"
+#include "platform/perf_governor.h"
+#include "platform/task_pool.h"
 
 #include <lvgl.h>
 
@@ -35,11 +38,24 @@ constexpr int kCardWidth = 124;
 constexpr int kCoverSize = 112;
 constexpr int kRailHeight = 178;
 
-// Zing occasionally 5xx's a signed request; retry the whole fetch once off the
-// LVGL thread (the skeleton stays up meanwhile) before surfacing the error UI,
-// so the user never has to press refresh for a transient blip.
-constexpr int kMaxLoadAttempts = 2;
+// Zing occasionally 5xx's a signed request or drops a few cover downloads;
+// retry the whole fetch up to twice more off the LVGL thread (the skeleton
+// stays up meanwhile, and already-cached covers are not re-downloaded) before
+// surfacing the error UI, so the user rarely has to refresh by hand.
+constexpr int kMaxLoadAttempts = 3;
 constexpr int kRetryDelayMs = 500;
+
+// Pull-to-refresh: how far the page must be dragged below its top edge
+// (LVGL's elastic overscroll) before releasing triggers a reload, and how
+// little of a pull already shows the indicator.
+constexpr int kPullShowPx = 10;
+constexpr int kPullTriggerPx = 56;
+
+bool HasAnyRail(const jetson::music::DiscoverData &d) {
+    return !d.personalized.empty() || !d.new_releases.empty() ||
+           !d.chill.empty() || !d.top100.empty() || !d.artists.empty() ||
+           !d.radio.empty();
+}
 
 void RemoveInteraction(lv_obj_t *obj) {
     if (!obj) return;
@@ -168,6 +184,32 @@ void MusicView::BuildBody() {
     lv_obj_add_flag(page_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(page_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(page_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_add_event_cb(page_, OnPageScroll, LV_EVENT_SCROLL, this);
+    lv_obj_add_event_cb(page_, OnPageScroll, LV_EVENT_SCROLL_END, this);
+
+    // Pull-to-refresh badge. Lives on body_ (not page_) so it neither scrolls
+    // away nor gets wiped by ClearPage; OnPageScroll drives its visibility.
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    pull_indicator_ = lv_obj_create(body_);
+    lv_obj_remove_style_all(pull_indicator_);
+    lv_obj_set_size(pull_indicator_, 44, 44);
+    lv_obj_align(pull_indicator_, LV_ALIGN_TOP_MID, 0, 6);
+    lv_obj_set_style_radius(pull_indicator_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(pull_indicator_, Color(p.button), 0);
+    lv_obj_set_style_bg_opa(pull_indicator_, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_color(pull_indicator_, lv_color_black(), 0);
+    lv_obj_set_style_shadow_opa(pull_indicator_, LV_OPA_30, 0);
+    lv_obj_set_style_shadow_width(pull_indicator_, 12, 0);
+    lv_obj_add_flag(pull_indicator_, LV_OBJ_FLAG_HIDDEN);
+    RemoveInteraction(pull_indicator_);
+    pull_icon_ = lv_label_create(pull_indicator_);
+    lv_obj_set_style_text_font(pull_icon_, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(pull_icon_, Color(p.text), 0);
+    lv_obj_set_style_transform_pivot_x(pull_icon_, lv_pct(50), 0);
+    lv_obj_set_style_transform_pivot_y(pull_icon_, lv_pct(50), 0);
+    lv_label_set_text(pull_icon_, LV_SYMBOL_REFRESH);
+    lv_obj_center(pull_icon_);
+    RemoveInteraction(pull_icon_);
 
     // The Dynamic Island in the status bar now owns the transport controls and
     // now-playing display, so there is no in-app bottom player bar. This timer
@@ -313,12 +355,38 @@ void MusicView::LoadDiscovery() {
     loading_ = true;
     album_mode_ = false;
     const uint64_t generation = request_generation_.fetch_add(1) + 1;
-    BuildSkeleton();
+    /* Stale-while-revalidate: when rails are already on screen (pull refresh)
+     * keep them there while the fetch runs; on a cold view the worker below
+     * replaces the skeleton with the disk snapshot within milliseconds and
+     * the network result swaps in whenever it lands. */
+    const bool have_stale = HasAnyRail(discovery_);
+    if (!have_stale) BuildSkeleton();
 
     auto result = std::make_shared<jetson::music::DiscoverData>();
     std::weak_ptr<MusicView> weak =
         std::static_pointer_cast<MusicView>(shared_from_this());
-    std::thread([weak, result, generation]() {
+    jetson::TaskPool::Instance().Post(
+        jetson::TaskPool::Lane::Interactive,
+        [weak, result, generation, have_stale]() {
+        if (!have_stale) {
+            auto snapshot = std::make_shared<jetson::music::DiscoverData>();
+            if (jetson::music::LoadDiscoverCache(*snapshot) &&
+                HasAnyRail(*snapshot)) {
+                Application::GetInstance().Schedule(
+                    [weak, snapshot, generation]() {
+                    auto self = weak.lock();
+                    if (!self) return;
+                    LvglLockGuard lock;
+                    if (generation != self->request_generation_.load()) return;
+                    // The network fetch may have finished first; never paint
+                    // stale data over a fresh page.
+                    if (!self->loading_) return;
+                    self->discovery_ = std::move(*snapshot);
+                    self->RenderDiscovery();
+                });
+            }
+        }
+        auto boost = jetson::PerfGovernor::Instance().Acquire("music-discover");
         std::string error;
         bool ok = false;
         for (int attempt = 0; attempt < kMaxLoadAttempts && !ok; ++attempt) {
@@ -337,16 +405,21 @@ void MusicView::LoadDiscovery() {
                 error = "Không thể đọc dữ liệu Zing";
             }
         }
+        if (ok && HasAnyRail(*result))
+            jetson::music::SaveDiscoverCache(*result);
         Application::GetInstance().Schedule([weak, result, ok, error, generation]() {
             auto self = weak.lock();
             if (!self) return;
             LvglLockGuard lock;
             if (generation != self->request_generation_.load()) return;
             self->loading_ = false;
-            if (!ok && result->personalized.empty() &&
-                result->new_releases.empty() && result->chill.empty() &&
-                result->top100.empty() && result->artists.empty() &&
-                result->radio.empty()) {
+            if (!ok && !HasAnyRail(*result)) {
+                // A cached page is still on screen: keep it instead of
+                // replacing usable rails with an error screen.
+                if (HasAnyRail(self->discovery_) && !self->album_mode_) {
+                    self->Notify("zing api đang lỗi, hiển thị dữ liệu cũ");
+                    return;
+                }
                 self->ClearPage();
                 const auto &p = jetson::UiTheme::Instance().Palette();
                 auto *message = lv_label_create(self->page_);
@@ -360,6 +433,7 @@ void MusicView::LoadDiscovery() {
                 auto *retry = MakeIconButton(self->page_, LV_SYMBOL_REFRESH, 46,
                                              OnRetry, self.get());
                 lv_obj_set_style_align(retry, LV_ALIGN_CENTER, 0);
+                self->AddPullHint("Kéo xuống hoặc bấm nút để thử lại", true);
                 self->Notify(text);
                 return;
             }
@@ -367,7 +441,7 @@ void MusicView::LoadDiscovery() {
             self->RenderDiscovery();
             if (!error.empty()) self->Notify(error);
         });
-    }).detach();
+    });
 }
 
 void MusicView::RenderSection(const char *title,
@@ -470,6 +544,7 @@ void MusicView::RenderSection(const char *title,
 void MusicView::RenderDiscovery() {
     album_mode_ = false;
     ClearPage();
+    AddPullHint("Kéo xuống để làm mới danh sách", false);
     RenderSection("Dành riêng cho bạn", discovery_.personalized, false);
     RenderSection("Mới phát hành", discovery_.new_releases, false);
     RenderSection("Chill", discovery_.chill, false);
@@ -530,6 +605,13 @@ void MusicView::OpenUserAlbum(const std::string &album_id) {
     // page we are about to render.
     request_generation_.fetch_add(1);
     loading_ = false;
+
+    // Remember what is on screen so pull-to-refresh can rebuild this album
+    // (from the local library) instead of re-fetching the last Zing item.
+    pending_item_ = {};
+    pending_item_.id = stored.id;
+    pending_item_.kind = CatalogKind::UserAlbum;
+    pending_item_.title = stored.name;
 
     album_ = {};
     album_.id = stored.id;
@@ -641,7 +723,10 @@ void MusicView::LoadAlbum(const CatalogItem &item) {
     auto album = std::make_shared<jetson::music::Album>();
     std::weak_ptr<MusicView> weak =
         std::static_pointer_cast<MusicView>(shared_from_this());
-    std::thread([weak, album, id = item.id, generation]() {
+    jetson::TaskPool::Instance().Post(
+        jetson::TaskPool::Lane::Interactive,
+        [weak, album, id = item.id, generation]() {
+        auto boost = jetson::PerfGovernor::Instance().Acquire("music-album");
         std::string error;
         bool ok = false;
         for (int attempt = 0; attempt < kMaxLoadAttempts && !ok; ++attempt) {
@@ -686,13 +771,14 @@ void MusicView::LoadAlbum(const CatalogItem &item) {
                 auto *retry = MakeIconButton(self->page_, LV_SYMBOL_REFRESH, 46,
                                              OnRetry, self.get());
                 lv_obj_set_style_align(retry, LV_ALIGN_CENTER, 0);
+                self->AddPullHint("Kéo xuống hoặc bấm nút để thử lại", true);
                 self->Notify(kZingApiError);
                 return;
             }
             self->album_ = std::move(*album);
             self->RenderAlbum();
         });
-    }).detach();
+    });
 }
 
 void MusicView::RenderAlbum() {
@@ -884,6 +970,82 @@ void MusicView::ShowDiscovery() {
         return;
     }
     RenderDiscovery();
+}
+
+void MusicView::AddPullHint(const char *text, bool with_spacer) {
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    auto *hint = lv_label_create(page_);
+    lv_obj_set_width(hint, lv_pct(100));
+    lv_obj_set_style_text_font(hint, jetson::BuiltinTextFaceAt(13), 0);
+    lv_obj_set_style_text_color(hint, Color(p.sub_text), 0);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(hint, text);
+    RemoveInteraction(hint);
+    if (!with_spacer) return;
+    // LVGL only offers the elastic top overscroll (the pull gesture) on a page
+    // that can scroll at all, so pad short pages (the error screens) past the
+    // viewport height.
+    auto *spacer = lv_obj_create(page_);
+    lv_obj_remove_style_all(spacer);
+    lv_obj_set_size(spacer, lv_pct(100), lv_pct(100));
+    RemoveInteraction(spacer);
+}
+
+void MusicView::PullRefresh() {
+    if (loading_) return;
+    lv_obj_scroll_to_y(page_, 0, LV_ANIM_OFF);
+    if (album_mode_ && pending_item_.kind == CatalogKind::UserAlbum) {
+        OpenUserAlbum(pending_item_.id);
+        return;
+    }
+    if (album_mode_ && !pending_item_.id.empty()) {
+        LoadAlbum(pending_item_);
+        return;
+    }
+    LoadDiscovery();
+}
+
+void MusicView::OnPageScroll(lv_event_t *e) {
+    auto *self = static_cast<MusicView *>(lv_event_get_user_data(e));
+    if (!self || !self->page_ || !self->pull_indicator_) return;
+    // Elastic overscroll above the top edge reads as a negative scroll-y.
+    const int32_t pull = -lv_obj_get_scroll_y(self->page_);
+    lv_indev_t *indev = lv_indev_active();
+    const bool pressed =
+        indev && lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED;
+
+    if (pressed) {
+        self->pull_armed_ = pull >= kPullTriggerPx && !self->loading_;
+        if (pull > kPullShowPx && !self->loading_) {
+            const auto &p = jetson::UiTheme::Instance().Palette();
+            const int32_t capped = std::min<int32_t>(pull, 2 * kPullTriggerPx);
+            lv_obj_clear_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_translate_y(self->pull_indicator_,
+                                         std::min<int32_t>(capped / 2, 40), 0);
+            lv_obj_set_style_opa(self->pull_indicator_,
+                static_cast<lv_opa_t>(
+                    std::min<int32_t>(LV_OPA_COVER,
+                                      capped * LV_OPA_COVER / kPullTriggerPx)),
+                0);
+            // Spin the arrow with the drag; the accent fill signals "release
+            // now to refresh".
+            lv_obj_set_style_transform_rotation(self->pull_icon_, capped * 45, 0);
+            lv_obj_set_style_bg_color(self->pull_indicator_,
+                Color(self->pull_armed_ ? p.accent : p.button), 0);
+        } else {
+            lv_obj_add_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
+    }
+
+    // Released: the elastic snap-back keeps emitting scroll events, so the
+    // first not-pressed event both hides the badge and fires the reload once.
+    lv_obj_add_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
+    if (self->pull_armed_) {
+        self->pull_armed_ = false;
+        self->PullRefresh();
+    }
 }
 
 void MusicView::PlayTrack(size_t index) {

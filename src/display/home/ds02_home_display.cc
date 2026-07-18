@@ -17,6 +17,7 @@
 #include "display/views/trash_view.h"
 #include "display/views/wifi_settings_view.h"
 #include "agent/conversation.h"
+#include "app/boot_prefetch.h"
 #include "application.h"
 #include "media/player_controller.h"
 #include "net/bluetooth_manager.h"
@@ -313,6 +314,10 @@ void Ds02HomeDisplay::SetupUI() {
 
     // Boot splash on top of the freshly-built home UI; fades out on its own.
     ShowOnboardSplash(2500);
+
+    // Warm caches (music snapshot, image cache size, RAM guard) behind the
+    // splash on the low-priority prefetch lane.
+    jetson::StartBootPrefetch();
 }
 
 void Ds02HomeDisplay::StartWeatherUpdater() {
@@ -383,11 +388,6 @@ void Ds02HomeDisplay::CreateStandbyObjects() {
     lv_label_set_text(chat_label_, "");
     lv_obj_align(chat_label_, LV_ALIGN_BOTTOM_MID, 0, -(kDockHeight + kDockBottomMargin + 80));
 
-    // "Tối ưu" system widget: live disk/RAM bars + drop-caches button. Its
-    // toast reports how much RAM was freed via the Dynamic Island.
-    optimize_widget_ = std::make_unique<OptimizeWidget>(standby_layer_);
-    optimize_widget_->SetNotifyCb(
-        [this](const char *msg) { ShowNotification(msg, 2500); });
     // No swipe gestures: the panel has no working touch, so standby state
     // changes only via the dock (finder icon toggles the app drawer).
 }
@@ -590,7 +590,8 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
      * the brightness overlay so the software dimmer affects it too. */
     volume_muted_ = Settings("display").GetBool("muted", false);
     auto &music_player = jetson::music::PlayerController::Instance();
-    music_player.SetVolume(Settings("display").GetInt("volume", 50));
+    const int initial_volume = Settings("display").GetInt("volume", 50);
+    music_player.SetVolume(initial_volume);
     music_player.SetMuted(volume_muted_);
     // Warm the shared app-icon cache (raw bytes + one decode per icon into
     // LVGL's image cache) before the status bar and views start asking for
@@ -599,6 +600,24 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
     status_bar_ = std::make_unique<StatusBar>(lv_layer_top());
     status_bar_->SetWifiAction([this]() { OpenWifiSettings(); });
     status_bar_->SetBluetoothAction([this]() { OpenBluetoothSettings(); });
+    status_bar_->SetVolumeAction([this](int volume, bool muted) {
+        volume_muted_ = muted;
+        auto &player = jetson::music::PlayerController::Instance();
+        player.SetVolume(volume);
+        player.SetMuted(muted);
+        auto *audio = Board::GetInstance().GetAudioCodec();
+        audio->SetOutputState(volume, muted);
+    });
+    status_bar_->SetBrightnessAction([this](int brightness) {
+        SetBrightness(brightness);
+    });
+    status_bar_->SetSleepAction([]() {
+        std::thread([]() {
+            sync();
+            int r = std::system("systemctl suspend");
+            (void)r;
+        }).detach();
+    });
     status_bar_->SetLockAction([this]() { OpenLockScreen(); });
     // Reboot/shutdown shell out exactly like Settings > Power does (system()
     // on a detached thread). The power menu's open+tap is the 2-step confirm.
@@ -967,6 +986,8 @@ void Ds02HomeDisplay::OpenSettings() {
             auto &player = jetson::music::PlayerController::Instance();
             player.SetVolume(v);
             player.SetMuted(muted);
+            auto *audio = Board::GetInstance().GetAudioCodec();
+            audio->SetOutputState(v, muted);
         });
     settings_view_->SetLockRequest([this]() { OpenLockScreen(); });
     settings_view_->SetNotificationApplier(

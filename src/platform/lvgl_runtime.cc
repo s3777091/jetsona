@@ -36,6 +36,9 @@ struct KeyboardState {
     int fd = -1;
     bool shift = false;
     bool caps = false;
+    bool left_ctrl = false;
+    bool right_ctrl = false;
+    std::atomic<bool> *ctrl_out = nullptr;
     int key = 0;
     lv_indev_state_t state = LV_INDEV_STATE_RELEASED;
 };
@@ -141,6 +144,12 @@ static void keyboard_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         if (ev.type != EV_KEY) continue;
         if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT) {
             st->shift = (ev.value != 0);
+            continue;
+        }
+        if (ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL) {
+            if (ev.code == KEY_LEFTCTRL) st->left_ctrl = (ev.value != 0);
+            else st->right_ctrl = (ev.value != 0);
+            if (st->ctrl_out) st->ctrl_out->store(st->left_ctrl || st->right_ctrl);
             continue;
         }
         if (ev.code == KEY_CAPSLOCK) {
@@ -588,6 +597,8 @@ void LvglRuntime::openKeyboard() {
 
     auto *st = new KeyboardState();
     st->fd = fd;
+    st->ctrl_out = &keyboard_ctrl_pressed_;
+    keyboard_ctrl_pressed_.store(false);
     keyboard_ = lv_indev_create();
     lv_indev_set_type(keyboard_, LV_INDEV_TYPE_KEYPAD);
     lv_indev_set_read_cb(keyboard_, keyboard_read_cb);

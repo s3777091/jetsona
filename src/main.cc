@@ -1,6 +1,7 @@
 #include "application.h"
 #include "esp_log.h"
 #include "lvgl_runtime.h"
+#include "platform/perf_governor.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +27,10 @@ int main(int /*argc*/, char ** /*argv*/) {
 
     ESP_LOGI(TAG, "Jetson Nano DS-02 firmware starting (display=%dx%d, backend=%s)",
              JETSON_DISPLAY_WIDTH, JETSON_DISPLAY_HEIGHT, JETSON_DISPLAY_BACKEND);
+
+    // Replay a clock baseline left behind by a crash mid-boost, before any
+    // new boost can be requested.
+    jetson::PerfGovernor::Instance().Init();
 
     auto &app = Application::GetInstance();
     if (!app.Initialize()) return EXIT_FAILURE;

@@ -39,6 +39,13 @@ const std::string &BuiltinAssetsDir();
  * no Vietnamese glyphs). Falls back to a built-in font if the TTF is
  * unavailable. The returned pointer is stable for the process lifetime. */
 const lv_font_t *BuiltinTextFaceAt(int size_px);
+
+/* Fixed-width face for terminal/code surfaces at an explicit pixel size.
+ * Source Code Pro is preferred from the firmware assets, then common system
+ * monospace families are tried. Faces are cached for the process lifetime. */
+const lv_font_t *BuiltinTerminalFontAt(int size_px);
+const lv_font_t *BuiltinTerminalFont();
+const std::string &BuiltinTerminalFontName();
 } // namespace jetson
 
 /* The DS-02 UI references &BUILTIN_TEXT_FONT / &BUILTIN_ICON_FONT as

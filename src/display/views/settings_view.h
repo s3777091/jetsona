@@ -1,6 +1,7 @@
 #pragma once
 
 #include "display/views/overlay_view.h"
+#include "display/theme/terminal_theme.h"
 #include "display/widgets/telex_ime.h"
 #include "net/bluetooth_manager.h"
 #include "net/wifi_manager.h"
@@ -14,13 +15,10 @@
 namespace home {
 
 /* Firmware settings hub: a compact category rail + an iPhone-inspired detail
- * pane that rebuilds on selection. Categories: Display
- * (brightness 20..100 via a software scrim), Sound (volume, UI-only), WiFi
- * (radio toggle + scan + per-network info/login/forget modal), Bluetooth
- * (power toggle + scan + the same connect-sheet/details/forget flow), and one
- * General category. General owns the Keyboard, Language & Region, Date & Time,
- * Fonts, Power & Lock, and About sub-pages instead of exposing those as six
- * unrelated top-level categories.
+ * pane that rebuilds on selection. The visible rail is ordered WiFi, Bluetooth,
+ * Plan mode, VPN, Sound, General, then Applications. General owns the Keyboard,
+ * Language & Region, Date & Time, Fonts, Power & Lock, and About sub-pages
+ * instead of exposing those as unrelated top-level categories.
  *
  * Connectivity actions depend on IWifiManager/IBluetoothManager rather than
  * concrete singletons, while common LVGL locking and signal indicators are
@@ -60,9 +58,10 @@ private:
     jetson::IWifiManager &wifi_;
     jetson::IBluetoothManager &bluetooth_;
 
-    enum class Cat { Display, Sound, Wifi, Bluetooth, General };
+    enum class Cat { Display, Sound, Wifi, Bluetooth, General, Applications };
 
     enum class DisplayPage { Main, TextSize, NightShift, AutoLock, AlwaysOn };
+    enum class ApplicationPage { Main, Terminal };
     enum class GeneralPage {
         Main,
         Keyboard,
@@ -85,6 +84,7 @@ private:
     struct WifiRowCtx { SettingsView *self; jetson::WifiNetwork network; };
     struct BtRowCtx { SettingsView *self; jetson::BtDevice device; };
     struct OptCtx { SettingsView *self; std::string value; }; // timezone / sleep option
+    struct ThemeCtx { SettingsView *self; std::string theme_id; };
     struct FontCtx {
         SettingsView *self;
         std::string name;
@@ -97,12 +97,13 @@ private:
     // Layout.
     lv_obj_t *sidebar_ = nullptr;
     lv_obj_t *detail_ = nullptr;
-    Cat current_ = Cat::Display;
+    Cat current_ = Cat::Wifi;
     DisplayPage display_page_ = DisplayPage::Main;
+    ApplicationPage application_page_ = ApplicationPage::Main;
     GeneralPage general_page_ = GeneralPage::Main;
     std::vector<lv_obj_t *> side_rows_;
 
-    // Global airplane/VPN rows at the top of the sidebar.
+    // Plan mode/VPN switch rows embedded in the connectivity section.
     lv_obj_t *airplane_row_ = nullptr;
     lv_obj_t *airplane_icon_bg_ = nullptr;
     lv_obj_t *airplane_switch_ = nullptr;
@@ -142,6 +143,7 @@ private:
     lv_obj_t *bright_value_label_ = nullptr;
     lv_obj_t *text_size_slider_ = nullptr;
     lv_obj_t *text_size_value_label_ = nullptr;
+    lv_obj_t *terminal_size_value_label_ = nullptr;
     lv_obj_t *night_warmth_slider_ = nullptr;
     lv_obj_t *vol_slider_ = nullptr;
     lv_obj_t *mute_switch_ = nullptr;
@@ -219,6 +221,14 @@ private:
     void BuildWifi();
     void BuildBluetooth();
     void BuildGeneral();
+    void BuildApplications();
+    void BuildApplicationsMain();
+    void BuildTerminalSettings();
+    void ApplicationsPageHeader(const char *title);
+    lv_obj_t *CreateTerminalThemePreview(lv_obj_t *parent,
+                                         const jetson::TerminalTheme &theme);
+    void MakeTerminalThemeRow(lv_obj_t *card, const jetson::TerminalTheme &theme,
+                              bool selected);
     void BuildGeneralMain();
     void BuildGeneralKeyboard();
     void BuildLanguageRegion();
@@ -285,6 +295,7 @@ private:
     static void OnWifiRowDeleted(lv_event_t *e);
     static void OnBtRowDeleted(lv_event_t *e);
     static void OnOptDeleted(lv_event_t *e);
+    static void OnThemeDeleted(lv_event_t *e);
     static void OnFontDeleted(lv_event_t *e);
 
     static void OnBrightChanged(lv_event_t *e);
@@ -305,6 +316,11 @@ private:
     static void OnAlwaysOnNotificationsToggle(lv_event_t *e);
     static void OnVolChanged(lv_event_t *e);
     static void OnMuteToggle(lv_event_t *e);
+    static void OnOpenTerminalSettings(lv_event_t *e);
+    static void OnApplicationsBack(lv_event_t *e);
+    static void OnTerminalTextSmaller(lv_event_t *e);
+    static void OnTerminalTextLarger(lv_event_t *e);
+    static void OnTerminalThemeSelected(lv_event_t *e);
     static void OnAirplaneSwitch(lv_event_t *e);
     static void OnVpnSwitch(lv_event_t *e);
 

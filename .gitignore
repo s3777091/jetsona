@@ -59,6 +59,10 @@ jetson.tar.gz
 # the UI references it unconditionally and must also work with an old/offline
 # asset cache. Continue ignoring every other runtime asset.
 /assets/*
+!/assets/fonts/
+/assets/fonts/*
+!/assets/fonts/SourceCodePro-Regular.ttf
+!/assets/fonts/SourceCodePro-LICENSE.md
 !/assets/icons/
 /assets/icons/*
 !/assets/icons/drawer/

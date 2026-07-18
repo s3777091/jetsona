@@ -28,6 +28,10 @@ public:
 
     void ReloadConfig();
 
+    /* Directory holding cached artwork and the persisted discover snapshot
+     * (see net/zing_discover_cache.h). Honors ZING_ARTWORK_CACHE_DIR. */
+    static std::string CacheDir();
+
 private:
     std::string version_;
     std::string api_key_;

@@ -39,7 +39,7 @@ public:
 private:
     VpnManager();
 
-    VpnStatus QueryStatusLocked(bool persist);
+    VpnStatus QueryStatusLocked(bool persist, std::string *status_json);
     void PersistEnabled(bool enabled);
 
     mutable std::mutex mutex_;

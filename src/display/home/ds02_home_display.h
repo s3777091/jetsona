@@ -2,7 +2,6 @@
 
 #include "display/core/lcd_display.h"
 #include "display/home/app_switcher.h"
-#include "display/widgets/optimize_widget.h"
 #include "display/widgets/status_bar.h"
 
 #include <array>
@@ -211,12 +210,9 @@ private:
     lv_obj_t *wallpaper_ = nullptr;
     lv_obj_t *wallpaper_image_obj_ = nullptr;
     lv_obj_t *dim_overlay_ = nullptr;
-    // Global wifi/bt/battery/volume/clock bar on lv_layer_top(), visible on
-    // every screen. Self-refreshes; home wires the click hooks.
+    // Global quick-settings/clock bar on lv_layer_top(), visible on every
+    // screen. Self-refreshes; home wires the functional controls.
     std::unique_ptr<StatusBar> status_bar_;
-    // "Tối ưu" pill on the standby layer: live disk/RAM usage bars plus a
-    // drop-caches button. Hides together with the standby layer.
-    std::unique_ptr<OptimizeWidget> optimize_widget_;
     bool volume_muted_ = false;
     lv_obj_t *weather_label_ = nullptr;
     lv_obj_t *chat_label_ = nullptr;

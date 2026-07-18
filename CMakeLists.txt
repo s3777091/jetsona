@@ -208,7 +208,7 @@ find_path(X11_INCLUDE_DIR X11/Xlib.h)
 if(X11_LIBRARY AND X11_INCLUDE_DIR)
     add_executable(jetson_kiosk_bar tools/kiosk_bar/kiosk_bar.c)
     target_include_directories(jetson_kiosk_bar PRIVATE ${X11_INCLUDE_DIR})
-    target_link_libraries(jetson_kiosk_bar PRIVATE ${X11_LIBRARY})
+    target_link_libraries(jetson_kiosk_bar PRIVATE ${X11_LIBRARY} Threads::Threads)
     # Optional: libXext's shape extension rounds the corners of the app rail
     # and toast popups. Without it (apt install libxext-dev) they stay square.
     find_library(XEXT_LIBRARY Xext)

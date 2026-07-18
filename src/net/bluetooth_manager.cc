@@ -313,7 +313,12 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
         // trim
         while (!d.name.empty() && (d.name.front() == ' ' || d.name.front() == '\t')) d.name.erase(d.name.begin());
         while (!d.name.empty() && (d.name.back() == ' ' || d.name.back() == '\t' || d.name.back() == '\r')) d.name.pop_back();
-        if (d.name.empty()) d.name = "(không tên)";
+        // BlueZ names nameless scan results after their own address
+        // ("AA-BB-CC-…"). The UI shows names only, so such a row would be
+        // nothing but a MAC — skip them like phone settings apps do.
+        std::string placeholder = d.address;
+        std::replace(placeholder.begin(), placeholder.end(), ':', '-');
+        if (d.name.empty() || d.name == placeholder) continue;
 
         // Per-device info for state + RSSI.
         std::string info;
@@ -378,31 +383,69 @@ bool BluetoothManager::PairAndConnect(const std::string &address) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!Available()) return false;
     if (!PowerOn()) return false;
-    // pair/connect complete asynchronously; bluetoothctl would quit on stdin
-    // EOF right after the last command and abort them. Hold the session open
-    // with shell sleeps so each step has time to finish before the next.
-    std::string script =
-        "agent on\n"
-        "default-agent\n"
-        "pair " + address + "\n";
-    std::string cmd =
-        "{ printf '%s' " + QuoteShellArgument(script) + "; sleep 12; "
-        "printf '%s' " + QuoteShellArgument("trust " + address + "\n"
-                                            "connect " + address + "\n") +
-        "; sleep 8; } | timeout --signal=TERM 30s bluetoothctl";
-    std::string out;
-    int rc = RunShellCommand(cmd, out);
-    (void)rc; // bluetoothctl exits 0 even on partial failure; verify via info.
 
     std::string info;
     runBt("info " + address + "\n", info, 6);
-    if (fieldBool(info, "Connected")) {
-        last_error_.clear();
-        ESP_LOGI(TAG, "connected to %s", address.c_str());
-        return true;
+    if (fieldBool(info, "Connected")) { last_error_.clear(); return true; }
+
+    // All bluetoothctl sessions below are held open with shell sleeps:
+    // pair/connect complete asynchronously and an instant stdin EOF would quit
+    // bluetoothctl before they finish.
+    std::string out;
+    if (!fieldBool(info, "Paired")) {
+        // Two things the tap-to-pair flow must provide itself:
+        //  - active discovery: BlueZ 5.48 can only reach a not-yet-paired
+        //    device while it is being discovered, and the scan that populated
+        //    the UI list ended before the row was tapped, so a bare `pair`
+        //    fails with a page timeout / "Device not available".
+        //  - a NoInputNoOutput agent: the auto-registered agent advertises
+        //    display+keyboard, which lets SSP raise a passkey-confirm prompt
+        //    nothing here would answer. NoInputNoOutput forces just-works
+        //    pairing (all these devices — gamepads, headsets — are pin-less).
+        std::string setup =
+            "agent off\n"
+            "agent NoInputNoOutput\n"
+            "default-agent\n"
+            "pairable on\n"
+            "scan on\n";
+        std::string cmd =
+            "{ printf '%s' " + QuoteShellArgument(setup) + "; sleep 4; "
+            "printf '%s' " + QuoteShellArgument("pair " + address + "\n") +
+            "; sleep 15; "
+            "printf '%s' " + QuoteShellArgument("scan off\n") +
+            "; sleep 2; } | timeout --signal=TERM 35s bluetoothctl";
+        RunShellCommand(cmd, out);
+
+        runBt("info " + address + "\n", info, 6);
+        if (!fieldBool(info, "Paired")) {
+            // Drop the half-created device entry so the next attempt starts
+            // clean instead of tripping over stale link keys.
+            std::string junk;
+            runBt("remove " + address + "\n", junk, 8);
+            last_error_ = "Pair thất bại — đưa thiết bị vào chế độ pairing rồi thử lại";
+            ESP_LOGE(TAG, "pair %s failed: %s", address.c_str(), out.c_str());
+            return false;
+        }
     }
-    last_error_ = "pair/connect failed: " + out;
-    ESP_LOGE(TAG, "pair/connect %s failed: %s", address.c_str(), out.c_str());
+
+    // `trust` lets the device re-open the connection by itself later (e.g.
+    // pressing the PS button after a power cycle); retry `connect` because
+    // gamepads often reject the very first attempt right after pairing.
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        RunShellCommand(
+            "{ printf '%s' " + QuoteShellArgument("trust " + address + "\n"
+                                                   "connect " + address + "\n") +
+            "; sleep 8; } | timeout --signal=TERM 20s bluetoothctl", out);
+        runBt("info " + address + "\n", info, 6);
+        if (fieldBool(info, "Connected")) {
+            last_error_.clear();
+            ESP_LOGI(TAG, "connected to %s (attempt %d)", address.c_str(), attempt);
+            return true;
+        }
+        ESP_LOGW(TAG, "connect %s attempt %d/3 failed", address.c_str(), attempt);
+    }
+    last_error_ = "Đã pair nhưng chưa kết nối được — bật lại thiết bị rồi chạm lần nữa";
+    ESP_LOGE(TAG, "connect %s failed after pairing: %s", address.c_str(), out.c_str());
     return false;
 }
 

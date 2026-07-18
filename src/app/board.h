@@ -37,7 +37,7 @@ private:
     Board &operator=(const Board &) = delete;
 
     Display *display_ = nullptr;
-    DummyAudioCodec audio_codec_;
+    LinuxAudioCodec audio_codec_;
     PwmBacklight backlight_;
     NoLed led_;
     Button boot_button_;

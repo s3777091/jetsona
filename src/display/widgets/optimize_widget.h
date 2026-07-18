@@ -1,34 +1,38 @@
 #pragma once
 
-/* Home-screen "Tối ưu" (optimize) widget for the DS-02 standby layer.
+/* Status-bar cache cleaner + disk/RAM popover.
  *
  * A translucent pill showing live disk and RAM usage bars (statvfs("/") and
- * /proc/meminfo, refreshed by an lv_timer). The round button on the left
- * drops the kernel page/dentry caches (sync + /proc/sys/vm/drop_caches) on a
- * detached worker thread, then reports how much RAM was freed through the
+ * /proc/meminfo, refreshed by an lv_timer). The status icon drops the kernel
+ * page/dentry caches (sync + /proc/sys/vm/drop_caches) on a
+ * worker thread, then reports how much RAM was freed through the
  * notify callback (wired to the Dynamic Island toast).
  *
  * Threading follows StatusBar: the lv_timer and event callbacks run on the
  * LVGL handler thread without lv_lock, so they take jetson::ui::LvglLockGuard.
- * The widget is created once on the standby layer and lives for the whole
- * app lifetime, so the worker thread may safely capture `this`. */
+ * The worker is joined during destruction before any LVGL objects disappear. */
 
 #include <lvgl.h>
 
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <thread>
+#include <utility>
 
 namespace home {
 
 class OptimizeWidget {
 public:
     using NotifyCb = std::function<void(const char *)>;
+    using OpenCb = std::function<void()>;
 
-    explicit OptimizeWidget(lv_obj_t *parent);
+    OptimizeWidget(lv_obj_t *icon_parent, lv_obj_t *popup_parent);
     ~OptimizeWidget();
 
     void SetNotifyCb(NotifyCb cb) { notify_ = std::move(cb); }
+    void SetBeforeOpenCb(OpenCb cb) { before_open_ = std::move(cb); }
+    void HidePopup();
 
 private:
     struct Stats {
@@ -46,14 +50,16 @@ private:
     static void OnOptimizeClicked(lv_event_t *e);
 
     lv_obj_t *root_ = nullptr;
-    lv_obj_t *button_ = nullptr;
+    lv_obj_t *button_ = nullptr; // 20 px clean-cache icon in the status row
     lv_obj_t *disk_bar_ = nullptr;
     lv_obj_t *disk_label_ = nullptr;
     lv_obj_t *ram_bar_ = nullptr;
     lv_obj_t *ram_label_ = nullptr;
     lv_timer_t *timer_ = nullptr;
     std::atomic<bool> optimizing_{false};
+    std::thread optimize_thread_;
     NotifyCb notify_;
+    OpenCb before_open_;
 };
 
 } // namespace home

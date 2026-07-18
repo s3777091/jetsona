@@ -79,10 +79,16 @@ private:
     lv_obj_t *CreateArtwork(lv_obj_t *parent, const std::string &path,
                             int size, bool circular);
     lv_obj_t *CreateSkeletonCard(lv_obj_t *rail, bool circular);
+    /* Pull-to-refresh: dragging the page below its top edge (LVGL's elastic
+     * overscroll) reveals a spinning refresh badge; releasing past the
+     * threshold reloads whatever the page currently shows. */
+    void AddPullHint(const char *text, bool with_spacer);
+    void PullRefresh();
     void PlayTrack(size_t index);
     void PlayAll();
     void RefreshTrackRows();
 
+    static void OnPageScroll(lv_event_t *e);
     static void OnCardEvent(lv_event_t *e);
     static void OnCardDeleted(lv_event_t *e);
     static void OnBack(lv_event_t *e);
@@ -101,6 +107,9 @@ private:
     lv_obj_t *page_ = nullptr;
     lv_obj_t *loading_label_ = nullptr;
     lv_obj_t *add_modal_ = nullptr;
+    lv_obj_t *pull_indicator_ = nullptr;
+    lv_obj_t *pull_icon_ = nullptr;
+    bool pull_armed_ = false;
     lv_timer_t *player_timer_ = nullptr;
     jetson::music::Track pending_add_track_;
 

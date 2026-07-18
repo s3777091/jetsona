@@ -828,6 +828,28 @@ void ParseRadioData(const json &data, DiscoverData &out) {
     }
 }
 
+/* Zing's photo CDN encodes the rendered size as the first path segment
+ * (photo-resize-zmp3.zmdcdn.me/w600_r1x1_jpeg/...). The feed now hands out
+ * w600 covers; decoded that is ~1.4 MB per cover, so one discovery page
+ * overflows LV_CACHE_DEF_SIZE and LVGL re-decodes JPEGs on every scroll
+ * frame. No cover in this UI is shown larger than 126 px, so always fetch
+ * the w240 rendition instead. */
+std::string PreferSmallArtwork(const std::string &url) {
+    const size_t host = url.find("photo-resize-");
+    if (host == std::string::npos) return url;
+    const size_t slash = url.find('/', host);
+    if (slash == std::string::npos || slash + 2 >= url.size() ||
+        url[slash + 1] != 'w')
+        return url;
+    const size_t digits = slash + 2;
+    size_t end = digits;
+    while (end < url.size() && std::isdigit(static_cast<unsigned char>(url[end])))
+        ++end;
+    if (end == digits || end >= url.size() || url[end] != '_') return url;
+    if (std::atoi(url.substr(digits, end - digits).c_str()) <= 240) return url;
+    return url.substr(0, digits) + "240" + url.substr(end);
+}
+
 bool HasImageMagic(const std::string &path) {
     unsigned char magic[8] = {};
     FILE *file = std::fopen(path.c_str(), "rb");
@@ -907,15 +929,23 @@ void CacheArtworkTargets(ZingMusicClient &client,
             while (true) {
                 const size_t index = next.fetch_add(1);
                 if (index >= targets.size()) return;
-                std::string ignored_error;
-                try {
-                    client.DownloadArtwork(targets[index].url,
-                                           targets[index].cached_path,
-                                           ignored_error);
-                } catch (const std::exception &exception) {
-                    ESP_LOGW(TAG, "artwork worker failed: %s", exception.what());
-                } catch (...) {
-                    ESP_LOGW(TAG, "artwork worker failed with an unknown exception");
+                // Covers ride a flaky home Wi-Fi; one immediate re-try per
+                // cover rescues most transient timeouts without holding the
+                // page hostage.
+                for (int attempt = 0; attempt < 2; ++attempt) {
+                    std::string ignored_error;
+                    try {
+                        if (client.DownloadArtwork(targets[index].url,
+                                                   targets[index].cached_path,
+                                                   ignored_error))
+                            break;
+                    } catch (const std::exception &exception) {
+                        ESP_LOGW(TAG, "artwork worker failed: %s",
+                                 exception.what());
+                    } catch (...) {
+                        ESP_LOGW(TAG,
+                                 "artwork worker failed with an unknown exception");
+                    }
                 }
             }
         });
@@ -1017,6 +1047,8 @@ ZingMusicClient::ZingMusicClient() {
     ReloadConfig();
 }
 
+std::string ZingMusicClient::CacheDir() { return DefaultCacheDir(); }
+
 void ZingMusicClient::ReloadConfig() {
     version_ = EnvOr("ZING_API_VERSION", kDefaultVersion);
     api_key_ = EnvOr("ZING_API_KEY", kDefaultApiKey);
@@ -1074,13 +1106,29 @@ bool ZingMusicClient::FetchDiscover(DiscoverData &out, std::string &err) {
     if (radio.ok) ParseRadioData(radio.data, out);
     else warnings.push_back(radio.error);
 
+    // Radio is fetched but no longer rendered and the artist rail is harvested
+    // opportunistically from new-release songs, so only the four Zing rails
+    // the UI actually shows decide success. Keep whatever was parsed even on
+    // failure: the caller retries the whole fetch and, when its retries run
+    // out, renders the partial page instead of an empty error screen.
     const bool has_required_sections = !out.personalized.empty() &&
                                        !out.new_releases.empty() &&
                                        !out.chill.empty() &&
-                                       !out.top100.empty() &&
-                                       !out.artists.empty() &&
-                                       !out.radio.empty();
+                                       !out.top100.empty();
+    const bool has_any_content = !out.personalized.empty() ||
+                                 !out.new_releases.empty() ||
+                                 !out.chill.empty() ||
+                                 !out.top100.empty() ||
+                                 !out.artists.empty();
     CacheDiscoverArtwork(*this, out);
+
+    size_t missing_artwork = 0;
+    for (const auto *group : {&out.personalized, &out.new_releases, &out.chill,
+                              &out.top100, &out.artists}) {
+        for (const auto &item : *group)
+            if (!item.thumbnail_url.empty() && item.thumbnail_path.empty())
+                ++missing_artwork;
+    }
 
     if (!warnings.empty()) {
         const std::string diagnostics = JoinDiagnostics(warnings, " | ");
@@ -1093,8 +1141,15 @@ bool ZingMusicClient::FetchDiscover(DiscoverData &out, std::string &err) {
                  out.personalized.size(), out.new_releases.size(),
                  out.chill.size(), out.top100.size(), out.artists.size(),
                  out.radio.size());
-        out = {};
-        err = "zing api đang lỗi";
+        err = has_any_content
+            ? "Zing thiếu một vài mục — kéo xuống để thử lại"
+            : "zing api đang lỗi";
+        return false;
+    }
+    if (missing_artwork > 0) {
+        ESP_LOGW(TAG, "%zu covers failed to download", missing_artwork);
+        err = "Thiếu " + std::to_string(missing_artwork) +
+              " ảnh bìa — kéo xuống để tải lại";
         return false;
     }
     err.clear();
@@ -1201,9 +1256,10 @@ bool ZingMusicClient::DownloadArtwork(const std::string &url,
                                       std::string &err) {
     out_path.clear();
     if (url.empty()) { err = "artwork URL is empty"; return false; }
+    const std::string sized_url = PreferSmallArtwork(url);
 
     std::string hash;
-    if (!Sha256Hex(url, hash)) {
+    if (!Sha256Hex(sized_url, hash)) {
         err = "OpenSSL could not hash artwork URL";
         return false;
     }
@@ -1240,7 +1296,7 @@ bool ZingMusicClient::DownloadArtwork(const std::string &url,
         "Accept: image/jpeg,image/png,image/*;q=0.8,*/*;q=0.5");
     ClientConfig config{version_, api_key_, secret_key_, base_url_, cookies_,
                         artwork_cache_dir_};
-    const std::string resolved_url = ResolveUrl(config, url);
+    const std::string resolved_url = ResolveUrl(config, sized_url);
     if (!IsSafeZingAssetUrl(config, resolved_url)) {
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
@@ -1260,8 +1316,8 @@ bool ZingMusicClient::DownloadArtwork(const std::string &url,
     // Thumbnail hosts are public CDNs. Never attach the private Zing session
     // and never follow a CDN redirect to an unvalidated host.
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 12L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     const CURLcode code = curl_easy_perform(curl);
