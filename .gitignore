@@ -6,7 +6,11 @@
 *.pem
 
 # --- Build artifacts (CMake) ---
-build/
+# Glob, not just `build/`: JETSON_BUILD_DIR lets the backend pick its own tree
+# (build-fbdev, build-drm, ...). A bare `build/` once let build-fbdev/ be
+# committed, dragging 13 MB of copied runtime assets into Git even though
+# /assets/* is ignored -- the copies bypassed that rule entirely.
+build*/
 cmake-build-*/
 out/
 *.o
@@ -52,6 +56,11 @@ __pycache__/
 # --- Packaging ---
 *.tar.gz
 jetson.tar.gz
+
+# --- Screenshots / scratch captures ---
+# Debug captures belong in S3 (or nowhere), never in the repo.
+.agents/
+*.screenshot.png
 
 # --- Runtime assets (data) ---
 # Assets are fetched from MinIO (S3) at build time by scripts/fetch_assets.sh
