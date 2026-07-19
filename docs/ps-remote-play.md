@@ -60,7 +60,7 @@ Các gói nền cần cho chế độ bare-X:
 ```bash
 sudo apt update
 sudo apt install -y xinit xserver-xorg-video-all xserver-xorg-input-libinput \
-  x11-xkb-utils libfuse2 libva2 alsa-utils
+   x11-xkb-utils dbus libfuse2 libva2 alsa-utils
 ```
 
 `chiaki-ng` hiện phát hành AppImage ARM64 và yêu cầu Vulkan 1.2, `libva` cùng

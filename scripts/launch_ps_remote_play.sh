@@ -36,6 +36,10 @@ export XDG_RUNTIME_DIR="$RUNTIME_DIR"
 export SDL_AUDIODRIVER="${PS_REMOTE_PLAY_AUDIO_DRIVER:-alsa}"
 export QT_QPA_PLATFORM=xcb
 export QT_QUICK_CONTROLS_MATERIAL_VARIANT="${QT_QUICK_CONTROLS_MATERIAL_VARIANT:-Dense}"
+if [ "$(id -u)" -eq 0 ]; then
+    export QTWEBENGINE_DISABLE_SANDBOX="${QTWEBENGINE_DISABLE_SANDBOX:-1}"
+fi
+export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:---disable-gpu --disable-gpu-compositing --disable-dev-shm-usage}"
 
 psrp_ensure_dirs || {
     echo "launch_ps_remote_play: cannot prepare $PSRP_HOME" >&2
@@ -215,9 +219,17 @@ trap 'exit 143' TERM HUP
 
 psrp_enable_clocks
 
+unset DBUS_SESSION_BUS_ADDRESS DBUS_SYSTEM_BUS_ADDRESS
+PSRP_CLIENT_PREFIX=()
+if command -v dbus-run-session >/dev/null 2>&1; then
+    PSRP_CLIENT_PREFIX=(dbus-run-session)
+else
+    echo "launch_ps_remote_play: dbus-run-session missing; PSN login webview may be unstable" >&2
+fi
+
 X_ARGS=("$DISPLAY_NO" "$VT" -nolisten tcp -nocursor -s 0 -dpms)
 if command -v xinit >/dev/null 2>&1; then
-    xinit "${PSRP_CHIAKI[@]}" "${CLIENT_ARGS[@]}" -- "${X_ARGS[@]}"
+    xinit "${PSRP_CLIENT_PREFIX[@]}" "${PSRP_CHIAKI[@]}" "${CLIENT_ARGS[@]}" -- "${X_ARGS[@]}"
     client_rc=$?
     exit "$client_rc"
 fi
@@ -238,7 +250,7 @@ if ! kill -0 "$X_PID" 2>/dev/null; then
     exit 1
 fi
 
-"${PSRP_CHIAKI[@]}" "${CLIENT_ARGS[@]}"
+"${PSRP_CLIENT_PREFIX[@]}" "${PSRP_CHIAKI[@]}" "${CLIENT_ARGS[@]}"
 client_rc=$?
 kill "$X_PID" 2>/dev/null || true
 wait "$X_PID" 2>/dev/null || true
