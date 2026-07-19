@@ -136,6 +136,8 @@ while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
     client+=("$1")
     shift
 done
+[ "$#" -eq 0 ] || shift
+printf '%s\n' "$@" > "$EXPECTED_XARGS_FILE"
 "${client[@]}"
 EOF
 chmod 700 "$FAKE_XINIT_DIR/xinit"
@@ -150,6 +152,25 @@ esac
 "$@"
 EOF
 chmod 700 "$FAKE_XINIT_DIR/dbus-run-session"
+cat > "$FAKE_XINIT_DIR/openbox" <<'EOF'
+#!/bin/bash
+[ "${1:-}" = "--sm-disable" ] || { echo "openbox missing --sm-disable" >&2; exit 59; }
+: > "$EXPECTED_WM_MARKER"
+trap 'exit 0' INT TERM HUP
+while :; do sleep 1; done
+EOF
+chmod 700 "$FAKE_XINIT_DIR/openbox"
+cat > "$FAKE_XINIT_DIR/onboard" <<'EOF'
+#!/bin/bash
+case " $* " in
+    *" --size=800x205 "*) ;;
+    *) echo "onboard missing panel geometry" >&2; exit 60 ;;
+esac
+: > "$EXPECTED_ONBOARD_MARKER"
+trap 'exit 0' INT TERM HUP
+while :; do sleep 1; done
+EOF
+chmod 700 "$FAKE_XINIT_DIR/onboard"
 cat > "$FAKE_XINIT_DIR/chromium-browser" <<'EOF'
 #!/bin/bash
 case ":${LD_LIBRARY_PATH:-}:" in
@@ -237,6 +258,8 @@ esac
 "$QTWEBENGINEPROCESS_PATH"
 "$BROWSER" "https://example.invalid/psn"
 : > "$EXPECTED_MARKER"
+echo 'Simulate User Activity Error: org.freedesktop.ScreenSaver' >&2
+sleep 1
 EOF
 chmod 700 "$EXTRACTED_APPDIR/usr/bin/chiaki"
 cat > "$EXTRACTED_CHIAKI_DIR/chiaki-ng" <<'EOF'
@@ -252,10 +275,14 @@ env PATH="$FAKE_XINIT_DIR:$PATH" \
     EXPECTED_BROWSER_MARKER="$TMP_ROOT/extracted-browser-ok" \
     EXPECTED_LOADER_MARKER="$TMP_ROOT/extracted-loader-ok" \
     EXPECTED_MARKER="$TMP_ROOT/extracted-runtime-ok" \
+    EXPECTED_ONBOARD_MARKER="$TMP_ROOT/extracted-onboard-ok" \
     EXPECTED_QT_MARKER="$TMP_ROOT/extracted-qt-ok" \
     EXPECTED_SYSTEM_NSS_DIR="$FAKE_SYSTEM_NSS_DIR" \
+    EXPECTED_WM_MARKER="$TMP_ROOT/extracted-wm-ok" \
+    EXPECTED_XARGS_FILE="$TMP_ROOT/extracted-xargs" \
+    PS_REMOTE_PLAY_BROWSER_USER="" \
     PS_REMOTE_PLAY_NSS_LIBRARY_PATH="$FAKE_SYSTEM_NSS_DIR" \
-    "$LAUNCHER" configure >/dev/null
+    "$LAUNCHER" configure >/dev/null 2>"$TMP_ROOT/extracted-stderr"
 [[ -e "$TMP_ROOT/extracted-runtime-ok" ]] || \
     fail "extracted Chiaki runtime was not launched"
 [[ -e "$TMP_ROOT/extracted-qt-ok" ]] || \
@@ -264,6 +291,14 @@ env PATH="$FAKE_XINIT_DIR:$PATH" \
     fail "QtWebEngineProcess did not use the companion glibc loader"
 [[ -e "$TMP_ROOT/extracted-browser-ok" ]] || \
     fail "clean PSN browser wrapper did not run"
+[[ -e "$TMP_ROOT/extracted-wm-ok" ]] || \
+    fail "configure session did not start its focus window manager"
+[[ -e "$TMP_ROOT/extracted-onboard-ok" ]] || \
+    fail "configure session without a hardware keyboard did not start Onboard"
+! grep -Fqx -- '-nocursor' "$TMP_ROOT/extracted-xargs" || \
+    fail "configure session hid the X cursor"
+! grep -Fq 'org.freedesktop.ScreenSaver' "$TMP_ROOT/extracted-stderr" || \
+    fail "known ScreenSaver warning was not filtered"
 
 # Applying a new preset must update both the default file and active profile.
 (

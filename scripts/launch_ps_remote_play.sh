@@ -67,6 +67,13 @@ PSRP_CHIAKI_LOADER=""
 PSRP_CHIAKI_REAL_BIN=""
 PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH="${QTWEBENGINEPROCESS_PATH:-}"
 PSRP_BROWSER_LD_LIBRARY_PATH=""
+PSRP_BROWSER_RUN_USER=""
+PSRP_BROWSER_HOME=""
+PSRP_BROWSER_PROFILE=""
+PSRP_BROWSER_CACHE=""
+PSRP_SESSION_WINDOW_MANAGER=""
+PSRP_SESSION_ONBOARD=""
+PSRP_SESSION_WRAPPER=""
 PSRP_CHIAKI_RUNTIME_WRAPPER=""
 PSRP_QTWEBENGINEPROCESS_WRAPPER=""
 PSRP_BROWSER_WRAPPER=""
@@ -195,8 +202,137 @@ psrp_configure_chiaki_runtime()
 
 psrp_configure_chiaki_runtime
 
+psrp_hardware_keyboard_present()
+{
+    local input_root="${PS_REMOTE_PLAY_INPUT_ROOT:-/dev/input}"
+    local device
+    for device in \
+        "$input_root"/by-id/*-event-kbd \
+        "$input_root"/by-path/*-event-kbd; do
+        [ -e "$device" ] && return 0
+    done
+    return 1
+}
+
+psrp_resolve_session_helpers()
+{
+    local requested
+    [ "$MODE" = "configure" ] || return 0
+
+    requested="${PS_REMOTE_PLAY_WINDOW_MANAGER:-auto}"
+    case "$requested" in
+        0|false|FALSE|no|NO|off|OFF|none) ;;
+        auto) PSRP_SESSION_WINDOW_MANAGER="$(command -v openbox 2>/dev/null || true)" ;;
+        *)
+            if [[ "$requested" == */* ]]; then
+                [ ! -x "$requested" ] || PSRP_SESSION_WINDOW_MANAGER="$requested"
+            else
+                PSRP_SESSION_WINDOW_MANAGER="$(command -v "$requested" 2>/dev/null || true)"
+            fi
+            [ -n "$PSRP_SESSION_WINDOW_MANAGER" ] || \
+                echo "launch_ps_remote_play: window manager '$requested' not found" >&2
+            ;;
+    esac
+
+    requested="${PS_REMOTE_PLAY_ONSCREEN_KEYBOARD:-auto}"
+    case "$requested" in
+        0|false|FALSE|no|NO|off|OFF|none) ;;
+        auto)
+            if ! psrp_hardware_keyboard_present; then
+                PSRP_SESSION_ONBOARD="$(command -v onboard 2>/dev/null || true)"
+            fi
+            ;;
+        1|true|TRUE|yes|YES|on|ON)
+            PSRP_SESSION_ONBOARD="$(command -v onboard 2>/dev/null || true)"
+            [ -n "$PSRP_SESSION_ONBOARD" ] || \
+                echo "launch_ps_remote_play: onboard keyboard not installed" >&2
+            ;;
+        *) echo "launch_ps_remote_play: invalid PS_REMOTE_PLAY_ONSCREEN_KEYBOARD" >&2 ;;
+    esac
+
+    requested="${PS_REMOTE_PLAY_BROWSER_USER-jetson-kiosk}"
+    if [ -n "$requested" ] && id "$requested" >/dev/null 2>&1 &&
+        command -v runuser >/dev/null 2>&1 &&
+        command -v dbus-run-session >/dev/null 2>&1; then
+        PSRP_BROWSER_RUN_USER="$requested"
+        PSRP_BROWSER_HOME="${PS_REMOTE_PLAY_BROWSER_HOME:-/var/lib/jetson-fw/chromium-home}"
+        PSRP_BROWSER_PROFILE="${PS_REMOTE_PLAY_BROWSER_PROFILE:-/var/lib/jetson-fw/chromium-profile}"
+        PSRP_BROWSER_CACHE="${PS_REMOTE_PLAY_BROWSER_CACHE:-/tmp/chromium-kiosk-cache}"
+        # install.sh creates these with the kiosk account. Fall back to the
+        # root browser path if an incomplete installation cannot write them.
+        if [ ! -d "$PSRP_BROWSER_HOME" ] || [ ! -d "$PSRP_BROWSER_PROFILE" ]; then
+            PSRP_BROWSER_RUN_USER=""
+        fi
+    fi
+}
+
+psrp_resolve_session_helpers
+
 psrp_write_runtime_wrappers()
 {
+    PSRP_SESSION_WRAPPER="$RUNTIME_DIR/psrp-x-session"
+    cat > "$PSRP_SESSION_WRAPPER" <<'EOF'
+#!/bin/bash
+set -u
+mode="${1:-}"
+[ "$#" -gt 0 ] && shift
+wm_pid=""
+onboard_pid=""
+app_pid=""
+
+psrp_session_cleanup()
+{
+    trap - EXIT INT TERM HUP
+    [ -z "$onboard_pid" ] || kill "$onboard_pid" 2>/dev/null || true
+    [ -z "$wm_pid" ] || kill "$wm_pid" 2>/dev/null || true
+    [ -z "$app_pid" ] || kill "$app_pid" 2>/dev/null || true
+    [ -z "$onboard_pid" ] || wait "$onboard_pid" 2>/dev/null || true
+    [ -z "$wm_pid" ] || wait "$wm_pid" 2>/dev/null || true
+}
+trap psrp_session_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+
+if [ "$mode" = "configure" ]; then
+    command -v xsetroot >/dev/null 2>&1 && xsetroot -solid black >/dev/null 2>&1 || true
+    if command -v setxkbmap >/dev/null 2>&1; then
+        setxkbmap -option '' -option terminate:ctrl_alt_bksp >/dev/null 2>&1 || true
+    fi
+    if [ -n "${PSRP_SESSION_BROWSER_USER:-}" ] && command -v xhost >/dev/null 2>&1; then
+        xhost "+SI:localuser:$PSRP_SESSION_BROWSER_USER" >/dev/null 2>&1 || true
+    fi
+    if [ -n "${PSRP_SESSION_WINDOW_MANAGER:-}" ] &&
+        [ -x "$PSRP_SESSION_WINDOW_MANAGER" ]; then
+        "$PSRP_SESSION_WINDOW_MANAGER" --sm-disable &
+        wm_pid=$!
+        sleep 0.25
+    fi
+fi
+
+"$@" &
+app_pid=$!
+if [ "$mode" = "configure" ] && [ -n "${PSRP_SESSION_ONBOARD:-}" ] &&
+    [ -x "$PSRP_SESSION_ONBOARD" ]; then
+    sleep 0.5
+    if command -v gsettings >/dev/null 2>&1; then
+        # Onboard defaults to a full-screen dock whose transparent area turns
+        # black without a compositor. Floating mode keeps the X window exactly
+        # on the 205px keyboard and leaves Chiaki visible above it.
+        gsettings set org.onboard.window docking-enabled false >/dev/null 2>&1 || true
+        gsettings set org.onboard.window window-decoration false >/dev/null 2>&1 || true
+        gsettings set org.onboard.window force-to-top true >/dev/null 2>&1 || true
+    fi
+    "$PSRP_SESSION_ONBOARD" --size=800x205 -x 0 -y 275 \
+        --layout=Compact --theme=Nightshade &
+    onboard_pid=$!
+fi
+wait "$app_pid"
+app_rc=$?
+app_pid=""
+exit "$app_rc"
+EOF
+    chmod 700 "$PSRP_SESSION_WRAPPER" 2>/dev/null || true
+
     if [ -n "$PSRP_CHIAKI_LOADER" ] && [ -n "$PSRP_CHIAKI_REAL_BIN" ]; then
         PSRP_CHIAKI_RUNTIME_WRAPPER="$RUNTIME_DIR/chiaki-ng"
         cat > "$PSRP_CHIAKI_RUNTIME_WRAPPER" <<'EOF'
@@ -248,9 +384,15 @@ EOF
     cat > "$PSRP_BROWSER_WRAPPER" <<'EOF'
 #!/bin/bash
 browser_ld_library_path="${PSRP_BROWSER_LD_LIBRARY_PATH:-}"
+browser_run_user="${PSRP_BROWSER_RUN_USER:-}"
+browser_home="${PSRP_BROWSER_HOME:-}"
+browser_profile="${PSRP_BROWSER_PROFILE:-}"
+browser_cache="${PSRP_BROWSER_CACHE:-}"
+browser_display="${DISPLAY:-:0}"
 unset APPDIR LD_LIBRARY_PATH QTWEBENGINEPROCESS_PATH
 unset PSRP_REAL_QTWEBENGINEPROCESS PSRP_QTWEBENGINE_APPDIR PSRP_QTWEBENGINE_LD_LIBRARY_PATH
-unset PSRP_QTWEBENGINE_LOADER PSRP_BROWSER_LD_LIBRARY_PATH
+unset PSRP_QTWEBENGINE_LOADER PSRP_BROWSER_LD_LIBRARY_PATH PSRP_BROWSER_RUN_USER
+unset PSRP_BROWSER_HOME PSRP_BROWSER_PROFILE PSRP_BROWSER_CACHE
 unset PSRP_RUNTIME_CHIAKI_APPDIR PSRP_RUNTIME_CHIAKI_LOADER
 unset PSRP_RUNTIME_CHIAKI_LD_LIBRARY_PATH PSRP_RUNTIME_CHIAKI_REAL_BIN
 if [ -n "$browser_ld_library_path" ]; then
@@ -261,11 +403,38 @@ if [ -n "${PS_REMOTE_PLAY_BROWSER:-}" ] && [ -x "$PS_REMOTE_PLAY_BROWSER" ]; the
     exec "$PS_REMOTE_PLAY_BROWSER" "$@"
 fi
 
+resolved=""
 for candidate in chromium-browser chromium google-chrome; do
     resolved="$(command -v "$candidate" 2>/dev/null || true)"
     [ -n "$resolved" ] || continue
-    exec "$resolved" --no-sandbox --disable-setuid-sandbox "$@"
+    break
 done
+if [ -n "$resolved" ]; then
+    if [ -n "$browser_run_user" ] && [ -n "$browser_home" ] &&
+        [ -n "$browser_profile" ] && command -v runuser >/dev/null 2>&1 &&
+        command -v dbus-run-session >/dev/null 2>&1; then
+        runuser -u "$browser_run_user" -- rm -f \
+            "$browser_profile/SingletonLock" \
+            "$browser_profile/SingletonSocket" \
+            "$browser_profile/SingletonCookie" 2>/dev/null || true
+        exec runuser -u "$browser_run_user" -- env \
+            -u DBUS_SESSION_BUS_ADDRESS -u DBUS_SYSTEM_BUS_ADDRESS \
+            HOME="$browser_home" \
+            XDG_CONFIG_HOME="$browser_home/.config" \
+            XDG_CACHE_HOME="$browser_home/.cache" \
+            XDG_RUNTIME_DIR="${PS_REMOTE_PLAY_BROWSER_RUNTIME:-/tmp/chromium-kiosk-runtime}" \
+            DISPLAY="$browser_display" \
+            LD_LIBRARY_PATH="$browser_ld_library_path" \
+            dbus-run-session -- "$resolved" \
+            --user-data-dir="$browser_profile" \
+            --disk-cache-dir="$browser_cache" \
+            --disable-gpu --disable-software-rasterizer \
+            --no-first-run --no-default-browser-check \
+            --disable-session-crashed-bubble \
+            --start-maximized --window-size=800,480 "$@"
+    fi
+    exec "$resolved" --no-sandbox --disable-setuid-sandbox "$@"
+fi
 
 for candidate in www-browser x-www-browser; do
     resolved="$(command -v "$candidate" 2>/dev/null || true)"
@@ -470,7 +639,14 @@ fi
 if [ -n "$PSRP_BROWSER_WRAPPER" ]; then
     PSRP_CLIENT_ENV+=("BROWSER=$PSRP_BROWSER_WRAPPER")
     PSRP_CLIENT_ENV+=("PSRP_BROWSER_LD_LIBRARY_PATH=$PSRP_BROWSER_LD_LIBRARY_PATH")
+    PSRP_CLIENT_ENV+=("PSRP_BROWSER_RUN_USER=$PSRP_BROWSER_RUN_USER")
+    PSRP_CLIENT_ENV+=("PSRP_BROWSER_HOME=$PSRP_BROWSER_HOME")
+    PSRP_CLIENT_ENV+=("PSRP_BROWSER_PROFILE=$PSRP_BROWSER_PROFILE")
+    PSRP_CLIENT_ENV+=("PSRP_BROWSER_CACHE=$PSRP_BROWSER_CACHE")
 fi
+PSRP_CLIENT_ENV+=("PSRP_SESSION_WINDOW_MANAGER=$PSRP_SESSION_WINDOW_MANAGER")
+PSRP_CLIENT_ENV+=("PSRP_SESSION_ONBOARD=$PSRP_SESSION_ONBOARD")
+PSRP_CLIENT_ENV+=("PSRP_SESSION_BROWSER_USER=$PSRP_BROWSER_RUN_USER")
 PSRP_DBUS_RUN_SESSION="$(command -v dbus-run-session 2>/dev/null || true)"
 if [ -n "$PSRP_DBUS_RUN_SESSION" ]; then
     # xinit only treats absolute/relative paths as the client program; a bare
@@ -481,11 +657,28 @@ else
     PSRP_CLIENT_CMD=("$PSRP_ENV_BIN")
 fi
 
-X_ARGS=("$DISPLAY_NO" "$VT" -nolisten tcp -nocursor -s 0 -dpms)
+X_ARGS=("$DISPLAY_NO" "$VT" -nolisten tcp -s 0 -dpms)
+if [ "$MODE" = "stream" ]; then
+    X_ARGS+=(-nocursor)
+fi
+
+psrp_filter_xinit_stderr()
+{
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            *"Simulate User Activity Error:"*"org.freedesktop.ScreenSaver"*) ;;
+            *) printf '%s\n' "$line" >&2 ;;
+        esac
+    done
+}
+
 if command -v xinit >/dev/null 2>&1; then
     xinit "${PSRP_CLIENT_CMD[@]}" "${PSRP_CLIENT_ENV[@]}" \
+        "$PSRP_SESSION_WRAPPER" "$MODE" \
         "${PSRP_GUI_CHIAKI[@]}" \
-        "${CLIENT_ARGS[@]}" -- "${X_ARGS[@]}"
+        "${CLIENT_ARGS[@]}" -- "${X_ARGS[@]}" \
+        2> >(psrp_filter_xinit_stderr)
     client_rc=$?
     exit "$client_rc"
 fi
@@ -507,7 +700,9 @@ if ! kill -0 "$X_PID" 2>/dev/null; then
 fi
 
 "${PSRP_CLIENT_CMD[@]}" "${PSRP_CLIENT_ENV[@]}" \
-    "${PSRP_GUI_CHIAKI[@]}" "${CLIENT_ARGS[@]}"
+    "$PSRP_SESSION_WRAPPER" "$MODE" \
+    "${PSRP_GUI_CHIAKI[@]}" "${CLIENT_ARGS[@]}" \
+    2> >(psrp_filter_xinit_stderr)
 client_rc=$?
 kill "$X_PID" 2>/dev/null || true
 wait "$X_PID" 2>/dev/null || true

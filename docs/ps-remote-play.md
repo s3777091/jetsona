@@ -60,8 +60,16 @@ Các gói nền cần cho chế độ bare-X:
 ```bash
 sudo apt update
 sudo apt install -y xinit xserver-xorg-video-all xserver-xorg-input-libinput \
-   x11-xkb-utils dbus libnss3 libfuse2 libva2 alsa-utils
+   x11-xkb-utils x11-xserver-utils openbox onboard dbus libnss3 libfuse2 \
+   libva2 alsa-utils
 ```
+
+Trong màn hình thiết lập, launcher giữ con trỏ X hiện, chạy `openbox` để cửa
+sổ Chiaki/Chromium luôn nhận focus bàn phím, và tự mở bàn phím ảo `onboard`
+khi không phát hiện bàn phím USB. Có thể cưỡng bức bàn phím ảo bằng
+`PS_REMOTE_PLAY_ONSCREEN_KEYBOARD: "1"`, hoặc tắt bằng `"0"`. Trình duyệt PSN
+chạy dưới user sandbox `jetson-kiosk`, dùng cùng profile đăng nhập với Chromium
+kiosk; đổi user bằng `PS_REMOTE_PLAY_BROWSER_USER` nếu cần.
 
 `chiaki-ng` hiện phát hành AppImage ARM64 và yêu cầu Vulkan 1.2, `libva` cùng
 PipeWire. JetPack 4.6.1 có Vulkan 1.2, nhưng Ubuntu 18.04/glibc cũ và backend
