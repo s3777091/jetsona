@@ -74,12 +74,14 @@ sudo cp "$JETSON_DIR/scripts/jetson_fw_run.sh" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/launch_chromium.sh" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/launch_ps_remote_play.sh" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/ps_remote_play_ctl.sh" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/setup-tailscale-client.sh" /opt/jetson-fw/scripts/
 sudo chmod +x \
     /opt/jetson-fw/scripts/jetson_fw_run.sh \
     /opt/jetson-fw/scripts/config_loader.sh \
     /opt/jetson-fw/scripts/launch_chromium.sh \
     /opt/jetson-fw/scripts/launch_ps_remote_play.sh \
-    /opt/jetson-fw/scripts/ps_remote_play_ctl.sh
+    /opt/jetson-fw/scripts/ps_remote_play_ctl.sh \
+    /opt/jetson-fw/scripts/setup-tailscale-client.sh
 sudo mkdir -p /var/lib/jetson-fw/chiaki
 sudo chmod 700 /var/lib/jetson-fw/chiaki
 if [ -f "$JETSON_DIR/.env" ]; then

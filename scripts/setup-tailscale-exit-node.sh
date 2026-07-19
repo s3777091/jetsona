@@ -33,25 +33,40 @@ install -m 0644 /dev/stdin /etc/sysctl.d/99-tailscale-exit-node.conf <<'EOF'
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 EOF
-sysctl --system >/dev/null
+sysctl -p /etc/sysctl.d/99-tailscale-exit-node.conf >/dev/null
 
 # Linux 6.2+ can forward Tailscale UDP traffic much faster with these offload
 # settings. Apply them now and, when available, through networkd-dispatcher on
 # every interface transition/reboot.
 if command -v ethtool >/dev/null 2>&1; then
-    NETDEV="$(ip -o route get 8.8.8.8 | cut -f 5 -d ' ')"
+    NETDEV="$(
+        ip -o route get 8.8.8.8 2>/dev/null |
+            awk '{ for (i=1; i<=NF; i++) if ($i == "dev") { print $(i+1); exit } }'
+    )" || true
     if [ -n "$NETDEV" ]; then
-        ethtool -K "$NETDEV" rx-udp-gro-forwarding on rx-gro-list off
+        # This is only a throughput optimization. Many virtual NIC drivers do
+        # not expose these offloads; that must not abort the VPN setup.
+        ethtool -K "$NETDEV" rx-udp-gro-forwarding on rx-gro-list off ||
+            echo "==> UDP GRO offload is not supported on $NETDEV; continuing"
     fi
     if systemctl is-enabled networkd-dispatcher >/dev/null 2>&1; then
         install -d -m 0755 /etc/networkd-dispatcher/routable.d
         install -m 0755 /dev/stdin \
             /etc/networkd-dispatcher/routable.d/50-tailscale <<'EOF'
 #!/bin/sh
-NETDEV="$(ip -o route get 8.8.8.8 | cut -f 5 -d ' ')"
-[ -n "$NETDEV" ] && ethtool -K "$NETDEV" rx-udp-gro-forwarding on rx-gro-list off
+NETDEV="$(ip -o route get 8.8.8.8 2>/dev/null | awk '{ for (i=1; i<=NF; i++) if ($i == "dev") { print $(i+1); exit } }')"
+[ -z "$NETDEV" ] || ethtool -K "$NETDEV" rx-udp-gro-forwarding on rx-gro-list off >/dev/null 2>&1 || true
 EOF
     fi
+fi
+
+# Tailscale manages netfilter itself, but firewalld needs masquerading enabled
+# on affected Linux distributions for forwarded exit-node traffic.
+if command -v firewall-cmd >/dev/null 2>&1 &&
+    systemctl is-active --quiet firewalld; then
+    echo "==> Enabling firewalld masquerading"
+    firewall-cmd --permanent --add-masquerade
+    firewall-cmd --reload
 fi
 
 systemctl enable --now tailscaled

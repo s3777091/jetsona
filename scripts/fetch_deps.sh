@@ -13,7 +13,7 @@ sudo apt-get install -y \
     python3 \
     libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev \
     libsdl2-dev libsdl2-ttf-dev \
-    libcurl4-openssl-dev libssl-dev libopus-dev libasound2-dev alsa-utils mpv \
+    curl libcurl4-openssl-dev libssl-dev libopus-dev libasound2-dev alsa-utils mpv \
     bluez bluez-tools rfkill \
     network-manager \
     xserver-xorg-video-all xserver-xorg-input-libinput \

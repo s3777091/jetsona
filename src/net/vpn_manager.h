@@ -23,8 +23,8 @@ struct VpnTransitionResult {
 /* Controls the Tailscale exit-node preference used as Jetsona's VPN.
  *
  * The exit node is selected by its Tailscale machine name/IP, not by the VM's
- * public SSH address. Set JETSON_VPN_EXIT_NODE in .env; the deployment helper
- * names the intended VM "jetsona-vpn", which is also the safe default here.
+ * public SSH address. Set JETSON_VPN_EXIT_NODE in config.yaml; the deployment
+ * helper names the intended VM "jetsona-vpn", which is also the safe default.
  * Calls that touch the CLI are blocking and must run on a worker thread. */
 class VpnManager {
 public:

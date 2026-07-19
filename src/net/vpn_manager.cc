@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -20,29 +22,6 @@ namespace {
 constexpr const char *kSettingsNamespace = "network";
 constexpr const char *kEnabledKey = "vpn_enabled";
 constexpr const char *kDefaultExitNode = "jetsona-vpn";
-
-bool ContainsJsonValue(const std::string &json, const char *compact,
-                       const char *spaced) {
-    return json.find(compact) != std::string::npos ||
-           json.find(spaced) != std::string::npos;
-}
-
-bool BackendIsRunning(const std::string &json) {
-    return ContainsJsonValue(json, "\"BackendState\":\"Running\"",
-                             "\"BackendState\": \"Running\"");
-}
-
-bool BackendNeedsLogin(const std::string &json) {
-    return ContainsJsonValue(json, "\"BackendState\":\"NeedsLogin\"",
-                             "\"BackendState\": \"NeedsLogin\"") ||
-           json.find("LoggedOut") != std::string::npos;
-}
-
-bool HasSelectedExitNode(const std::string &json) {
-    // PeerStatus.ExitNode is true only for the peer currently selected as this
-    // device's exit node. ExitNodeOption merely means a peer is eligible.
-    return ContainsJsonValue(json, "\"ExitNode\":true", "\"ExitNode\": true");
-}
 
 std::string OneLineError(std::string output) {
     platform::TrimTrailingWhitespace(output);
@@ -66,6 +45,41 @@ std::string JsonString(const nlohmann::json &object, const char *key) {
 bool JsonBool(const nlohmann::json &object, const char *key) {
     const auto it = object.find(key);
     return it != object.end() && it->is_boolean() && it->get<bool>();
+}
+
+nlohmann::json ParseStatusJson(const std::string &output) {
+    // RunShellCommand combines stderr with stdout. Some Tailscale releases
+    // print a version warning before the JSON document, so isolate the object
+    // before parsing it.
+    const size_t json_begin = output.find('{');
+    const size_t json_end = output.rfind('}');
+    if (json_begin == std::string::npos || json_end == std::string::npos ||
+        json_end < json_begin)
+        return nlohmann::json();
+    auto root = nlohmann::json::parse(
+        output.substr(json_begin, json_end - json_begin + 1), nullptr, false);
+    return root.is_object() ? root : nlohmann::json();
+}
+
+bool HasSelectedExitNode(const nlohmann::json &root) {
+    // ExitNodeStatus is the authoritative field in current clients. Keep the
+    // PeerStatus.ExitNode fallback for older Tailscale versions shipped by
+    // some JetPack/Ubuntu installations.
+    const auto selected = root.find("ExitNodeStatus");
+    if (selected != root.end() && selected->is_object()) return true;
+
+    const auto peers = root.find("Peer");
+    if (peers == root.end()) return false;
+    if (peers->is_object()) {
+        for (const auto &item : peers->items())
+            if (item.value().is_object() &&
+                JsonBool(item.value(), "ExitNode"))
+                return true;
+    } else if (peers->is_array()) {
+        for (const auto &peer : *peers)
+            if (peer.is_object() && JsonBool(peer, "ExitNode")) return true;
+    }
+    return false;
 }
 
 std::string NormalizeNodeName(std::string value) {
@@ -106,6 +120,8 @@ struct ExitNodeResolution {
     std::string identifier;
     std::string display_name;
     std::string error;
+    bool found_in_status = false;
+    bool online = false;
 };
 
 std::string CandidateIdentifier(const ExitNodeCandidate &candidate) {
@@ -133,30 +149,13 @@ std::string CandidateDisplayName(const ExitNodeCandidate &candidate) {
 ExitNodeResolution ResolveExitNode(const std::string &status_json,
                                    const std::string &configured) {
     ExitNodeResolution resolution;
-    // RunShellCommand combines stderr with stdout. Some Tailscale versions may
-    // print a version warning before their JSON, so parse the JSON object rather
-    // than rejecting an otherwise valid status response.
-    const size_t json_begin = status_json.find('{');
-    const size_t json_end = status_json.rfind('}');
-    if (json_begin == std::string::npos || json_end == std::string::npos ||
-        json_end < json_begin) {
-        resolution.error = "Dữ liệu trạng thái Tailscale không hợp lệ";
-        return resolution;
-    }
-    const auto root = nlohmann::json::parse(
-        status_json.substr(json_begin, json_end - json_begin + 1), nullptr, false);
-    if (root.is_discarded() || !root.is_object()) {
+    const auto root = ParseStatusJson(status_json);
+    if (!root.is_object()) {
         resolution.error = "Dữ liệu trạng thái Tailscale không hợp lệ";
         return resolution;
     }
 
     const auto peers_it = root.find("Peer");
-    if (peers_it == root.end() ||
-        (!peers_it->is_object() && !peers_it->is_array())) {
-        resolution.error = "Chưa có exit node nào được duyệt trong Tailscale Admin";
-        return resolution;
-    }
-
     std::vector<ExitNodeCandidate> candidates;
     auto add_candidate = [&candidates](const nlohmann::json &peer) {
         if (!peer.is_object() ||
@@ -178,9 +177,9 @@ ExitNodeResolution ResolveExitNode(const std::string &status_json,
             candidates.push_back(std::move(candidate));
     };
 
-    if (peers_it->is_object()) {
+    if (peers_it != root.end() && peers_it->is_object()) {
         for (const auto &item : peers_it->items()) add_candidate(item.value());
-    } else {
+    } else if (peers_it != root.end() && peers_it->is_array()) {
         for (const auto &peer : *peers_it) add_candidate(peer);
     }
 
@@ -196,6 +195,8 @@ ExitNodeResolution ResolveExitNode(const std::string &status_json,
         if (candidate.online) {
             resolution.identifier = CandidateIdentifier(candidate);
             resolution.display_name = CandidateDisplayName(candidate);
+            resolution.found_in_status = true;
+            resolution.online = true;
             return resolution;
         }
         if (!offline_match) offline_match = &candidate;
@@ -204,6 +205,7 @@ ExitNodeResolution ResolveExitNode(const std::string &status_json,
     if (offline_match) {
         resolution.identifier = CandidateIdentifier(*offline_match);
         resolution.display_name = CandidateDisplayName(*offline_match);
+        resolution.found_in_status = true;
         return resolution;
     }
 
@@ -214,15 +216,17 @@ ExitNodeResolution ResolveExitNode(const std::string &status_json,
     if (candidates.size() == 1) {
         resolution.identifier = CandidateIdentifier(candidates.front());
         resolution.display_name = CandidateDisplayName(candidates.front());
+        resolution.found_in_status = true;
+        resolution.online = candidates.front().online;
         return resolution;
     }
 
-    if (candidates.empty()) {
-        resolution.error = "Chưa có exit node nào được duyệt trong Tailscale Admin";
-    } else {
-        resolution.error = "Không tìm thấy exit node \"" + configured +
-                           "\"; hãy cấu hình tên hoặc IP Tailscale 100.x";
-    }
+    // JSON status has changed between Tailscale releases. Let the CLI resolve
+    // an explicitly configured stable ID, Tailscale IP, or MagicDNS name when
+    // an older status payload does not expose ExitNodeOption. `tailscale set`
+    // will still reject a node that is missing or not approved.
+    resolution.identifier = configured;
+    resolution.display_name = configured;
     return resolution;
 }
 
@@ -267,18 +271,30 @@ VpnStatus VpnManager::QueryStatusLocked(bool persist, std::string *status_json) 
     }
     if (status_json) *status_json = result.output;
 
-    if (BackendNeedsLogin(result.output)) {
+    const auto root = ParseStatusJson(result.output);
+    if (!root.is_object()) {
+        status.error = "Dữ liệu trạng thái Tailscale không hợp lệ";
+        return status;
+    }
+    const std::string backend_state = JsonString(root, "BackendState");
+    if (backend_state == "NeedsLogin" || backend_state == "LoggedOut") {
         status.error = "Tailscale chưa đăng nhập vào tailnet";
         if (persist) PersistEnabled(false);
         return status;
     }
-    status.authenticated = BackendIsRunning(result.output);
+    if (backend_state == "NeedsMachineAuth") {
+        status.error = "Jetson chưa được duyệt trong Tailscale Admin";
+        if (persist) PersistEnabled(false);
+        return status;
+    }
+    status.authenticated = backend_state == "Running";
     if (!status.authenticated) {
         status.error = "Dịch vụ Tailscale chưa sẵn sàng";
+        if (!backend_state.empty()) status.error += " (" + backend_state + ")";
         return status;
     }
 
-    status.enabled = HasSelectedExitNode(result.output);
+    status.enabled = HasSelectedExitNode(root);
     if (persist) PersistEnabled(status.enabled);
     return status;
 }
@@ -347,6 +363,26 @@ VpnTransitionResult VpnManager::SetEnabled(bool enabled) {
             ESP_LOGE(TAG, "%s", transition.error.c_str());
             return transition;
         }
+
+        // When control says the selected peer is offline, probe it before
+        // changing the default route. This avoids cutting public connectivity,
+        // while a relay-only connection remains valid (`until-direct=false`).
+        if (exit_node.found_in_status && !exit_node.online) {
+            const std::string ping_command =
+                "timeout --signal=TERM 10s tailscale ping --c=1 "
+                "--timeout=8s --until-direct=false " +
+                platform::QuoteShellArgument(exit_node.identifier);
+            auto ping = platform::RunShellCommand(ping_command);
+            if (!ping.Ok()) {
+                transition.error = "VPN exit node đang ngoại tuyến";
+                const std::string detail = OneLineError(std::move(ping.output));
+                if (!detail.empty()) transition.error += ": " + detail;
+                transition.enabled = before.enabled;
+                PersistEnabled(transition.enabled);
+                ESP_LOGE(TAG, "%s", transition.error.c_str());
+                return transition;
+            }
+        }
         if (NormalizeNodeName(exit_node.display_name) !=
             NormalizeNodeName(ExitNode())) {
             ESP_LOGW(TAG, "configured exit node %s resolved to %s (%s)",
@@ -375,32 +411,15 @@ VpnTransitionResult VpnManager::SetEnabled(bool enabled) {
         return transition;
     }
 
-    if (enabled) {
-        const std::string ping_command =
-            "timeout --signal=TERM 8s tailscale ping --c=1 --timeout=5s "
-            "--until-direct=false " +
-            platform::QuoteShellArgument(exit_node.identifier);
-        auto ping = platform::RunShellCommand(ping_command);
-        if (!ping.Ok()) {
-            // Do not leave a dead exit-node preference in place: Tailscale's
-            // fail-closed behavior would otherwise cut off public traffic.
-            auto rollback = platform::RunShellCommand(
-                "timeout --signal=TERM 8s tailscale set --exit-node=");
-            transition.error = "Không liên lạc được với VPN exit node";
-            const std::string detail = OneLineError(std::move(ping.output));
-            if (!detail.empty()) transition.error += ": " + detail;
-            const VpnStatus rolled_back = QueryStatusLocked(false, nullptr);
-            transition.enabled = rolled_back.enabled;
-            if (!rollback.Ok() || transition.enabled) {
-                transition.error += "; chưa gỡ được exit node";
-            }
-            PersistEnabled(transition.enabled);
-            ESP_LOGE(TAG, "%s", transition.error.c_str());
-            return transition;
-        }
+    // tailscale set updates preferences synchronously, but the status snapshot
+    // can lag briefly while netmap/routes are rebuilt. Give it a short bounded
+    // convergence window instead of reporting a false failure immediately.
+    VpnStatus after;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        after = QueryStatusLocked(false, nullptr);
+        if (after.authenticated && after.enabled == enabled) break;
+        if (attempt != 7) std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
-
-    const VpnStatus after = QueryStatusLocked(false, nullptr);
     transition.enabled = after.enabled;
     transition.success = after.authenticated && after.enabled == enabled;
     if (!transition.success) {

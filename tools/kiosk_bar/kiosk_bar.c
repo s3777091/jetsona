@@ -54,6 +54,7 @@
 #include "kiosk_icons.h" /* generated 48x48 RGBA minis of the drawer icons */
 
 #define BAR_H       42
+#define OSK_H       205
 #define PILL_W      172
 #define PILL_H      36
 #define PILL_Y      3
@@ -124,6 +125,10 @@ static int quick_bt_on = 0;
  * the same way); leaving the kiosk is the app rail's power button. */
 #define MAX_WINS 16
 static Window wins[MAX_WINS];
+/* Onboard is an input surface, not a Chromium app window. Keep it above the
+ * browser without putting it in the island's app switcher or stealing the
+ * focused portal text field. */
+static Window onscreen_keyboard = None;
 static int win_app[MAX_WINS]; /* launcher entry that opened wins[i], -1 */
 static char win_title[MAX_WINS][128];
 static int win_badge[MAX_WINS];
@@ -1566,6 +1571,7 @@ static void focus_active(void)
     if (active < 0) return;
     XRaiseWindow(dpy, wins[active]);
     XSetInputFocus(dpy, wins[active], RevertToPointerRoot, CurrentTime);
+    if (onscreen_keyboard != None) XRaiseWindow(dpy, onscreen_keyboard);
     XRaiseWindow(dpy, bar);
     if (transition != None && transition_start) XRaiseWindow(dpy, transition);
     if (menu_open) XRaiseWindow(dpy, menu);
@@ -1574,6 +1580,10 @@ static void focus_active(void)
 
 static void remove_win(Window w)
 {
+    if (w == onscreen_keyboard) {
+        onscreen_keyboard = None;
+        return;
+    }
     int i = win_index(w);
     if (i < 0) return;
     remember_queue();
@@ -1588,6 +1598,17 @@ static void remove_win(Window w)
     if (active >= 0) focus_active();
 }
 
+static int is_onscreen_keyboard(Window w)
+{
+    XClassHint hint = {0};
+    if (!XGetClassHint(dpy, w, &hint)) return 0;
+    int result = (hint.res_name && contains_ci(hint.res_name, "onboard")) ||
+                 (hint.res_class && contains_ci(hint.res_class, "onboard"));
+    if (hint.res_name) XFree(hint.res_name);
+    if (hint.res_class) XFree(hint.res_class);
+    return result;
+}
+
 static void manage(Window w, int give_focus)
 {
     if (w == bar || w == root || w == menu || w == transition || w == toast) return;
@@ -1596,6 +1617,23 @@ static void manage(Window w, int give_focus)
     if (give_focus && a.map_state == IsViewable && a.width < sw * 3 / 5)
         inspect_notification_window(w);
     if (a.override_redirect || a.map_state != IsViewable) return;
+
+    /* The portal's Onboard keyboard deliberately spans the panel width, so a
+     * size-only micro-WM would mistake it for Chromium and stretch it over the
+     * whole screen. Classify it first, pin it to the lower 205 px, and leave X
+     * input focus on Chromium so its active text field receives injected keys. */
+    if (is_onscreen_keyboard(w)) {
+        onscreen_keyboard = w;
+        if (a.x != 0 || a.y != sh - OSK_H || a.width != sw || a.height != OSK_H)
+            XMoveResizeWindow(dpy, w, 0, sh - OSK_H,
+                              (unsigned)sw, (unsigned)OSK_H);
+        XRaiseWindow(dpy, w);
+        XRaiseWindow(dpy, bar);
+        if (transition != None && transition_start) XRaiseWindow(dpy, transition);
+        if (menu_open) XRaiseWindow(dpy, menu);
+        if (toast != None && toast_start) XRaiseWindow(dpy, toast);
+        return;
+    }
 
     /* Anything big enough to be a browser window: kick it out from under the
      * bar and track it in the switcher list. Menus/tooltips are
@@ -1636,6 +1674,7 @@ static void manage(Window w, int give_focus)
         XSetInputFocus(dpy, w, RevertToPointerRoot, CurrentTime);
         if (active >= 0) XRaiseWindow(dpy, wins[active]);
     }
+    if (onscreen_keyboard != None) XRaiseWindow(dpy, onscreen_keyboard);
     XRaiseWindow(dpy, bar);
     if (menu_open) XRaiseWindow(dpy, menu);
 }

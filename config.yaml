@@ -34,6 +34,10 @@ JETSON_WEATHER_NAME: "TP.HCM"
 JETSON_VPN_EXIT_NODE: "jetsona-vpn"
 JETSON_FILES_HOME: ""
 JETSON_SETTINGS_FILE: ""
+# Captive Portal: HTTP endpoint must normally return an empty 204 response.
+# "auto" opens Onboard only when no physical USB keyboard is detected.
+JETSON_CAPTIVE_PORTAL_PROBE_URL: "http://connectivitycheck.gstatic.com/generate_204"
+JETSON_CAPTIVE_PORTAL_ONSCREEN_KEYBOARD: "auto"
 
 # Display/input overrides. Empty device paths keep auto-detection enabled.
 JETSON_DISPLAY_BACKEND: "FBDEV"

@@ -7,7 +7,8 @@
 #
 # Runtime prerequisite (install once on the Jetson):
 #   sudo apt install -y xserver-xorg-video-all xserver-xorg-input-libinput \
-#       x11-xkb-utils x11-xserver-utils xinit dbus chromium-browser libx11-dev
+#       x11-xkb-utils x11-xserver-utils xinit openbox onboard curl dbus \
+#       chromium-browser libx11-dev
 # (libx11-dev is a build dependency for tools/kiosk_bar, the Dynamic Island
 # strip + micro-WM that runs on top of Chromium.)
 # The HDMI LCD is driven by the stock tegra/nvidia X driver; this script just
@@ -19,6 +20,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The firmware runs as root and persists its UI choices here. Preserve the
 # path before client mode replaces HOME with Chromium's private runtime home.
 export JETSON_SETTINGS_FILE="${JETSON_SETTINGS_FILE:-${HOME:-/root}/.jetson-fw/settings.kv}"
+
+hardware_keyboard_present()
+{
+    local input_root="${JETSON_INPUT_ROOT:-/dev/input}"
+    local device
+    for device in \
+        "$input_root"/by-id/*-event-kbd \
+        "$input_root"/by-path/*-event-kbd; do
+        [ -e "$device" ] && return 0
+    done
+    return 1
+}
 
 # xinit must start an executable as its first client, so it re-enters this
 # script in client mode.  Keep Chromium out of the service's stale desktop
@@ -90,65 +103,120 @@ if [ "${1:-}" = "--x-client" ]; then
         echo "launch_chromium: setxkbmap missing; Ctrl+Alt+Backspace unavailable" >&2
     fi
 
+    portal_watch()
+    {
+        local target_pid="$1"
+        local successes=0
+        local status
+        if ! command -v curl >/dev/null 2>&1; then
+            echo "launch_chromium: curl missing; portal cannot auto-return" >&2
+            return
+        fi
+        while kill -0 "$target_pid" 2>/dev/null; do
+            status="$(curl --silent --show-error --output /dev/null \
+                --write-out '%{http_code}' --connect-timeout 3 --max-time 5 \
+                --header 'Cache-Control: no-cache, no-store' \
+                --user-agent 'Mozilla/5.0 (Linux; Jetson) JetsonFW-PortalCheck/1.0' \
+                -- "${JETSON_CAPTIVE_PORTAL_PROBE_URL:-http://connectivitycheck.gstatic.com/generate_204}" \
+                2>/dev/null || true)"
+            if [ "$status" = 204 ]; then
+                successes=$((successes + 1))
+                if [ "$successes" -ge 2 ]; then
+                    echo "launch_chromium: portal authentication complete; returning to firmware" >&2
+                    kill "$target_pid" 2>/dev/null || true
+                    return
+                fi
+            else
+                successes=0
+            fi
+            sleep 2
+        done
+    }
+
     # With the kiosk bar available, run it next to Chromium. The bar draws the
     # Dynamic Island strip on top and acts as a micro-WM: it hands Chromium the
     # X input focus (without it the USB keyboard is dead in a WM-less session)
-    # and exits via the app rail's power button (long-press the island, last
-    # icon). Whichever of the two
-    # dies first ends the session: bar exit -> user asked to leave the browser;
-    # chromium exit -> nothing left to show. Either way xinit tears X down and
-    # jetson_fw_run.sh restarts the firmware.
+    # and exits via the app rail's power button. Without the bar, openbox is a
+    # best-effort focus/stacking fallback, especially for the touch keyboard.
+    BAR_PID=""
+    WM_PID=""
+    ONBOARD_PID=""
+    PORTAL_WATCH_PID=""
     if [ -n "${JETSON_KIOSK_BAR:-}" ] && [ -x "$JETSON_KIOSK_BAR" ]; then
         "$JETSON_KIOSK_BAR" &
         BAR_PID=$!
-        chromium_run "$@" &
-        APP_PID=$!
+    elif command -v openbox >/dev/null 2>&1; then
+        openbox --sm-disable >/dev/null 2>&1 &
+        WM_PID=$!
+    fi
 
-        # Extra kiosk windows: every URL beyond the first (newline-separated
-        # in CHROMIUM_EXTRA_URLS) becomes its own --app window in the already
-        # running Chromium -- the relaunch hands the URL to the instance
-        # holding the profile singleton and exits. The bar cycles between the
-        # windows on island clicks. Wait for the main process to claim the
-        # singleton (SingletonLock symlink in the profile) first, or the
-        # relaunch races it and tries to start a second full browser; cold
-        # Chromium start on the Jetson can take well over 10s.
-        if [ -n "${CHROMIUM_EXTRA_URLS:-}" ] && [ -n "${CHROMIUM_BIN:-}" ]; then
-            (
-                PROFILE="${CHROMIUM_PROFILE_DIR:-/tmp/chromium-kiosk-profile}"
-                tries=0
-                while [ ! -L "$PROFILE/SingletonLock" ] && [ "$tries" -lt 30 ]; do
-                    sleep 1
-                    tries=$((tries + 1))
-                done
-                sleep 2
-                while IFS= read -r u; do
-                    [ -n "$u" ] || continue
-                    chromium_run "$CHROMIUM_BIN" \
-                        --user-data-dir="$PROFILE" \
-                        --app="$u" >/dev/null 2>&1 || true
-                done <<EOF
+    chromium_run "$@" &
+    APP_PID=$!
+
+    if [ -n "${JETSON_CAPTIVE_PORTAL_ONBOARD:-}" ] &&
+       [ -x "$JETSON_CAPTIVE_PORTAL_ONBOARD" ]; then
+        if command -v gsettings >/dev/null 2>&1; then
+            chromium_run gsettings set org.onboard.window docking-enabled false >/dev/null 2>&1 || true
+            chromium_run gsettings set org.onboard.window window-decoration false >/dev/null 2>&1 || true
+            chromium_run gsettings set org.onboard.window force-to-top true >/dev/null 2>&1 || true
+        fi
+        chromium_run "$JETSON_CAPTIVE_PORTAL_ONBOARD" \
+            --size=800x205 -x 0 -y 275 --layout=Compact --theme=Nightshade &
+        ONBOARD_PID=$!
+    fi
+
+    # Extra kiosk windows: every URL beyond the first (newline-separated in
+    # CHROMIUM_EXTRA_URLS) becomes its own --app window in the already running
+    # Chromium. The bar cycles between them.
+    if [ -n "$BAR_PID" ] && [ -n "${CHROMIUM_EXTRA_URLS:-}" ] &&
+       [ -n "${CHROMIUM_BIN:-}" ]; then
+        (
+            PROFILE="${CHROMIUM_PROFILE_DIR:-/tmp/chromium-kiosk-profile}"
+            tries=0
+            while [ ! -L "$PROFILE/SingletonLock" ] && [ "$tries" -lt 30 ]; do
+                sleep 1
+                tries=$((tries + 1))
+            done
+            sleep 2
+            while IFS= read -r u; do
+                [ -n "$u" ] || continue
+                chromium_run "$CHROMIUM_BIN" \
+                    --user-data-dir="$PROFILE" --app="$u" >/dev/null 2>&1 || true
+            done <<EOF
 ${CHROMIUM_EXTRA_URLS}
 EOF
-            ) &
-        fi
-
-        # Session lifetime: bar exit = user pressed the rail's power button
-        # (leave the browser); chromium exit = nothing left to show. Poll
-        # instead of
-        # `wait -n` so the extra-URL helper above can't end the session.
-        trap 'kill "$BAR_PID" "$APP_PID" 2>/dev/null' EXIT INT TERM
-        while kill -0 "$BAR_PID" 2>/dev/null && kill -0 "$APP_PID" 2>/dev/null; do
-            sleep 1
-        done
-        kill "$BAR_PID" "$APP_PID" 2>/dev/null
-        # Let Chromium shut down cleanly so cookies/localStorage (GitHub &c.
-        # logins) hit the persistent profile before X goes away.
-        wait "$APP_PID" 2>/dev/null
-        wait "$BAR_PID" 2>/dev/null
-        exit 0
+        ) &
     fi
-    chromium_run "$@"
-    exit $?
+
+    if [ "${JETSON_CAPTIVE_PORTAL_MODE:-0}" = 1 ]; then
+        portal_watch "${BAR_PID:-$APP_PID}" &
+        PORTAL_WATCH_PID=$!
+    fi
+
+    session_cleanup()
+    {
+        trap - EXIT INT TERM HUP
+        [ -z "$PORTAL_WATCH_PID" ] || kill "$PORTAL_WATCH_PID" 2>/dev/null || true
+        [ -z "$ONBOARD_PID" ] || kill "$ONBOARD_PID" 2>/dev/null || true
+        [ -z "$BAR_PID" ] || kill "$BAR_PID" 2>/dev/null || true
+        [ -z "$WM_PID" ] || kill "$WM_PID" 2>/dev/null || true
+        kill "$APP_PID" 2>/dev/null || true
+        # Let Chromium shut down cleanly so portal cookies and other persisted
+        # sessions reach the profile before Xorg gives the panel back.
+        wait "$APP_PID" 2>/dev/null || true
+        [ -z "$ONBOARD_PID" ] || wait "$ONBOARD_PID" 2>/dev/null || true
+        [ -z "$BAR_PID" ] || wait "$BAR_PID" 2>/dev/null || true
+        [ -z "$WM_PID" ] || wait "$WM_PID" 2>/dev/null || true
+    }
+    trap session_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+
+    while kill -0 "$APP_PID" 2>/dev/null &&
+          { [ -z "$BAR_PID" ] || kill -0 "$BAR_PID" 2>/dev/null; }; do
+        sleep 1
+    done
+    exit 0
 fi
 
 JETSON_DIR="$(dirname "$SCRIPT_DIR")"
@@ -165,6 +233,7 @@ HOME_URL="${CHROMIUM_HOME_URL:-https://www.google.com}"
 # web-IDE flow. One URL per line: the first replaces the home URL, each
 # additional line opens as its own kiosk window (cycled via the island pill).
 URL_FILE=/tmp/jetson_chromium_url
+PORTAL_FILE=/tmp/jetson_captive_portal_session
 EXTRA_URLS=""
 if [ -f "$URL_FILE" ]; then
     FIRST=1
@@ -183,6 +252,12 @@ if [ -f "$URL_FILE" ]; then
     done < <(head -c 4096 "$URL_FILE")
     rm -f "$URL_FILE"
 fi
+JETSON_CAPTIVE_PORTAL_MODE=0
+if [ -f "$PORTAL_FILE" ]; then
+    JETSON_CAPTIVE_PORTAL_MODE=1
+    rm -f "$PORTAL_FILE"
+fi
+export JETSON_CAPTIVE_PORTAL_MODE
 DISPLAY_NO="${CHROMIUM_DISPLAY:-:0}"
 export DISPLAY="$DISPLAY_NO"
 
@@ -249,6 +324,30 @@ if ! run_identity="$(id -u "$CHROMIUM_RUN_USER" 2>/dev/null)"; then
 fi
 run_group="$(id -g "$CHROMIUM_RUN_USER")"
 export CHROMIUM_RUN_USER CHROMIUM_RUN_UID="$run_identity" CHROMIUM_RUN_GID="$run_group"
+
+# Captive portals must remain usable on the touch-only appliance. In auto mode
+# Onboard appears only when X has no USB keyboard; touch itself is the pointer,
+# and the normal visible X cursor remains available to an attached mouse.
+JETSON_CAPTIVE_PORTAL_ONBOARD=""
+if [ "$JETSON_CAPTIVE_PORTAL_MODE" = 1 ]; then
+    case "${JETSON_CAPTIVE_PORTAL_ONSCREEN_KEYBOARD:-auto}" in
+        0|false|FALSE|no|NO|off|OFF|none) ;;
+        auto)
+            if ! hardware_keyboard_present; then
+                JETSON_CAPTIVE_PORTAL_ONBOARD="$(command -v onboard 2>/dev/null || true)"
+            fi
+            ;;
+        1|true|TRUE|yes|YES|on|ON)
+            JETSON_CAPTIVE_PORTAL_ONBOARD="$(command -v onboard 2>/dev/null || true)"
+            [ -n "$JETSON_CAPTIVE_PORTAL_ONBOARD" ] ||
+                echo "launch_chromium: onboard keyboard not installed" >&2
+            ;;
+        *)
+            echo "launch_chromium: invalid JETSON_CAPTIVE_PORTAL_ONSCREEN_KEYBOARD" >&2
+            ;;
+    esac
+fi
+export JETSON_CAPTIVE_PORTAL_ONBOARD
 RUNTIME_HOME="${CHROMIUM_KIOSK_HOME:-/var/lib/jetson-fw/chromium-home}"
 RUNTIME_DIR="${CHROMIUM_KIOSK_RUNTIME_DIR:-/tmp/chromium-kiosk-runtime}"
 mkdir -p "$RUNTIME_HOME" "$RUNTIME_HOME/.config" "$RUNTIME_HOME/.cache" \

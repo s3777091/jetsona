@@ -600,7 +600,7 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
     status_bar_ = std::make_unique<StatusBar>(lv_layer_top());
     status_bar_->SetWifiAction([this]() { OpenWifiSettings(); });
     status_bar_->SetCaptivePortalAction(
-        [this](const std::string &url) { OpenChromium(url); });
+        [this](const std::string &url) { OpenChromium(url, true); });
     status_bar_->SetBluetoothAction([this]() { OpenBluetoothSettings(); });
     status_bar_->SetVolumeAction([this](int volume, bool muted) {
         volume_muted_ = muted;
@@ -997,7 +997,7 @@ void Ds02HomeDisplay::OpenSettings() {
             ShowNotification(message, duration_ms);
         });
     settings_view_->SetCaptivePortalAction(
-        [this](const std::string &url) { OpenChromium(url); });
+        [this](const std::string &url) { OpenChromium(url, true); });
     settings_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppSettings); });
     settings_view_->Start();
     NoteAppOpened(kAppSettings);
@@ -1261,7 +1261,8 @@ int Ds02HomeDisplay::PlayChromiumHandoff(const std::string &url) {
     return kHandoffCollapseMs;
 }
 
-void Ds02HomeDisplay::OpenChromium(const std::string &url) {
+void Ds02HomeDisplay::OpenChromium(const std::string &url,
+                                   bool captive_portal) {
     /* Hand the panel to a Chromium kiosk. We can't run a browser inside the
      * firmware (it owns /dev/fb0 via FBDEV with no display server), so the
      * deal is: stop the LVGL render threads (no more writes to the framebuffer),
@@ -1293,6 +1294,18 @@ void Ds02HomeDisplay::OpenChromium(const std::string &url) {
         }
     } else {
         ::unlink("/tmp/jetson_chromium_url"); // stale URL from a previous run
+    }
+    // The URL alone cannot identify a captive portal: its redirect target is
+    // chosen by the venue and may look like any ordinary website. Keep a
+    // separate one-shot marker so launch_chromium.sh can enable portal-only
+    // input helpers and return to the firmware after Internet access opens.
+    if (captive_portal) {
+        if (FILE *f = std::fopen("/tmp/jetson_captive_portal_session", "w")) {
+            std::fputs("1\n", f);
+            std::fclose(f);
+        }
+    } else {
+        ::unlink("/tmp/jetson_captive_portal_session");
     }
     // The collapsing card replaces the old "Đang mở Chromium..." toast: it is
     // the same feedback, but it also leaves the panel black, which is exactly

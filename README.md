@@ -196,6 +196,8 @@ token, password và credential. Biến môi trường truyền trực tiếp khi
 | `JETSON_TOUCH_DEVICE` | Ép dùng một `/dev/input/eventN` cho touch |
 | `JETSON_KEYBOARD_DEVICE` | Ép thiết bị bàn phím evdev |
 | `JETSON_MOUSE_DEVICE` | Ép thiết bị chuột evdev |
+| `JETSON_CAPTIVE_PORTAL_PROBE_URL` | Endpoint HTTP `204` dùng để nhận biết portal đã xác thực xong |
+| `JETSON_CAPTIVE_PORTAL_ONSCREEN_KEYBOARD` | Bàn phím ảo của portal: `auto`, `1` hoặc `0` |
 | `JETSON_FILES_HOME` | Thư mục gốc của ứng dụng Tệp |
 | `JETSON_SETTINGS_FILE` | Đường dẫn file lưu cài đặt |
 | `JETSON_VPN_EXIT_NODE` | Tên máy/IP Tailscale của VM exit node (mặc định `jetsona-vpn`) |
@@ -212,6 +214,18 @@ sudo env \
   JETSON_FILES_HOME=/home/ekkohuynh \
   ./run.sh
 ```
+
+## Trang đăng nhập Wi-Fi (Captive Portal)
+
+Sau khi nối Wi-Fi, firmware kiểm tra quyền truy cập Internet. Nếu mạng chuyển
+hướng sang Captive Portal, mục **Trang đăng nhập Wi-Fi** mở Chromium trong phiên
+bare-X. Màn hình cảm ứng hoạt động như chuột; nếu không tìm thấy bàn phím USB,
+launcher tự mở bàn phím ảo Onboard để nhập mật khẩu, số điện thoại hoặc OTP.
+
+Sau khi đăng nhập, launcher yêu cầu endpoint kiểm tra trả về HTTP `204` hai lần
+liên tiếp rồi tự đóng Chromium. Supervisor sau đó khởi động lại firmware và trả
+về giao diện DS-02. Có thể ép luôn hiện bàn phím bằng
+`JETSON_CAPTIVE_PORTAL_ONSCREEN_KEYBOARD: "1"`, hoặc tắt bằng `"0"`.
 
 ## PS5 Remote Play
 
@@ -290,6 +304,23 @@ node. Thiết lập một lần như sau:
 4. Đặt `JETSON_VPN_EXIT_NODE: "jetsona-vpn"` trong `config.yaml`, cài lại firmware và
    bật toggle VPN. Có thể thay bằng IP Tailscale `100.x` nếu không dùng
    MagicDNS.
+
+Nếu tailnet dùng access policy tùy chỉnh, policy phải cấp quyền tới
+`autogroup:internet`; chỉ cấp quyền truy cập trực tiếp vào máy exit node là
+chưa đủ để định tuyến Internet qua máy đó. Sau khi cài firmware, có thể chạy
+lại helper và kiểm tra từ Jetson bằng:
+
+```bash
+sudo /opt/jetson-fw/scripts/setup-tailscale-client.sh
+tailscale status
+tailscale exit-node list
+tailscale ping --c=1 --until-direct=false jetsona-vpn
+journalctl -u jetson-fw -n 100 | grep -i vpn
+```
+
+Script cấu hình VM có thể chạy lại an toàn sau khi duyệt exit node. Lỗi tối ưu
+UDP GRO trên card mạng ảo chỉ làm giảm thông lượng và không còn làm dừng toàn
+bộ quá trình cấu hình.
 
 Không lưu mật khẩu SSH hoặc Tailscale auth key trong repository. Nếu dùng
 `TS_AUTHKEY`, chỉ truyền nó qua biến môi trường khi chạy script.

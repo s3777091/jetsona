@@ -289,10 +289,12 @@ static void keyboard_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         if (mapped == 0) continue;
         st->key = mapped;
         st->state = ev.value ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-        /* Deliver exactly one transition per LVGL read. Draining a quick
-         * press and release in the same call leaves only RELEASED visible to
-         * LVGL, so text fields never receive LV_EVENT_KEY. The unread event
-         * remains in the non-blocking fd for the next read callback. */
+        /* Deliver exactly one transition per callback invocation. Ask LVGL to
+         * invoke us again immediately so every queued press/release is still
+         * observed individually without waiting another input-timer period.
+         * Without continue_reading, fast typing builds a two-event-per-key
+         * backlog and the visible input falls progressively behind. */
+        data->continue_reading = true;
         break;
     }
     if (bytes == 0 ||
@@ -708,6 +710,12 @@ void LvglRuntime::openKeyboard() {
     lv_indev_set_type(keyboard_, LV_INDEV_TYPE_KEYPAD);
     lv_indev_set_read_cb(keyboard_, keyboard_read_cb);
     lv_indev_set_driver_data(keyboard_, st);
+
+    /* The default LVGL input period follows the 33 ms display refresh. A
+     * keyboard benefits from a shorter poll interval and the callback above
+     * drains an entire queued burst in one poll, keeping both first-key
+     * latency and sustained typing latency low. */
+    lv_timer_set_period(lv_indev_get_read_timer(keyboard_), 5);
 
     /* Keypads deliver keys to the focused object of their group; create one
      * shared group and let the chat/terminal/wifi views add their textareas. */

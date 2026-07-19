@@ -88,8 +88,11 @@ public:
      * supervisor -- runs the kiosk in-process and re-execs this binary when
      * the browser closes. Not an OverlayView app; the whole UI is suspended
      * while the kiosk owns the panel. A non-empty `url` is handed to the
-     * kiosk via /tmp/jetson_chromium_url (read by launch_chromium.sh). */
-    void OpenChromium(const std::string &url = std::string());
+     * kiosk via /tmp/jetson_chromium_url (read by launch_chromium.sh).
+     * `captive_portal` enables the launcher's touch keyboard and automatic
+     * return once unrestricted Internet access has been confirmed. */
+    void OpenChromium(const std::string &url = std::string(),
+                      bool captive_portal = false);
     void OpenLockScreen();
     void SetBrightness(int pct);
     void ApplyDisplayPreferences();
