@@ -92,11 +92,11 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_clear_flag(left_cluster_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // Six quick-setting icons, in the requested left-to-right order:
-    // cache, Bluetooth, Wi-Fi, sound, display brightness, power.
+    // Six quick-setting icons followed by the persistent battery indicator.
+    // The wider cluster still leaves a clear gap beside the centered island.
     right_cluster_ = lv_obj_create(status_strip_);
     lv_obj_remove_style_all(right_cluster_);
-    lv_obj_set_size(right_cluster_, 184, lv_pct(100));
+    lv_obj_set_size(right_cluster_, 250, lv_pct(100));
     lv_obj_align(right_cluster_, LV_ALIGN_RIGHT_MID, -10, 0);
     lv_obj_set_flex_flow(right_cluster_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(right_cluster_, LV_FLEX_ALIGN_END,
@@ -248,6 +248,65 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     add_icon(&sound_icon_, "speaker", OnSoundClick);
     add_icon(&brightness_icon_, "sun", OnBrightnessClick);
     add_icon(&power_icon_, "start", OnPowerClick);
+
+    // Keep charging state separate from the percentage so the digits remain
+    // legible. Hidden LVGL flex children do not reserve a gap, so the battery
+    // simply slides next to the power icon while the charger is disconnected.
+    charge_icon_ = jetson::ui::CreateAppIcon(
+        right_cluster_, "charge-batery", 16);
+    lv_obj_set_style_image_recolor(charge_icon_, Color(0x34c759), 0);
+    lv_obj_set_style_image_recolor_opa(charge_icon_, LV_OPA_COVER, 0);
+    lv_obj_add_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
+
+    battery_icon_root_ = lv_obj_create(right_cluster_);
+    lv_obj_remove_style_all(battery_icon_root_);
+    lv_obj_set_size(battery_icon_root_, 52, 20);
+    lv_obj_clear_flag(
+        battery_icon_root_,
+        (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    battery_icon_body_ = lv_obj_create(battery_icon_root_);
+    lv_obj_remove_style_all(battery_icon_body_);
+    lv_obj_set_size(battery_icon_body_, 47, 20);
+    lv_obj_set_pos(battery_icon_body_, 0, 0);
+    lv_obj_set_style_radius(battery_icon_body_, 6, 0);
+    lv_obj_set_style_border_width(battery_icon_body_, 1, 0);
+    lv_obj_set_style_border_color(battery_icon_body_, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(battery_icon_body_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(battery_icon_body_, LV_OPA_70, 0);
+    lv_obj_clear_flag(
+        battery_icon_body_,
+        (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    battery_icon_fill_ = lv_obj_create(battery_icon_body_);
+    lv_obj_remove_style_all(battery_icon_fill_);
+    lv_obj_set_size(battery_icon_fill_, 41, 16);
+    lv_obj_set_pos(battery_icon_fill_, 2, 1);
+    lv_obj_set_style_radius(battery_icon_fill_, 4, 0);
+    lv_obj_set_style_bg_color(battery_icon_fill_, Color(0x34c759), 0);
+    lv_obj_set_style_bg_opa(battery_icon_fill_, LV_OPA_70, 0);
+    lv_obj_clear_flag(
+        battery_icon_fill_,
+        (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    battery_percent_label_ = lv_label_create(battery_icon_body_);
+    lv_obj_set_style_text_font(
+        battery_percent_label_, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(
+        battery_percent_label_, lv_color_white(), 0);
+    lv_label_set_text(battery_percent_label_, "100%");
+    lv_obj_center(battery_percent_label_);
+
+    battery_icon_nub_ = lv_obj_create(battery_icon_root_);
+    lv_obj_remove_style_all(battery_icon_nub_);
+    lv_obj_set_size(battery_icon_nub_, 3, 8);
+    lv_obj_set_pos(battery_icon_nub_, 48, 6);
+    lv_obj_set_style_radius(battery_icon_nub_, 1, 0);
+    lv_obj_set_style_bg_color(battery_icon_nub_, Color(0x34c759), 0);
+    lv_obj_set_style_bg_opa(battery_icon_nub_, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(
+        battery_icon_nub_,
+        (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     // Build every quick surface only after the shared island host exists.
     BuildQuickMenus();
@@ -1166,6 +1225,7 @@ void StatusBar::Show() {
 
 void StatusBar::Refresh() {
     RefreshClock();
+    RefreshBattery();
     RefreshConnectivity();
     if (sound_icon_) {
         const bool muted = Settings("display").GetBool("muted", false);
@@ -1299,6 +1359,17 @@ void StatusBar::RefreshBattery() {
         (void)discharging;
     }
 
+    // The green charging mark is visible only when the INA219 reports current
+    // flowing into the pack. Refreshing every five seconds matches the sensor
+    // polling interval above.
+    if (charge_icon_) {
+        const bool show_charge = has_battery_ && cached_battery_charging_;
+        if (show_charge)
+            lv_obj_clear_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
+    }
+
     // Keep a percentage-style battery visible even on installations without a
     // readable battery sensor; those retain the neutral 100% fallback.
     const int level = has_battery_ ? cached_battery_level_ : 100;
@@ -1321,11 +1392,8 @@ void StatusBar::RefreshBattery() {
             lv_obj_set_style_bg_color(battery_icon_nub_, Color(fill_color), 0);
     }
     if (battery_percent_label_) {
-        char buf[16];
-        if (has_battery_ && cached_battery_charging_)
-            std::snprintf(buf, sizeof(buf), LV_SYMBOL_CHARGE "%d", level);
-        else
-            std::snprintf(buf, sizeof(buf), "%d", level);
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "%d%%", level);
         lv_label_set_text(battery_percent_label_, buf);
         lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
     }

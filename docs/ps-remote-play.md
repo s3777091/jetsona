@@ -10,13 +10,13 @@ PS5 bằng `chiaki-ng`.
 1. Trên PS5, bật `Settings > System > Remote Play > Enable Remote Play`.
 2. Nếu muốn đánh thức máy từ Rest Mode, bật cả `Stay Connected to the Internet`
    và `Enable Turning on PS5 from Network` trong `Power Saving`.
-3. Mở app drawer, chọn icon **Trò chơi**, nhập địa chỉ IPv4 của PS5 và chọn
-   cấu hình phát.
-4. Chọn **Đăng ký / Thiết lập**. Firmware nhường hẳn framebuffer cho Xorg và
-   giao diện đăng ký chính thức của `chiaki-ng`. Trên PS5, mở
+3. Mở app drawer, chọn icon **Trò chơi**, bấm bánh răng rồi bấm biểu tượng
+   trạng thái trên dòng **Tên PS5**. Firmware nhường hẳn framebuffer cho Xorg
+   và mở giao diện thiết lập chính thức của `chiaki-ng`.
+4. Nhập địa chỉ PS5 và hoàn tất liên kết trong Chiaki. Trên PS5, mở
    `Remote Play > Link Device`, rồi nhập mã hiển thị vào Chiaki.
-5. Thoát Chiaki để quay lại DS-02. Mở lại **Trò chơi**, bấm **Kiểm tra** rồi
-   chọn **Chơi ngay**.
+5. Thoát Chiaki để quay lại DS-02. Firmware sẽ đọc tên máy và trạng thái liên
+   kết từ Chiaki. Mở lại **Trò chơi** rồi chọn **Chơi ngay**.
 
 Địa chỉ IPv4 của PS5 nằm tại
 `Settings > System > System Software > Console Information`. Nên đặt DHCP

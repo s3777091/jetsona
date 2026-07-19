@@ -1116,7 +1116,7 @@ void Ds02HomeDisplay::OpenPsRemotePlay() {
 }
 
 void Ds02HomeDisplay::LaunchPsRemotePlay(bool configure) {
-    ShowNotification(configure ? "Đang mở chiaki-ng để đăng ký PS5..."
+    ShowNotification(configure ? "Đang mở thiết lập máy PS5..."
                                : "Đang kết nối PS5...", 1200);
     std::thread([configure]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(400));

@@ -111,6 +111,32 @@ sudo chmod 0666 /etc/jetson-fan.conf
 
 echo "==> Enabling systemd service"
 sudo systemctl daemon-reload
+
+# Tailscale SSH is stored as a persistent tailscaled preference. When this
+# Jetson has already joined a tailnet, keep the daemon enabled at boot and turn
+# on browser-based SSH as part of the normal firmware installation. Do not make
+# a first-time Tailscale login block an otherwise valid firmware install; the
+# setup helper handles that interactive/auth-key flow separately.
+if command -v tailscale >/dev/null 2>&1; then
+    echo "==> Enabling Tailscale background service"
+    if sudo systemctl enable --now tailscaled; then
+        if sudo tailscale status --json 2>/dev/null |
+            grep -q '"BackendState": *"Running"'; then
+            echo "==> Enabling persistent Tailscale SSH"
+            if ! sudo tailscale set --ssh; then
+                echo "WARNING: Could not enable Tailscale SSH; run setup-tailscale-client.sh." >&2
+            fi
+        else
+            echo "WARNING: Tailscale is not logged in; run setup-tailscale-client.sh once." >&2
+        fi
+    else
+        echo "WARNING: Could not enable tailscaled; run setup-tailscale-client.sh." >&2
+    fi
+else
+    echo "==> Tailscale not installed; remote SSH setup skipped"
+    echo "    Run: sudo /opt/jetson-fw/scripts/setup-tailscale-client.sh" >&2
+fi
+
 sudo systemctl enable jetson-fw
 sudo systemctl restart jetson-fw
 sudo systemctl enable jetson-fan

@@ -3,12 +3,11 @@
 /* Minimal Remote Play welcome screen for the 800x480 DS-02 display.
  *
  * The screen intentionally stays close to Sony's lightweight welcome view:
- * one live controller-state icon, one sign-in action, and a compact settings
- * sheet.  Runtime/install diagnostics belong outside this user-facing view.
+ * one live controller-state icon, one play action, and a compact settings
+ * sheet. Runtime/install diagnostics belong outside this user-facing view.
  */
 
 #include "display/views/overlay_view.h"
-#include "display/widgets/telex_ime.h"
 
 #include <lvgl.h>
 
@@ -30,8 +29,7 @@ public:
     PsRemotePlayView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
     ~PsRemotePlayView() override;
 
-    // Kept for the existing launcher hand-off; this minimal form does not
-    // trigger an external client by itself.
+    // Launcher hand-off used by both the PS5 setup row and "Chơi ngay".
     void SetLaunchRequest(LaunchCb cb) { launch_cb_ = std::move(cb); }
     void SetNotifyCb(NotifyCb cb) { notify_cb_ = std::move(cb); }
     void SetOpenBluetoothCb(OpenBluetoothCb cb) {
@@ -48,7 +46,6 @@ private:
     lv_obj_t *controller_icon_ = nullptr;
     lv_obj_t *controller_state_label_ = nullptr;
     lv_obj_t *controller_hint_label_ = nullptr;
-    lv_obj_t *register_btn_ = nullptr;
     lv_obj_t *play_btn_ = nullptr;
 
     // Live gamepad test overlay. The session owns the non-blocking Linux
@@ -62,11 +59,7 @@ private:
     lv_obj_t *settings_card_ = nullptr;
     lv_obj_t *settings_controller_label_ = nullptr;
     lv_obj_t *settings_ps5_name_label_ = nullptr;
-    // TelexInput (not lv_textarea): native textareas do not reliably receive
-    // EV_KEY input on the Jetson evdev keyboard path, which made the IP field
-    // impossible to type into.
-    TelexInput *settings_ip_input_ = nullptr;
-    lv_obj_t *settings_ip_error_ = nullptr;
+    lv_obj_t *settings_ps5_status_icon_ = nullptr;
     lv_obj_t *performance_card_ = nullptr;
     lv_obj_t *quality_card_ = nullptr;
     lv_obj_t *performance_radio_ = nullptr;
@@ -86,9 +79,11 @@ private:
     bool controller_connected_ = false;
     bool controller_readable_ = false;
     bool controller_uses_evdev_ = true;
+    bool ps5_registered_ = false;
 
     void BuildBody();
     void LoadState();
+    void RefreshPs5State();
     void RefreshControllerState();
     void UpdateWelcomeUi();
     void UpdateSettingsUi();
@@ -100,7 +95,7 @@ private:
     void PollControllerInput();
     void UpdateControllerTestUi();
 
-    void StartRegister();
+    void OpenPs5Setup();
     void StartStream();
 
     void OpenSettingsModal();
@@ -112,9 +107,7 @@ private:
      * /var/lib/jetson-fw/ps-remote-play.conf, not the firmware Settings
      * store; this keeps the two in sync. */
     void WriteLauncherState() const;
-    bool HasChiakiRegistration() const;
 
-    static void OnRegister(lv_event_t *e);
     static void OnPlay(lv_event_t *e);
     static void OnSettingsDismiss(lv_event_t *e);
     static void OnSettingsCancel(lv_event_t *e);
@@ -123,6 +116,7 @@ private:
     static void OnControllerTestDismiss(lv_event_t *e);
     static void OnControllerTestClose(lv_event_t *e);
     static void OnConnectController(lv_event_t *e);
+    static void OnSetupPs5(lv_event_t *e);
     static void OnPerformance(lv_event_t *e);
     static void OnQuality(lv_event_t *e);
     static void OnControllerPoll(lv_timer_t *timer);

@@ -109,12 +109,10 @@ private:
 
     // Airplane-mode/VPN switch rows embedded in the connectivity section.
     lv_obj_t *airplane_row_ = nullptr;
-    lv_obj_t *airplane_icon_bg_ = nullptr;
     lv_obj_t *airplane_switch_ = nullptr;
     bool airplane_enabled_ = false;
     std::atomic<bool> airplane_busy_{false};
     lv_obj_t *vpn_row_ = nullptr;
-    lv_obj_t *vpn_icon_bg_ = nullptr;
     lv_obj_t *vpn_switch_ = nullptr;
     bool vpn_enabled_ = false;
     std::atomic<bool> vpn_busy_{false};

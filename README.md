@@ -229,8 +229,11 @@ về giao diện DS-02. Có thể ép luôn hiện bàn phím bằng
 
 ## PS5 Remote Play
 
-Icon **Trò chơi** mở bảng điều khiển PS5 cho panel 800×480, gồm đăng ký máy,
-nhập IP, kiểm tra trạng thái, chọn `540p60` hoặc `720p30` và kết nối fullscreen.
+Icon **Trò chơi** mở bảng điều khiển PS5 cho panel 800×480. Màn chính chỉ giữ
+nút **Chơi ngay**; nút trạng thái PS5 trong bánh răng mở giao diện thiết lập
+chính thức của Chiaki. Tại đây có thể liên kết máy và nhập địa chỉ khi cần.
+Firmware tự đọc tên/trạng thái đăng ký từ Chiaki, đồng thời cho chọn `540p60`
+hoặc `720p30` trước khi kết nối fullscreen.
 Khi bắt đầu thiết lập/chơi, firmware dừng hoàn toàn rồi bàn giao framebuffer
 cho bare Xorg + `chiaki-ng`; thoát Chiaki sẽ tự quay lại giao diện DS-02.
 
@@ -300,6 +303,12 @@ node. Thiết lập một lần như sau:
    ```bash
    sudo bash scripts/setup-tailscale-client.sh
    ```
+
+   Helper đồng thời bật Tailscale SSH. `scripts/install.sh` cũng tự bật SSH nếu
+   node đã đăng nhập. Lệnh `tailscale set --ssh` lưu cấu hình bền trong
+   `tailscaled`; service đã được `systemctl enable` nên tự chạy nền và nhận SSH
+   trở lại sau mỗi lần Jetson khởi động. Không cần gọi lệnh này trong firmware
+   hoặc chạy lại ở mọi lần boot.
 
 4. Đặt `JETSON_VPN_EXIT_NODE: "jetsona-vpn"` trong `config.yaml`, cài lại firmware và
    bật toggle VPN. Có thể thay bằng IP Tailscale `100.x` nếu không dùng

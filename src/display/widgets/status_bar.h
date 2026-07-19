@@ -118,6 +118,7 @@ private:
     lv_obj_t *bt_icon_ = nullptr;
     lv_obj_t *sound_icon_ = nullptr;
     lv_obj_t *brightness_icon_ = nullptr;
+    lv_obj_t *charge_icon_ = nullptr;
     lv_obj_t *battery_icon_root_ = nullptr;
     lv_obj_t *battery_icon_body_ = nullptr;
     lv_obj_t *battery_icon_fill_ = nullptr;

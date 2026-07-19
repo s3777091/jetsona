@@ -69,8 +69,9 @@ INA219_CHARGE_MA: "50"
 CHIAKI_BIN: "/home/ekkohuynh/chiaki-ng/chiaki-ng"
 PS_REMOTE_PLAY_HOME: "/var/lib/jetson-fw/chiaki"
 PS_REMOTE_PLAY_STATE_FILE: "/var/lib/jetson-fw/ps-remote-play.conf"
-# First-time registration is completed in chiaki-ng's GUI. The firmware stores
-# only the PS5 IP/preset and launches Chiaki for setup or streaming.
+# First-time registration and PS5 address entry are completed in chiaki-ng's
+# own GUI. The firmware UI stores the display preset and launches Chiaki for
+# setup or streaming; legacy saved addresses remain supported.
 PS_REMOTE_PLAY_AUDIO_DRIVER: "alsa"
 PS_REMOTE_PLAY_HW_DECODER: "software"
 PS_REMOTE_PLAY_RENDER_BACKEND: "vulkan"

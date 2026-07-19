@@ -42,8 +42,15 @@ else
     fi
 fi
 
+# Tailscale SSH is a persisted daemon preference, not a foreground process.
+# Enabling it once here is enough: the tailscaled systemd service above starts
+# in the background on every boot and restores the SSH listener automatically.
+echo "==> Enabling persistent Tailscale SSH"
+tailscale set --ssh
+
 echo
 echo "Jetson Tailscale client is ready. The firmware VPN toggle will select:"
 echo "  $EXIT_NODE"
 echo "Make sure config.yaml contains: JETSON_VPN_EXIT_NODE: \"$EXIT_NODE\""
 echo "Do not select the exit node here; the Settings toggle owns that preference."
+echo "Tailscale SSH is enabled and will return automatically after every reboot."

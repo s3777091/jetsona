@@ -9,7 +9,6 @@
 #include "lvgl_runtime.h"
 #include "settings.h"
 
-#include <arpa/inet.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -21,6 +20,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace home {
 
@@ -65,6 +66,9 @@ constexpr uint32_t kBlue = 0x1677ff;
 constexpr uint32_t kGreen = 0x30d158;
 constexpr uint32_t kOrange = 0xff9f0a;
 constexpr uint32_t kRed = 0xff453a;
+constexpr char kLauncherStateDir[] = "/var/lib/jetson-fw";
+constexpr char kLauncherStateFile[] =
+    "/var/lib/jetson-fw/ps-remote-play.conf";
 
 std::string Trim(std::string value) {
     auto blank = [](unsigned char c) { return std::isspace(c) != 0; };
@@ -74,24 +78,6 @@ std::string Trim(std::string value) {
                              [&](char c) { return !blank(c); }).base(),
                 value.end());
     return value;
-}
-
-bool CanonicalIpv4(const std::string &input, std::string &canonical) {
-    const std::string value = Trim(input);
-    if (value.empty()) {
-        canonical.clear();
-        return true;
-    }
-
-    in_addr address{};
-    if (inet_pton(AF_INET, value.c_str(), &address) != 1) return false;
-    const uint32_t host_order = ntohl(address.s_addr);
-    if (host_order == 0 || host_order == 0xffffffffU) return false;
-
-    char output[INET_ADDRSTRLEN]{};
-    if (!inet_ntop(AF_INET, &address, output, sizeof(output))) return false;
-    canonical = output;
-    return true;
 }
 
 void RemoveInteraction(lv_obj_t *obj) {
@@ -346,6 +332,25 @@ void PsRemotePlayView::LoadState() {
                   ? Preset::Quality
                   : Preset::Performance;
     draft_preset_ = preset_;
+
+    // Older firmware versions stored the address in both Settings and this
+    // launcher file. Keep existing installations playable after removing the
+    // IP field from the firmware UI.
+    if (FILE *file = std::fopen(kLauncherStateFile, "r")) {
+        char line[512];
+        while (std::fgets(line, sizeof(line), file)) {
+            std::string entry(line);
+            while (!entry.empty() &&
+                   (entry.back() == '\n' || entry.back() == '\r'))
+                entry.pop_back();
+            if (host_.empty() && entry.rfind("host=", 0) == 0)
+                host_ = Trim(entry.substr(5));
+            else if (ps5_name_.empty() && entry.rfind("nickname=", 0) == 0)
+                ps5_name_ = Trim(entry.substr(9));
+        }
+        std::fclose(file);
+    }
+    RefreshPs5State();
 }
 
 void PsRemotePlayView::BuildBody() {
@@ -402,8 +407,7 @@ void PsRemotePlayView::BuildBody() {
         lv_obj_center(label);
         return button;
     };
-    register_btn_ = make_action_button(-105, kBlue, "Đăng ký PS5", OnRegister);
-    play_btn_ = make_action_button(105, kGreen, "Chơi ngay", OnPlay);
+    play_btn_ = make_action_button(0, kGreen, "Chơi ngay", OnPlay);
 }
 
 void PsRemotePlayView::RefreshControllerState() {
@@ -457,10 +461,18 @@ void PsRemotePlayView::UpdateSettingsUi() {
         lv_label_set_text(settings_controller_label_, state.c_str());
     }
     if (settings_ps5_name_label_) {
-        const std::string name = ps5_name_.empty()
+        const std::string name = !ps5_registered_
                                      ? "Tên PS5: Chưa kết nối PS5 nào"
-                                     : "Tên PS5: " + ps5_name_;
+                                     : ps5_name_.empty()
+                                           ? "Tên PS5: Đã kết nối"
+                                           : "Tên PS5: " + ps5_name_;
         lv_label_set_text(settings_ps5_name_label_, name.c_str());
+    }
+    if (settings_ps5_status_icon_) {
+        // These icons describe the saved PS5 state: a broken link before
+        // setup and a linked chain after Chiaki has a registration.
+        jetson::ui::SetAppIcon(settings_ps5_status_icon_,
+                               ps5_registered_ ? "connect" : "disconnect", 21);
     }
 }
 
@@ -695,35 +707,20 @@ void PsRemotePlayView::UpdateControllerTestUi() {
     }
 }
 
-void PsRemotePlayView::StartRegister() {
-    if (host_.empty()) {
-        Notify("Nhập IP PS5 trong Cài đặt trước");
-        OpenSettingsModal();
-        return;
-    }
+void PsRemotePlayView::OpenPs5Setup() {
     if (!launch_cb_) {
         Notify("Launcher Remote Play chưa sẵn sàng trong phiên này");
         return;
     }
-    // chiaki-ng has no headless registration (no CLI `regist`): the first
-    // device-link MUST be completed inside chiaki-ng's own GUI, where the
-    // user enters the IP and the 8-digit Remote Play PIN shown on the PS5
-    // (Settings > System > Remote Play > Link Device). After that the
-    // console is registered permanently and "Chơi ngay" streams directly
-    // with no PIN.
-    WriteLauncherState();  // ensure ps-remote-play.conf has host= for the launcher
-    Notify("Đang mở chiaki-ng — chọn Register, nhập IP + mã PIN trên PS5");
+    Notify("Đang mở thiết lập máy PS5...");
     launch_cb_(true);
 }
 
 void PsRemotePlayView::StartStream() {
-    if (host_.empty()) {
-        Notify("Nhập IP PS5 trong Cài đặt trước");
-        OpenSettingsModal();
-        return;
-    }
-    if (!HasChiakiRegistration()) {
-        Notify("PS5 chưa đăng ký — bấm 'Đăng ký PS5' trước");
+    RefreshPs5State();
+    if (!ps5_registered_ || host_.empty()) {
+        Notify("Chưa thiết lập máy PS5 — đang mở trang thiết lập");
+        OpenPs5Setup();
         return;
     }
     if (!launch_cb_) {
@@ -739,11 +736,12 @@ void PsRemotePlayView::OpenSettingsModal() {
     if (settings_modal_) return;
     const auto &palette = jetson::UiTheme::Instance().Palette();
     RefreshControllerState();
+    RefreshPs5State();
     draft_preset_ = preset_;
 
     settings_modal_ = MakeModalBackdrop(overlay_, width_, height_, palette.scrim,
                                         OnSettingsDismiss, this);
-    constexpr int kSheetHeight = 420;
+    constexpr int kSheetHeight = 350;
     settings_card_ = MakeBottomSheet(settings_modal_, 720, kSheetHeight,
                                      palette.panel);
     AddGrabber(settings_card_, palette.sub_text);
@@ -809,39 +807,26 @@ void PsRemotePlayView::OpenSettingsModal() {
     settings_ps5_name_label_ = MakeLabel(
         ps5_row, "Tên PS5: Chưa kết nối PS5 nào", &BUILTIN_SMALL_TEXT_FONT,
         palette.text);
-    lv_obj_set_width(settings_ps5_name_label_, lv_pct(100));
+    lv_obj_set_width(settings_ps5_name_label_, 1);
+    lv_obj_set_flex_grow(settings_ps5_name_label_, 1);
     lv_label_set_long_mode(settings_ps5_name_label_, LV_LABEL_LONG_DOT);
 
-    auto *ip_form = lv_obj_create(settings_card_);
-    StyleSurface(ip_form, palette.row, palette.border, 14);
-    lv_obj_set_size(ip_form, lv_pct(100), 50);
-    lv_obj_set_style_pad_hor(ip_form, 12, 0);
-    lv_obj_set_style_pad_ver(ip_form, 4, 0);
-    lv_obj_set_style_pad_column(ip_form, 10, 0);
-    lv_obj_set_flex_flow(ip_form, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(ip_form, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-
-    auto *ip_label = MakeLabel(ip_form, "IP PS5", &BUILTIN_SMALL_TEXT_FONT,
-                               palette.text);
-    lv_obj_set_width(ip_label, 68);
-    /* TelexInput, not lv_textarea: the native textarea never received EV_KEY
-     * input from the Jetson evdev keyboard, so the IP could not be typed at
-     * all ("con trỏ bàn phím không có"). TelexInput owns LV_EVENT_KEY and
-     * joins the keypad group in its constructor. */
-    settings_ip_input_ = new TelexInput(ip_form, 1, 42);
-    lv_obj_set_flex_grow(settings_ip_input_->obj(), 1);
-    settings_ip_input_->SetTelex(false);
-    settings_ip_input_->SetMaxLen(15);
-    settings_ip_input_->SetAcceptedChars("0123456789.");
-    settings_ip_input_->SetFont(&BUILTIN_SMALL_TEXT_FONT);
-    settings_ip_input_->SetPlaceholder("Chưa kết nối tới IP PS5");
-    if (!host_.empty()) settings_ip_input_->SetText(host_);
-
-    settings_ip_error_ = MakeLabel(settings_card_, " ",
-                                   &BUILTIN_SMALL_TEXT_FONT, palette.sub_text);
-    lv_obj_set_width(settings_ip_error_, lv_pct(100));
-    lv_obj_set_style_text_align(settings_ip_error_, LV_TEXT_ALIGN_CENTER, 0);
+    auto *ps5_setup = lv_button_create(ps5_row);
+    lv_obj_set_size(ps5_setup, 38, 34);
+    lv_obj_set_style_bg_color(ps5_setup, Color(palette.button), 0);
+    lv_obj_set_style_bg_opa(ps5_setup, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ps5_setup, 0, 0);
+    lv_obj_set_style_radius(ps5_setup, 9, 0);
+    lv_obj_set_style_shadow_width(ps5_setup, 0, 0);
+    lv_obj_set_style_pad_all(ps5_setup, 0, 0);
+    lv_obj_add_event_cb(ps5_setup, OnSetupPs5, LV_EVENT_CLICKED, this);
+    settings_ps5_status_icon_ = jetson::ui::CreateAppIcon(
+        ps5_setup, ps5_registered_ ? "connect" : "disconnect", 21);
+    lv_obj_set_style_image_recolor(settings_ps5_status_icon_,
+                                   Color(palette.accent), 0);
+    lv_obj_set_style_image_recolor_opa(settings_ps5_status_icon_, LV_OPA_COVER,
+                                       0);
+    lv_obj_center(settings_ps5_status_icon_);
 
     auto *mode_title = MakeLabel(settings_card_, "Chế độ hiển thị",
                                  &BUILTIN_SMALL_TEXT_FONT, palette.sub_text);
@@ -922,7 +907,6 @@ void PsRemotePlayView::OpenSettingsModal() {
 
     UpdateSettingsUi();
     UpdatePresetCards();
-    settings_ip_input_->Focus();
     lv_obj_move_foreground(settings_modal_);
     AnimateSheetIn(settings_card_, kSheetHeight);
 }
@@ -947,8 +931,7 @@ void PsRemotePlayView::CloseSettingsModal() {
     settings_card_ = nullptr;
     settings_controller_label_ = nullptr;
     settings_ps5_name_label_ = nullptr;
-    settings_ip_input_ = nullptr;
-    settings_ip_error_ = nullptr;
+    settings_ps5_status_icon_ = nullptr;
     performance_card_ = nullptr;
     quality_card_ = nullptr;
     performance_radio_ = nullptr;
@@ -956,34 +939,14 @@ void PsRemotePlayView::CloseSettingsModal() {
 }
 
 void PsRemotePlayView::SaveSettingsModal() {
-    if (!settings_ip_input_) return;
-    std::string canonical;
-    if (!CanonicalIpv4(settings_ip_input_->Text(), canonical)) {
-        if (settings_ip_error_) {
-            lv_label_set_text(settings_ip_error_, "Địa chỉ IP PS5 không hợp lệ");
-            lv_obj_set_style_text_color(settings_ip_error_, Color(kRed), 0);
-        }
-        lv_obj_set_style_border_width(settings_ip_input_->obj(), 2, 0);
-        lv_obj_set_style_border_color(settings_ip_input_->obj(), Color(kRed), 0);
-        Notify("Địa chỉ IP PS5 không hợp lệ");
-        return;
-    }
-
-    host_ = std::move(canonical);
     preset_ = draft_preset_;
-    if (host_.empty()) ps5_name_.clear();
     Settings settings("remote_play", true);
-    settings.SetString("ps5_ip", host_);
-    settings.SetString("ps5_name", ps5_name_);
     settings.SetString("preset",
                        preset_ == Preset::Performance ? "performance" : "quality");
-    // Keep the launcher's state file in sync, otherwise `stream` mode exits
-    // with "PS5 address is not configured" even though the UI saved an IP.
     WriteLauncherState();
 
     CloseSettingsModal();
-    Notify(host_.empty() ? "Đã lưu cài đặt Remote Play"
-                         : "Đã lưu IP PS5");
+    Notify("Đã lưu cài đặt Remote Play");
 }
 
 void PsRemotePlayView::OpenBluetoothSettings() {
@@ -993,9 +956,6 @@ void PsRemotePlayView::OpenBluetoothSettings() {
 }
 
 namespace {
-constexpr char kLauncherStateDir[] = "/var/lib/jetson-fw";
-constexpr char kLauncherStateFile[] = "/var/lib/jetson-fw/ps-remote-play.conf";
-
 std::string DecodeQsettingsText(std::string value) {
     if (value.rfind("@String(", 0) == 0 && !value.empty() && value.back() == ')') {
         value = value.substr(8, value.size() - 9);
@@ -1013,15 +973,54 @@ bool SafeChiakiProfile(const std::string &profile) {
     return true;
 }
 
-bool ConfigHasRegistKey(const std::string &path) {
+struct ChiakiRegistration {
+    bool registered = false;
+    std::string nickname;
+};
+
+ChiakiRegistration ReadChiakiRegistration(const std::string &path) {
+    ChiakiRegistration result;
     FILE *file = std::fopen(path.c_str(), "r");
-    if (!file) return false;
+    if (!file) return result;
+
     char line[512];
-    bool found = false;
-    while (!found && std::fgets(line, sizeof(line), file))
-        found = std::strstr(line, "rp_regist_key=") != nullptr;
+    std::vector<std::pair<std::string, std::string>> nicknames;
+    std::vector<std::string> registered_prefixes;
+    while (std::fgets(line, sizeof(line), file)) {
+        std::string entry(line);
+        while (!entry.empty() && (entry.back() == '\n' || entry.back() == '\r'))
+            entry.pop_back();
+
+        const size_t nickname_key = entry.find("server_nickname=");
+        if (nickname_key != std::string::npos) {
+            std::string nickname =
+                Trim(DecodeQsettingsText(entry.substr(nickname_key + 16)));
+            if (!nickname.empty())
+                nicknames.emplace_back(entry.substr(0, nickname_key),
+                                       std::move(nickname));
+        }
+
+        const size_t registration_key = entry.find("rp_regist_key=");
+        if (registration_key != std::string::npos) {
+            result.registered = true;
+            registered_prefixes.push_back(entry.substr(0, registration_key));
+        }
+    }
     std::fclose(file);
-    return found;
+
+    // Match nickname and registration by QSettings' registered-host prefix
+    // (for example "1\\"). Fall back to the first nickname for legacy files.
+    for (const auto &prefix : registered_prefixes) {
+        for (const auto &entry : nicknames) {
+            if (entry.first == prefix) {
+                result.nickname = entry.second;
+                return result;
+            }
+        }
+    }
+    if (result.registered && !nicknames.empty())
+        result.nickname = nicknames.front().second;
+    return result;
 }
 
 std::string ReadChiakiProfile(const std::string &default_config) {
@@ -1040,11 +1039,31 @@ std::string ReadChiakiProfile(const std::string &default_config) {
     std::fclose(file);
     return profile;
 }
+
+ChiakiRegistration FindChiakiRegistration() {
+    static const char *kConfigDirs[] = {
+        "/var/lib/jetson-fw/chiaki/.config/Chiaki",
+        "/var/lib/jetson-fw/chiaki/.config/chiaki",
+    };
+    for (const char *dir : kConfigDirs) {
+        const std::string default_config = std::string(dir) + "/Chiaki.conf";
+        const std::string profile = ReadChiakiProfile(default_config);
+        if (!profile.empty()) {
+            ChiakiRegistration active = ReadChiakiRegistration(
+                std::string(dir) + "/Chiaki-" + profile + ".conf");
+            if (active.registered) return active;
+        }
+        ChiakiRegistration fallback = ReadChiakiRegistration(default_config);
+        if (fallback.registered) return fallback;
+    }
+    return {};
+}
 } // namespace
 
 void PsRemotePlayView::WriteLauncherState() const {
     // Preserve fields the UI does not own (nickname/passcode may have been
     // written by ps_remote_play_ctl.sh save).
+    std::string existing_host;
     std::string nickname;
     std::string passcode;
     if (FILE *file = std::fopen(kLauncherStateFile, "r")) {
@@ -1054,11 +1073,13 @@ void PsRemotePlayView::WriteLauncherState() const {
             while (!entry.empty() &&
                    (entry.back() == '\n' || entry.back() == '\r'))
                 entry.pop_back();
-            if (entry.rfind("nickname=", 0) == 0) nickname = entry.substr(9);
+            if (entry.rfind("host=", 0) == 0) existing_host = entry.substr(5);
+            else if (entry.rfind("nickname=", 0) == 0) nickname = entry.substr(9);
             else if (entry.rfind("passcode=", 0) == 0) passcode = entry.substr(9);
         }
         std::fclose(file);
     }
+    const std::string &launcher_host = host_.empty() ? existing_host : host_;
 
     ::mkdir(kLauncherStateDir, 0755);  // best effort; firmware runs as root
     const std::string temporary = std::string(kLauncherStateFile) + ".tmp";
@@ -1069,7 +1090,7 @@ void PsRemotePlayView::WriteLauncherState() const {
         return;
     }
     std::fprintf(file, "host=%s\nnickname=%s\npreset=%s\npasscode=%s\n",
-                 host_.c_str(), nickname.c_str(),
+                 launcher_host.c_str(), nickname.c_str(),
                  preset_ == Preset::Performance ? "smooth" : "quality",
                  passcode.c_str());
     std::fclose(file);
@@ -1077,27 +1098,14 @@ void PsRemotePlayView::WriteLauncherState() const {
     ::rename(temporary.c_str(), kLauncherStateFile);
 }
 
-bool PsRemotePlayView::HasChiakiRegistration() const {
-    // The launcher keeps Chiaki's QSettings under /var/lib/jetson-fw/chiaki.
-    // A registered console always serializes an rp_regist_key entry.
-    static const char *kConfigDirs[] = {
-        "/var/lib/jetson-fw/chiaki/.config/Chiaki",
-        "/var/lib/jetson-fw/chiaki/.config/chiaki",
-    };
-    for (const char *dir : kConfigDirs) {
-        const std::string default_config = std::string(dir) + "/Chiaki.conf";
-        const std::string profile = ReadChiakiProfile(default_config);
-        if (!profile.empty() &&
-            ConfigHasRegistKey(std::string(dir) + "/Chiaki-" + profile + ".conf"))
-            return true;
-        if (ConfigHasRegistKey(default_config)) return true;
-    }
-    return false;
-}
-
-void PsRemotePlayView::OnRegister(lv_event_t *e) {
-    LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->StartRegister();
+void PsRemotePlayView::RefreshPs5State() {
+    const ChiakiRegistration registration = FindChiakiRegistration();
+    ps5_registered_ = registration.registered;
+    if (!ps5_registered_)
+        ps5_name_.clear();
+    else if (!registration.nickname.empty())
+        ps5_name_ = registration.nickname;
+    UpdateSettingsUi();
 }
 
 void PsRemotePlayView::OnPlay(lv_event_t *e) {
@@ -1140,6 +1148,11 @@ void PsRemotePlayView::OnControllerTestClose(lv_event_t *e) {
 void PsRemotePlayView::OnConnectController(lv_event_t *e) {
     LvglLockGuard lock;
     static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->OpenBluetoothSettings();
+}
+
+void PsRemotePlayView::OnSetupPs5(lv_event_t *e) {
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->OpenPs5Setup();
 }
 
 void PsRemotePlayView::OnPerformance(lv_event_t *e) {

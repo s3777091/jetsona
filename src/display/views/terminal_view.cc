@@ -20,6 +20,7 @@
 #include <cerrno>
 #include <cstring>
 #include <string>
+#include <utility>
 
 #define TAG "TerminalView"
 
@@ -31,60 +32,109 @@ using LvLockGuard = jetson::ui::LvglLockGuard;
 namespace {
 std::mutex g_terminal_views_mtx;
 std::vector<TerminalView *> g_terminal_views;
+
+lv_color_format_t CanvasColorFormat(lv_obj_t *obj) {
+    lv_display_t *display = obj ? lv_obj_get_display(obj) : nullptr;
+    const lv_color_format_t format = display
+                                         ? lv_display_get_color_format(display)
+                                         : LV_COLOR_FORMAT_RGB565;
+    switch (format) {
+        case LV_COLOR_FORMAT_RGB565:
+        case LV_COLOR_FORMAT_RGB888:
+        case LV_COLOR_FORMAT_XRGB8888:
+        case LV_COLOR_FORMAT_ARGB8888:
+            return format;
+        default:
+            return LV_COLOR_FORMAT_RGB565;
+    }
+}
 } // namespace
 
 TerminalView::TerminalView(lv_obj_t *parent, int width, int height, ClosedCb on_closed)
     : OverlayView(parent, width, height, "Terminal", std::move(on_closed)) {
-    /* One uninterrupted black canvas: no output card, footer input or Send
-     * button. The textarea itself owns scrollback, prompt, command and caret. */
     lv_obj_set_style_bg_color(body_, Color(0x0c0c0c), 0);
     lv_obj_set_style_bg_opa(body_, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(body_, 0, 0);
     lv_obj_clear_flag(body_, LV_OBJ_FLAG_SCROLLABLE);
 
-    terminal_ = lv_textarea_create(body_);
-    lv_obj_set_size(terminal_, lv_pct(100), lv_pct(100));
-    lv_obj_set_pos(terminal_, 0, 0);
-    lv_obj_set_style_text_font(terminal_, jetson::BuiltinTerminalFontAt(text_size_), 0);
-    lv_obj_set_style_text_color(terminal_, Color(0xe7e7e7), 0);
-    lv_obj_set_style_text_line_space(terminal_, 2, 0);
-    lv_obj_set_style_bg_color(terminal_, Color(0x0c0c0c), 0);
-    lv_obj_set_style_bg_opa(terminal_, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(terminal_, 0, 0);
-    lv_obj_set_style_outline_width(terminal_, 0, 0);
-    lv_obj_set_style_outline_width(terminal_, 0, LV_STATE_FOCUSED);
-    lv_obj_set_style_outline_width(terminal_, 0, LV_STATE_FOCUS_KEY);
-    lv_obj_set_style_shadow_width(terminal_, 0, 0);
-    lv_obj_set_style_radius(terminal_, 0, 0);
-    lv_obj_set_style_pad_all(terminal_, 10, 0);
-    lv_obj_set_scroll_dir(terminal_, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(terminal_, LV_SCROLLBAR_MODE_AUTO);
+    const int output_height = std::max(1, height_ - kHeaderHeight - kInputHeight);
 
-    lv_textarea_set_one_line(terminal_, false);
-    lv_textarea_set_text_selection(terminal_, true);
-    lv_textarea_set_cursor_click_pos(terminal_, true);
-    lv_textarea_set_text(terminal_, "");
+    /* The output is an opaque, pre-rasterized image.  FBDEV uses FULL render
+     * mode, so it will still visit this object on every input invalidation, but
+     * drawing it is a bounded image blit rather than thousands of TinyTTF
+     * lookups/blends. */
+    output_holder_ = lv_obj_create(body_);
+    lv_obj_remove_style_all(output_holder_);
+    lv_obj_set_pos(output_holder_, 0, 0);
+    lv_obj_set_size(output_holder_, width_, output_height);
+    lv_obj_clear_flag(output_holder_, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* A bright block caret remains visible on the almost-black canvas. */
-    lv_obj_set_style_bg_color(terminal_, lv_color_white(), LV_PART_CURSOR);
-    lv_obj_set_style_bg_opa(terminal_, LV_OPA_COVER, LV_PART_CURSOR);
-    lv_obj_set_style_text_color(terminal_, Color(0x0c0c0c), LV_PART_CURSOR);
-    lv_obj_set_style_bg_color(terminal_, Color(0x343331), LV_PART_SELECTED);
-    lv_obj_set_style_bg_opa(terminal_, LV_OPA_COVER, LV_PART_SELECTED);
-    lv_obj_set_style_text_color(terminal_, lv_color_white(), LV_PART_SELECTED);
-
-    /* The textarea's internal label exposes the mouse selection bounds. */
-    terminal_label_ = lv_obj_get_child(terminal_, 0);
-    if (terminal_label_) {
-        lv_obj_set_style_bg_color(terminal_label_, Color(0x343331), LV_PART_SELECTED);
-        lv_obj_set_style_bg_opa(terminal_label_, LV_OPA_COVER, LV_PART_SELECTED);
-        lv_obj_set_style_text_color(terminal_label_, lv_color_white(), LV_PART_SELECTED);
+    output_canvas_ = lv_canvas_create(output_holder_);
+    output_draw_buf_ = lv_draw_buf_create(
+        static_cast<uint32_t>(std::max(1, width_)),
+        static_cast<uint32_t>(output_height), CanvasColorFormat(body_), LV_STRIDE_AUTO);
+    if (output_canvas_ && output_draw_buf_) {
+        lv_canvas_set_draw_buf(output_canvas_, output_draw_buf_);
+        lv_obj_set_pos(output_canvas_, 0, 0);
+        lv_obj_clear_flag(output_canvas_,
+                          static_cast<lv_obj_flag_t>(LV_OBJ_FLAG_CLICKABLE |
+                                                     LV_OBJ_FLAG_SCROLLABLE));
+    } else {
+        ESP_LOGE(TAG, "terminal canvas allocation failed; using label fallback");
+        if (output_canvas_) {
+            lv_obj_del(output_canvas_);
+            output_canvas_ = nullptr;
+        }
+        if (output_draw_buf_) {
+            lv_draw_buf_destroy(output_draw_buf_);
+            output_draw_buf_ = nullptr;
+        }
+        output_fallback_ = lv_label_create(output_holder_);
+        lv_obj_set_pos(output_fallback_, kCanvasPad, kCanvasPad);
+        lv_obj_set_width(output_fallback_, std::max(1, width_ - 2 * kCanvasPad));
+        lv_label_set_long_mode(output_fallback_, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(output_fallback_, "");
     }
 
+    /* The only editable LVGL object contains the current command, never the
+     * scrollback.  Its layout cost is therefore bounded by one short line. */
+    input_row_ = lv_obj_create(body_);
+    lv_obj_remove_style_all(input_row_);
+    lv_obj_set_pos(input_row_, 0, output_height);
+    lv_obj_set_size(input_row_, width_, kInputHeight);
+    lv_obj_set_style_pad_left(input_row_, kCanvasPad, 0);
+    lv_obj_set_style_pad_right(input_row_, kCanvasPad, 0);
+    lv_obj_set_style_pad_column(input_row_, 0, 0);
+    lv_obj_set_flex_flow(input_row_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(input_row_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(input_row_, LV_OBJ_FLAG_SCROLLABLE);
+
+    prompt_label_ = lv_label_create(input_row_);
+    lv_label_set_text(prompt_label_, "root# ");
+
+    input_ = lv_textarea_create(input_row_);
+    lv_obj_set_width(input_, 10);
+    lv_obj_set_height(input_, kInputHeight - 4);
+    lv_obj_set_flex_grow(input_, 1);
+    lv_obj_set_style_bg_opa(input_, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(input_, 0, LV_PART_MAIN);
+    lv_obj_set_style_outline_width(input_, 0, LV_PART_MAIN);
+    lv_obj_set_style_outline_width(input_, 0, LV_STATE_FOCUSED);
+    lv_obj_set_style_outline_width(input_, 0, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_shadow_width(input_, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(input_, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(input_, 0, LV_PART_MAIN);
+    lv_textarea_set_one_line(input_, true);
+    lv_textarea_set_text_selection(input_, true);
+    lv_textarea_set_cursor_click_pos(input_, true);
+    lv_textarea_set_text(input_, "");
+
+    input_label_ = lv_obj_get_child(input_, 0);
     const auto key_filter = static_cast<lv_event_code_t>(LV_EVENT_KEY | LV_EVENT_PREPROCESS);
-    lv_obj_add_event_cb(terminal_, OnTerminalKey, key_filter, this);
-    if (auto *g = jetson::LvglRuntime::Instance().keypad_group()) {
-        lv_group_add_obj(g, terminal_);
+    lv_obj_add_event_cb(input_, OnInputKey, key_filter, this);
+    if (auto *group = jetson::LvglRuntime::Instance().keypad_group()) {
+        lv_group_add_obj(group, input_);
     }
 
     {
@@ -92,6 +142,7 @@ TerminalView::TerminalView(lv_obj_t *parent, int width, int height, ClosedCb on_
         g_terminal_views.push_back(this);
     }
     ApplyAppearance();
+    RenderOutput("");
 }
 
 TerminalView::~TerminalView() {
@@ -107,6 +158,16 @@ TerminalView::~TerminalView() {
         lv_timer_del(flush_timer_);
         flush_timer_ = nullptr;
     }
+    /* The canvas object must stop referencing its pixels before the draw buffer
+     * is released.  The remaining children are deleted by OverlayView. */
+    if (output_canvas_) {
+        lv_obj_del(output_canvas_);
+        output_canvas_ = nullptr;
+    }
+    if (output_draw_buf_) {
+        lv_draw_buf_destroy(output_draw_buf_);
+        output_draw_buf_ = nullptr;
+    }
 }
 
 void TerminalView::RefreshOpenTerminals() {
@@ -117,7 +178,7 @@ void TerminalView::RefreshOpenTerminals() {
 }
 
 void TerminalView::ApplyAppearance() {
-    if (!terminal_) return;
+    if (!input_) return;
 
     Settings settings("terminal", false);
     text_size_ = std::clamp(
@@ -125,35 +186,53 @@ void TerminalView::ApplyAppearance() {
         jetson::kMinTerminalTextSize, jetson::kMaxTerminalTextSize);
     const auto &theme = jetson::FindTerminalTheme(
         settings.GetString("theme", jetson::kDefaultTerminalTheme));
+    const lv_font_t *font = jetson::BuiltinTerminalFontAt(text_size_);
+    const int line_space = std::max(1, text_size_ / 10);
 
-    lv_obj_set_style_bg_color(body_, Color(theme.background), 0);
-    lv_obj_set_style_bg_color(terminal_, Color(theme.background), LV_PART_MAIN);
-    lv_obj_set_style_text_color(terminal_, Color(theme.foreground), LV_PART_MAIN);
-    lv_obj_set_style_text_font(terminal_, jetson::BuiltinTerminalFontAt(text_size_),
-                               LV_PART_MAIN);
-    lv_obj_set_style_text_line_space(terminal_, std::max(1, text_size_ / 10),
-                                     LV_PART_MAIN);
-    lv_obj_set_style_bg_color(terminal_, Color(theme.cursor), LV_PART_CURSOR);
-    lv_obj_set_style_text_color(terminal_, Color(theme.background), LV_PART_CURSOR);
-    lv_obj_set_style_bg_color(terminal_, Color(theme.selection), LV_PART_SELECTED);
-    lv_obj_set_style_text_color(terminal_, Color(theme.foreground), LV_PART_SELECTED);
-    lv_obj_set_style_bg_color(terminal_, Color(theme.accent), LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_color(body_, Color(theme.background), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(output_holder_, Color(theme.background), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(output_holder_, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(input_row_, Color(theme.background), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(input_row_, LV_OPA_COVER, LV_PART_MAIN);
 
-    if (terminal_label_) {
-        lv_obj_set_style_bg_color(terminal_label_, Color(theme.selection), LV_PART_SELECTED);
-        lv_obj_set_style_text_color(terminal_label_, Color(theme.foreground),
+    lv_obj_set_style_text_font(prompt_label_, font, LV_PART_MAIN);
+    lv_obj_set_style_text_color(prompt_label_, Color(theme.foreground), LV_PART_MAIN);
+    lv_obj_set_style_text_font(input_, font, LV_PART_MAIN);
+    lv_obj_set_style_text_color(input_, Color(theme.foreground), LV_PART_MAIN);
+    lv_obj_set_style_text_line_space(input_, line_space, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(input_, Color(theme.cursor), LV_PART_CURSOR);
+    lv_obj_set_style_bg_opa(input_, LV_OPA_COVER, LV_PART_CURSOR);
+    lv_obj_set_style_text_color(input_, Color(theme.background), LV_PART_CURSOR);
+    lv_obj_set_style_bg_color(input_, Color(theme.selection), LV_PART_SELECTED);
+    lv_obj_set_style_bg_opa(input_, LV_OPA_COVER, LV_PART_SELECTED);
+    lv_obj_set_style_text_color(input_, Color(theme.foreground), LV_PART_SELECTED);
+
+    if (input_label_) {
+        lv_obj_set_style_bg_color(input_label_, Color(theme.selection), LV_PART_SELECTED);
+        lv_obj_set_style_bg_opa(input_label_, LV_OPA_COVER, LV_PART_SELECTED);
+        lv_obj_set_style_text_color(input_label_, Color(theme.foreground),
                                     LV_PART_SELECTED);
+    }
+    if (output_fallback_) {
+        lv_obj_set_style_text_font(output_fallback_, font, LV_PART_MAIN);
+        lv_obj_set_style_text_color(output_fallback_, Color(theme.foreground),
+                                    LV_PART_MAIN);
+        lv_obj_set_style_text_line_space(output_fallback_, line_space, LV_PART_MAIN);
     }
 
     if (master_fd_ >= 0) {
         struct winsize ws {};
         const int char_width = std::max(7, text_size_ * 3 / 5);
         const int row_height = std::max(16, text_size_ + 4);
-        ws.ws_col = static_cast<unsigned short>(std::max(20, (width_ - 20) / char_width));
-        ws.ws_row = static_cast<unsigned short>(
-            std::max(5, (height_ - kHeaderHeight - 20) / row_height));
+        ws.ws_col = static_cast<unsigned short>(
+            std::max(20, (width_ - 2 * kCanvasPad) / char_width));
+        ws.ws_row = static_cast<unsigned short>(std::max(
+            5, (height_ - kHeaderHeight - kInputHeight - 2 * kCanvasPad) /
+                   row_height));
         (void)ioctl(master_fd_, TIOCSWINSZ, &ws);
     }
+
+    dirty_.store(true);
     lv_obj_invalidate(body_);
 }
 
@@ -166,17 +245,16 @@ void TerminalView::OnStart() {
             std::lock_guard<std::mutex> lock(out_mtx_);
             buffer_ = error;
         }
-        Render(error, "", 0);
+        RenderOutput(error);
         return;
     }
 
     SetStatus("Shell san sang tai /root");
-    if (terminal_) lv_group_focus_obj(terminal_);
+    if (input_) lv_group_focus_obj(input_);
     reader_ = std::thread([this]() { ReaderLoop(); });
-    /* 100 ms coalescing: every flush replaces the textarea text and forces a
-     * full-screen repaint in the FULL render mode, so flushing at 20 Hz made
-     * bursty command output (find/ls -laR) starve the UI thread. 10 Hz is
-     * still instant to the eye at a fraction of the render cost. */
+    /* Canvas rasterization is the only expensive output operation.  Coalesce
+     * arbitrary PTY bursts to at most 10 refreshes per second; typing never
+     * invokes this path. */
     flush_timer_ = lv_timer_create(OnFlushTimer, 100, this);
 }
 
@@ -184,9 +262,10 @@ bool TerminalView::SpawnShell() {
     struct winsize ws {};
     const int char_width = std::max(7, text_size_ * 3 / 5);
     const int row_height = std::max(16, text_size_ + 4);
-    ws.ws_col = static_cast<unsigned short>(std::max(20, (width_ - 20) / char_width));
-    ws.ws_row = static_cast<unsigned short>(
-        std::max(5, (height_ - kHeaderHeight - 20) / row_height));
+    ws.ws_col = static_cast<unsigned short>(
+        std::max(20, (width_ - 2 * kCanvasPad) / char_width));
+    ws.ws_row = static_cast<unsigned short>(std::max(
+        5, (height_ - kHeaderHeight - kInputHeight - 2 * kCanvasPad) / row_height));
 
     pid_t pid = forkpty(&master_fd_, nullptr, nullptr, &ws);
     if (pid < 0) {
@@ -195,24 +274,22 @@ bool TerminalView::SpawnShell() {
         return false;
     }
     if (pid == 0) {
-        /* The firmware service runs as root. Start in root's home and expose the
-         * requested compact prompt regardless of the repository/service cwd.
-         * glibc marks chdir warn_unused_result; a (void) cast does not silence
-         * it, so test both calls and accept the inherited cwd as last resort. */
         if (chdir("/root") != 0 && chdir("/") != 0) {
-            /* keep the service's working directory */
+            /* Keep the service's inherited working directory. */
         }
         setenv("HOME", "/root", 1);
         setenv("USER", "root", 1);
         setenv("LOGNAME", "root", 1);
-        setenv("PS1", "root# ", 1);
+        /* The fixed input row owns the prompt.  Suppressing the shell's PS1
+         * avoids a duplicate prompt in the cached output surface. */
+        setenv("PS1", "", 1);
         setenv("TERM", "dumb", 1);
         setenv("LS_COLORS", "", 1);
         unsetenv("CLICOLOR");
         unsetenv("CLICOLOR_FORCE");
 
-        /* Commands are drawn immediately by the textarea. Suppress the PTY's
-         * second echo so each submitted line appears exactly once. */
+        /* Commands are drawn locally.  Disable the PTY's second echo so each
+         * submitted line is committed exactly once by SubmitInput(). */
         struct termios tio {};
         if (tcgetattr(STDIN_FILENO, &tio) == 0) {
             tio.c_lflag &= static_cast<tcflag_t>(~(ECHO | ECHONL));
@@ -222,10 +299,6 @@ bool TerminalView::SpawnShell() {
         signal(SIGINT, SIG_DFL);
         signal(SIGQUIT, SIG_DFL);
         signal(SIGTSTP, SIG_DFL);
-
-        /* /bin/sh stays in canonical, line-oriented mode here. That is
-         * intentional: readline-style shells repaint typed characters on the
-         * PTY and would duplicate the command already drawn by our textarea. */
         execl("/bin/sh", "sh", "-i", static_cast<char *>(nullptr));
         _exit(127);
     }
@@ -258,7 +331,7 @@ void TerminalView::StopShell() {
         if (child_pid_ > 0) {
             const char exit_cmd[] = "exit\n";
             if (write(master_fd_, exit_cmd, sizeof(exit_cmd) - 1) < 0) {
-                /* best effort; the SIGHUP/SIGKILL fallback below still runs */
+                /* Best effort; the SIGHUP/SIGKILL fallback below still runs. */
             }
             for (int i = 0; i < 20 && child_pid_ > 0; ++i) {
                 int status = 0;
@@ -297,8 +370,6 @@ void TerminalView::CapBufferLocked() {
     if (buffer_.size() <= kBufCap) return;
 
     size_t erase_count = buffer_.size() - kBufCap;
-    /* Prefer dropping a complete oldest line so the top of the visible
-     * scrollback never begins in the middle of a command/output line. */
     const size_t next_line = buffer_.find('\n', erase_count);
     if (next_line != std::string::npos && next_line + 1 < buffer_.size()) {
         erase_count = next_line + 1;
@@ -316,48 +387,95 @@ void TerminalView::Flush() {
     }
 
     LvLockGuard lock;
-    if (!terminal_) return;
-    const std::string input = CurrentInput();
-    const uint32_t cursor = lv_textarea_get_cursor_pos(terminal_);
-    const uint32_t input_cursor = cursor > editable_char_
-                                      ? std::min(cursor - editable_char_, Utf8Length(input))
-                                      : Utf8Length(input);
-    Render(committed, input, input_cursor);
+    /* A background terminal keeps collecting output but does not spend CPU
+     * rasterizing frames nobody can see.  The dirty bit causes one catch-up
+     * render immediately after it is restored. */
+    if (overlay_ && lv_obj_has_flag(overlay_, LV_OBJ_FLAG_HIDDEN)) {
+        dirty_.store(true);
+        return;
+    }
+    RenderOutput(committed);
 }
 
-void TerminalView::Render(const std::string &committed, const std::string &input,
-                          uint32_t input_cursor) {
-    if (!terminal_) return;
-    std::string text = committed;
-    text += input;
-    lv_textarea_set_text(terminal_, text.c_str());
-    editable_byte_ = committed.size();
-    editable_char_ = Utf8Length(committed);
-    input_cursor = std::min(input_cursor, Utf8Length(input));
-    lv_textarea_set_cursor_pos(terminal_, static_cast<int32_t>(editable_char_ + input_cursor));
-    lv_obj_scroll_to_y(terminal_, LV_COORD_MAX, LV_ANIM_OFF);
+void TerminalView::RenderOutput(const std::string &committed) {
+    const lv_font_t *font = input_
+                                ? lv_obj_get_style_text_font(input_, LV_PART_MAIN)
+                                : jetson::BuiltinTerminalFontAt(text_size_);
+    const lv_color_t foreground = input_
+                                      ? lv_obj_get_style_text_color(input_, LV_PART_MAIN)
+                                      : Color(0xe7e7e7);
+    const lv_color_t background = body_
+                                      ? lv_obj_get_style_bg_color(body_, LV_PART_MAIN)
+                                      : Color(0x0c0c0c);
+    const int line_space = std::max(1, text_size_ / 10);
+
+    if (output_canvas_ && output_draw_buf_) {
+        lv_canvas_fill_bg(output_canvas_, background, LV_OPA_COVER);
+        if (!committed.empty()) {
+            const int canvas_width = std::max(1, width_);
+            const int canvas_height = std::max(
+                1, height_ - kHeaderHeight - kInputHeight);
+            const int text_width = std::max(1, canvas_width - 2 * kCanvasPad);
+
+            lv_point_t text_size {};
+            lv_text_get_size(&text_size, committed.c_str(), font, 0, line_space,
+                             text_width, LV_TEXT_FLAG_NONE);
+            const int text_height = std::max<int>(lv_font_get_line_height(font),
+                                                   text_size.y);
+            /* Negative y clips old scrollback before it reaches the draw unit;
+             * the newest line always sits directly above the input row. */
+            const int y = std::min(kCanvasPad,
+                                   canvas_height - kCanvasPad - text_height);
+
+            lv_layer_t layer;
+            lv_canvas_init_layer(output_canvas_, &layer);
+            lv_draw_label_dsc_t descriptor;
+            lv_draw_label_dsc_init(&descriptor);
+            descriptor.text = committed.c_str();
+            descriptor.font = font;
+            descriptor.color = foreground;
+            descriptor.opa = LV_OPA_COVER;
+            descriptor.line_space = line_space;
+            descriptor.letter_space = 0;
+            descriptor.flag = LV_TEXT_FLAG_NONE;
+            lv_area_t area = {
+                kCanvasPad,
+                y,
+                canvas_width - kCanvasPad - 1,
+                y + text_height - 1,
+            };
+            lv_draw_label(&layer, &descriptor, &area);
+            lv_canvas_finish_layer(output_canvas_, &layer);
+        }
+        lv_obj_invalidate(output_canvas_);
+        return;
+    }
+
+    if (output_fallback_) {
+        lv_label_set_text(output_fallback_, committed.c_str());
+        lv_obj_update_layout(output_fallback_);
+        const int holder_height = lv_obj_get_height(output_holder_);
+        const int label_height = lv_obj_get_height(output_fallback_);
+        lv_obj_set_y(output_fallback_,
+                     std::min(kCanvasPad,
+                              holder_height - kCanvasPad - label_height));
+    }
 }
 
 std::string TerminalView::CurrentInput() const {
-    if (!terminal_) return {};
-    const char *raw = lv_textarea_get_text(terminal_);
-    if (!raw) return {};
-    const size_t length = std::strlen(raw);
-    if (editable_byte_ > length) return {};
-    return std::string(raw + editable_byte_);
+    if (!input_) return {};
+    const char *raw = lv_textarea_get_text(input_);
+    return raw ? raw : "";
 }
 
 void TerminalView::ReplaceCurrentInput(const std::string &text) {
-    if (!terminal_) return;
-    const char *raw = lv_textarea_get_text(terminal_);
-    const size_t length = raw ? std::strlen(raw) : 0;
-    const size_t prefix_length = std::min(editable_byte_, length);
-    const std::string committed(raw ? std::string(raw, prefix_length) : std::string());
-    Render(committed, text, Utf8Length(text));
+    if (!input_) return;
+    lv_textarea_set_text(input_, text.c_str());
+    lv_textarea_set_cursor_pos(input_, LV_TEXTAREA_CURSOR_LAST);
 }
 
 void TerminalView::SubmitInput() {
-    if (master_fd_ < 0) return;
+    if (master_fd_ < 0 || !input_) return;
     const std::string input = CurrentInput();
 
     if (input.find_first_not_of(" \t") != std::string::npos) {
@@ -367,24 +485,25 @@ void TerminalView::SubmitInput() {
     history_index_ = history_.size();
     history_draft_.clear();
 
-    std::string committed;
+    /* Clearing the short input is immediate.  Do not synchronously repaint the
+     * output here: the coalescing timer commits the cached canvas within 100 ms,
+     * so Enter can never block behind a full scrollback raster. */
+    lv_textarea_set_text(input_, "");
     {
         std::lock_guard<std::mutex> lock(out_mtx_);
+        buffer_ += "root# ";
         buffer_ += input;
         buffer_ += '\n';
         CapBufferLocked();
-        committed = buffer_;
-        /* This exact snapshot is rendered synchronously below. Any reader append
-         * that acquires the mutex after us will set dirty back to true. */
-        dirty_.store(false);
     }
-    Render(committed, "", 0);
+    dirty_.store(true);
 
     std::string line = input;
     line += '\n';
     size_t offset = 0;
     while (offset < line.size()) {
-        const ssize_t written = write(master_fd_, line.data() + offset, line.size() - offset);
+        const ssize_t written = write(master_fd_, line.data() + offset,
+                                      line.size() - offset);
         if (written < 0 && errno == EINTR) continue;
         if (written <= 0) break;
         offset += static_cast<size_t>(written);
@@ -409,44 +528,54 @@ void TerminalView::RecallNext() {
                             : history_draft_);
 }
 
-bool TerminalView::SelectionBounds(uint32_t &start, uint32_t &end) const {
-    if (!terminal_label_) return false;
-    start = lv_label_get_text_selection_start(terminal_label_);
-    end = lv_label_get_text_selection_end(terminal_label_);
-    if (start == LV_LABEL_TEXT_SELECTION_OFF || end == LV_LABEL_TEXT_SELECTION_OFF) return false;
+bool TerminalView::InputSelectionBounds(uint32_t &start, uint32_t &end) const {
+    if (!input_label_) return false;
+    start = lv_label_get_text_selection_start(input_label_);
+    end = lv_label_get_text_selection_end(input_label_);
+    if (start == LV_LABEL_TEXT_SELECTION_OFF ||
+        end == LV_LABEL_TEXT_SELECTION_OFF) {
+        return false;
+    }
     if (start > end) std::swap(start, end);
     return start < end;
 }
 
 void TerminalView::CopySelection() {
-    if (!terminal_) return;
-    const char *raw = lv_textarea_get_text(terminal_);
-    const std::string all = raw ? raw : "";
+    if (!input_) return;
+    const std::string input = CurrentInput();
     std::string copied;
 
     uint32_t start = 0;
     uint32_t end = 0;
-    if (SelectionBounds(start, end)) {
-        const size_t begin_byte = Utf8ByteIndex(all, start);
-        const size_t end_byte = Utf8ByteIndex(all, end);
-        copied = all.substr(begin_byte, end_byte - begin_byte);
+    if (InputSelectionBounds(start, end)) {
+        const size_t begin_byte = Utf8ByteIndex(input, start);
+        const size_t end_byte = Utf8ByteIndex(input, end);
+        copied = input.substr(begin_byte, end_byte - begin_byte);
+    } else if (!input.empty()) {
+        copied = input;
     } else {
-        copied = CurrentInput();
+        /* The canvas has no editable label to select.  Ctrl+C on an empty
+         * command copies the latest output, preserving a useful framebuffer-
+         * only clipboard path without putting scrollback back in a textarea. */
+        std::lock_guard<std::mutex> lock(out_mtx_);
+        const size_t begin = buffer_.size() > kPasteCap
+                                 ? buffer_.size() - kPasteCap
+                                 : 0;
+        copied = buffer_.substr(begin);
     }
 
     if (!copied.empty()) {
         if (copied.size() > kPasteCap) copied.resize(kPasteCap);
         clipboard_ = std::move(copied);
     }
-    lv_textarea_clear_selection(terminal_);
+    lv_textarea_clear_selection(input_);
 }
 
 void TerminalView::PasteClipboard() {
-    if (!terminal_ || clipboard_.empty()) return;
-    PrepareForEditing();
+    if (!input_ || clipboard_.empty()) return;
 
-    /* Keep paste line-oriented: copied multi-line output becomes one command
-     * line and is never executed until the user explicitly presses Enter. */
+    /* Multi-line output becomes one command and is never executed until the
+     * user explicitly presses Enter. */
     std::string pasted;
     pasted.reserve(std::min(clipboard_.size(), kPasteCap));
     for (unsigned char c : clipboard_) {
@@ -457,21 +586,7 @@ void TerminalView::PasteClipboard() {
             pasted.push_back(static_cast<char>(c));
         }
     }
-    if (!pasted.empty()) lv_textarea_add_text(terminal_, pasted.c_str());
-}
-
-void TerminalView::PrepareForEditing() {
-    if (!terminal_) return;
-    uint32_t start = 0;
-    uint32_t end = 0;
-    if (SelectionBounds(start, end) && start < editable_char_) {
-        lv_textarea_clear_selection(terminal_);
-        lv_textarea_set_cursor_pos(terminal_, LV_TEXTAREA_CURSOR_LAST);
-        return;
-    }
-    if (lv_textarea_get_cursor_pos(terminal_) < editable_char_) {
-        lv_textarea_set_cursor_pos(terminal_, LV_TEXTAREA_CURSOR_LAST);
-    }
+    if (!pasted.empty()) lv_textarea_add_text(input_, pasted.c_str());
 }
 
 size_t TerminalView::Utf8ByteIndex(const std::string &text, uint32_t char_index) {
@@ -487,14 +602,6 @@ size_t TerminalView::Utf8ByteIndex(const std::string &text, uint32_t char_index)
         ++chars;
     }
     return byte;
-}
-
-uint32_t TerminalView::Utf8Length(const std::string &text) {
-    uint32_t length = 0;
-    for (unsigned char c : text) {
-        if ((c & 0xc0) != 0x80) ++length;
-    }
-    return length;
 }
 
 std::string TerminalView::StripAnsi(const std::string &s) {
@@ -536,7 +643,7 @@ std::string TerminalView::StripAnsi(const std::string &s) {
     return out;
 }
 
-void TerminalView::OnTerminalKey(lv_event_t *e) {
+void TerminalView::OnInputKey(lv_event_t *e) {
     auto *self = static_cast<TerminalView *>(lv_event_get_user_data(e));
     const uint32_t key = lv_event_get_key(e);
     const bool ctrl = jetson::LvglRuntime::Instance().KeyboardCtrlPressed();
@@ -565,29 +672,7 @@ void TerminalView::OnTerminalKey(lv_event_t *e) {
             self->RecallNext();
             lv_event_stop_processing(e);
             return;
-        case LV_KEY_HOME:
-            lv_textarea_clear_selection(self->terminal_);
-            lv_textarea_set_cursor_pos(self->terminal_, self->editable_char_);
-            lv_event_stop_processing(e);
-            return;
-        case LV_KEY_END:
-            lv_textarea_clear_selection(self->terminal_);
-            lv_textarea_set_cursor_pos(self->terminal_, LV_TEXTAREA_CURSOR_LAST);
-            lv_event_stop_processing(e);
-            return;
-        case LV_KEY_LEFT:
-        case LV_KEY_BACKSPACE:
-            self->PrepareForEditing();
-            if (lv_textarea_get_cursor_pos(self->terminal_) <= self->editable_char_) {
-                lv_event_stop_processing(e);
-            }
-            return;
-        case LV_KEY_RIGHT:
-        case LV_KEY_DEL:
-            self->PrepareForEditing();
-            return;
         default:
-            self->PrepareForEditing();
             return;
     }
 }

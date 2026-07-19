@@ -603,27 +603,17 @@ void SettingsView::AddAirplaneRow() {
     lv_obj_set_style_radius(airplane_row_, 10, 0);
     lv_obj_set_style_bg_color(airplane_row_, Color(p.row), 0);
     lv_obj_set_style_bg_opa(airplane_row_, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_left(airplane_row_, 5, 0);
-    lv_obj_set_style_pad_right(airplane_row_, 5, 0);
+    lv_obj_set_style_pad_left(airplane_row_, 8, 0);
+    lv_obj_set_style_pad_right(airplane_row_, 8, 0);
     lv_obj_set_style_pad_column(airplane_row_, 6, 0);
     lv_obj_set_flex_flow(airplane_row_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(airplane_row_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(airplane_row_, LV_OBJ_FLAG_SCROLLABLE);
 
-    airplane_icon_bg_ = lv_obj_create(airplane_row_);
-    lv_obj_remove_style_all(airplane_icon_bg_);
-    lv_obj_set_size(airplane_icon_bg_, 30, 30);
-    lv_obj_set_style_radius(airplane_icon_bg_, 8, 0);
-    lv_obj_set_style_bg_opa(airplane_icon_bg_, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(airplane_icon_bg_,
-                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
     // Shared helper uses the reviewed `airplans` artwork and retains a
     // code-native fallback for devices with an older asset bundle.
-    auto *plane =
-        jetson::ui::CreateAirplaneIcon(airplane_icon_bg_, lv_color_white());
-    lv_obj_center(plane);
+    jetson::ui::CreateAirplaneIcon(airplane_row_, Color(p.sub_text));
 
     auto *label = lv_label_create(airplane_row_);
     lv_obj_set_width(label, 1);
@@ -645,10 +635,6 @@ void SettingsView::AirplaneRefreshUi() {
         if (airplane_busy_.load()) lv_obj_add_state(airplane_switch_, LV_STATE_DISABLED);
         else lv_obj_clear_state(airplane_switch_, LV_STATE_DISABLED);
     }
-    if (airplane_icon_bg_) {
-        lv_obj_set_style_bg_color(airplane_icon_bg_,
-                                  Color(airplane_enabled_ ? 0xff9f0a : 0x8e8e93), 0);
-    }
     WifiRefreshSwitch();
     BtRefreshSwitch();
     VpnRefreshUi();
@@ -663,26 +649,17 @@ void SettingsView::AddVpnRow() {
     lv_obj_set_style_radius(vpn_row_, 10, 0);
     lv_obj_set_style_bg_color(vpn_row_, Color(p.row), 0);
     lv_obj_set_style_bg_opa(vpn_row_, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_left(vpn_row_, 5, 0);
-    lv_obj_set_style_pad_right(vpn_row_, 5, 0);
-    lv_obj_set_style_pad_column(vpn_row_, 6, 0);
+    lv_obj_set_style_pad_left(vpn_row_, 8, 0);
+    lv_obj_set_style_pad_right(vpn_row_, 8, 0);
+    lv_obj_set_style_pad_column(vpn_row_, 10, 0);
     lv_obj_set_flex_flow(vpn_row_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(vpn_row_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(vpn_row_, LV_OBJ_FLAG_SCROLLABLE);
 
-    vpn_icon_bg_ = lv_obj_create(vpn_row_);
-    lv_obj_remove_style_all(vpn_icon_bg_);
-    lv_obj_set_size(vpn_icon_bg_, 30, 30);
-    lv_obj_set_style_radius(vpn_icon_bg_, 8, 0);
-    lv_obj_set_style_bg_opa(vpn_icon_bg_, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(vpn_icon_bg_,
-                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
-    // vpn.png is a colored shield; keep its own artwork instead of flattening
-    // it to white (the tile behind it already carries the on/off state).
-    auto *icon = jetson::ui::CreateAppIcon(vpn_icon_bg_, "vpn", 20);
-    lv_obj_center(icon);
+    // vpn.png already carries its own artwork; it does not need a background
+    // tile around it.
+    jetson::ui::CreateAppIcon(vpn_row_, "vpn", 20);
 
     auto *label = lv_label_create(vpn_row_);
     lv_obj_set_width(label, 1);
@@ -704,10 +681,6 @@ void SettingsView::VpnRefreshUi() {
             lv_obj_add_state(vpn_switch_, LV_STATE_DISABLED);
         else
             lv_obj_clear_state(vpn_switch_, LV_STATE_DISABLED);
-    }
-    if (vpn_icon_bg_) {
-        lv_obj_set_style_bg_color(vpn_icon_bg_,
-                                  Color(vpn_enabled_ ? 0x30c967 : 0x8e8e93), 0);
     }
 }
 
@@ -2252,16 +2225,19 @@ void SettingsView::WifiRenderList() {
     lv_obj_clean(wifi_list_);
     const auto &p = jetson::UiTheme::Instance().Palette();
     if (wifi_nets_.empty()) {
+        const char *message = nullptr;
+        if (airplane_enabled_)
+            message = "Chế độ máy bay đang bật.";
+        else if (wifi_busy_.load() && wifi_enabled_)
+            message = "Đang quét WiFi...";
+
+        // The header already explains pull-to-refresh and the switch shows the
+        // powered-off state, so leave an idle empty list visually empty.
+        if (!message) return;
         auto *e = lv_label_create(wifi_list_);
         lv_obj_set_style_text_font(e, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(e, Color(p.sub_text), 0);
-        lv_label_set_text(e, airplane_enabled_
-                                ? "Chế độ máy bay đang bật."
-                                : (wifi_busy_.load() && wifi_enabled_)
-                                      ? "Đang quét WiFi..."
-                                      : !wifi_enabled_
-                                            ? "WiFi đang tắt."
-                                            : "Không có mạng. Kéo xuống để quét lại.");
+        lv_label_set_text(e, message);
         return;
     }
     for (const auto &n : wifi_nets_) WifiCreateRow(n);
@@ -2857,16 +2833,19 @@ void SettingsView::BtRenderList() {
     lv_obj_clean(bt_list_);
     const auto &p = jetson::UiTheme::Instance().Palette();
     if (bt_devs_.empty()) {
+        const char *message = nullptr;
+        if (airplane_enabled_)
+            message = "Chế độ máy bay đang bật.";
+        else if (bt_busy_.load() && bt_powered_)
+            message = "Đang tìm kiếm thiết bị Bluetooth...";
+
+        // The header already explains pull-to-refresh and the switch shows the
+        // powered-off state, so leave an idle empty list visually empty.
+        if (!message) return;
         auto *e = lv_label_create(bt_list_);
         lv_obj_set_style_text_font(e, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(e, Color(p.sub_text), 0);
-        lv_label_set_text(e, airplane_enabled_
-                                ? "Chế độ máy bay đang bật."
-                                : (bt_busy_.load() && bt_powered_)
-                                      ? "Đang tìm kiếm thiết bị Bluetooth..."
-                                      : !bt_powered_
-                                            ? "Bluetooth đang tắt."
-                                            : "Không có thiết bị. Kéo xuống để quét lại.");
+        lv_label_set_text(e, message);
         return;
     }
     for (const auto &d : bt_devs_) BtCreateRow(d);

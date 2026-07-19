@@ -16,19 +16,19 @@ namespace home {
 
 /* Full-screen, line-oriented root terminal for the DS-02 launcher.
  *
- * Output, prompt and the editable command share one multi-line textarea. This
- * makes the caret sit immediately after `root# command`, like a normal terminal,
- * instead of putting input in a separate footer. The prefix before
- * editable_char_ is read-only; only the command after the latest prompt can be
- * edited. Up/Down walk command history, Enter submits, and Ctrl+C/Ctrl+V use an
- * in-app clipboard (raw framebuffer sessions do not have a desktop clipboard).
- * Mouse-drag selection is enabled, so output as well as the current command can
- * be copied.
+ * The editable command and the scrollback deliberately use different render
+ * surfaces.  LVGL's textarea locates its caret by laying out all preceding
+ * text; putting several KB of scrollback before the command therefore made
+ * every key O(scrollback) and unusable on the Nano.  The command now lives in
+ * a short one-line textarea, while committed output is rasterized only when it
+ * changes into an opaque canvas.  FBDEV FULL-mode repaints can then blit that
+ * cached canvas instead of re-laying-out and blending thousands of glyphs on
+ * every key/caret blink.
  *
- * A child shell runs on a PTY. PTY echo is disabled because the textarea draws
- * the command locally; on Enter the line is committed to the scrollback before
- * it is written to the shell. A reader thread appends command output to a capped
- * buffer, while an LVGL timer coalesces rendering on the UI thread. */
+ * A child shell runs on a PTY with its own PS1 suppressed: the prompt is drawn
+ * by the fixed input row and submitted commands are committed to scrollback
+ * before being written to the PTY.  A reader thread appends cleaned output to
+ * a capped buffer; an LVGL timer coalesces expensive canvas refreshes. */
 class TerminalView : public OverlayView {
 public:
     TerminalView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
@@ -42,32 +42,31 @@ protected:
     void OnStart() override;
 
 private:
-    /* The whole scrollback lives in ONE textarea label. LVGL re-runs the
-     * label's line-wrap layout (per-glyph TTF metric lookups) on every frame
-     * the screen repaints, and the fbdev backend renders in FULL mode, so any
-     * invalidation (mouse move, caret blink, output) repaints everything.
-     * 12 KB of text made that per-frame layout dominate and the terminal
-     * unusably laggy; 4 KB (~50-60 lines of scrollback) keeps typing and
-     * `ls`-style bursts fluid on the Jetson while still allowing scrollback. */
     static constexpr size_t kBufCap = 4 * 1024;
     static constexpr size_t kHistoryCap = 100;
     static constexpr size_t kPasteCap = 4096;
+    static constexpr int kInputHeight = 44;
+    static constexpr int kCanvasPad = 10;
 
     int master_fd_ = -1;
     pid_t child_pid_ = -1;
     std::thread reader_;
     std::atomic<bool> stopping_{false};
 
-    lv_obj_t *terminal_ = nullptr;       // output + prompt + current command
-    lv_obj_t *terminal_label_ = nullptr; // textarea's internal label (selection)
+    lv_obj_t *output_holder_ = nullptr;   // clips the canvas/fallback label
+    lv_obj_t *output_canvas_ = nullptr;   // cached, already-rasterized output
+    lv_draw_buf_t *output_draw_buf_ = nullptr;
+    lv_obj_t *output_fallback_ = nullptr; // used only if canvas allocation fails
+    lv_obj_t *input_row_ = nullptr;
+    lv_obj_t *prompt_label_ = nullptr;
+    lv_obj_t *input_ = nullptr;           // current command only
+    lv_obj_t *input_label_ = nullptr;     // textarea label (selection bounds)
     lv_timer_t *flush_timer_ = nullptr;
 
-    std::string buffer_;                 // committed, capped terminal text
+    std::string buffer_;                  // committed, capped terminal text
     std::mutex out_mtx_;
     std::atomic<bool> dirty_{false};
 
-    size_t editable_byte_ = 0;           // beginning of current input in UTF-8 bytes
-    uint32_t editable_char_ = 0;         // same boundary in Unicode characters
     std::vector<std::string> history_;
     size_t history_index_ = 0;
     std::string history_draft_;
@@ -81,8 +80,8 @@ private:
     void AppendOutput(const std::string &text);
     void CapBufferLocked();
     void Flush();
-    void Render(const std::string &committed, const std::string &input,
-                uint32_t input_cursor);
+    void RenderOutput(const std::string &committed);
+    void ApplyAppearance();
 
     std::string CurrentInput() const;
     void ReplaceCurrentInput(const std::string &text);
@@ -91,14 +90,11 @@ private:
     void RecallNext();
     void CopySelection();
     void PasteClipboard();
-    void PrepareForEditing();
-    void ApplyAppearance();
-    bool SelectionBounds(uint32_t &start, uint32_t &end) const;
+    bool InputSelectionBounds(uint32_t &start, uint32_t &end) const;
 
     static size_t Utf8ByteIndex(const std::string &text, uint32_t char_index);
-    static uint32_t Utf8Length(const std::string &text);
     static std::string StripAnsi(const std::string &s);
-    static void OnTerminalKey(lv_event_t *e);
+    static void OnInputKey(lv_event_t *e);
     static void OnFlushTimer(lv_timer_t *t);
 };
 
