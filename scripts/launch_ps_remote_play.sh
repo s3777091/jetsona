@@ -61,18 +61,21 @@ if [ "$PSRP_APPIMAGE_EXTRACT" -eq 1 ]; then
     export APPIMAGE_EXTRACT_AND_RUN=1
 fi
 
-psrp_prepend_env_path()
+PSRP_CHIAKI_APPDIR="${APPDIR:-}"
+PSRP_CHIAKI_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH="${QTWEBENGINEPROCESS_PATH:-}"
+
+psrp_prepend_chiaki_library_path()
 {
-    local var="$1" dir="$2" current
+    local dir="$1"
     [ -d "$dir" ] || return 0
-    eval "current=\${$var:-}"
-    case ":$current:" in
+    case ":$PSRP_CHIAKI_LD_LIBRARY_PATH:" in
         *":$dir:"*) return 0 ;;
     esac
-    if [ -n "$current" ]; then
-        export "$var=$dir:$current"
+    if [ -n "$PSRP_CHIAKI_LD_LIBRARY_PATH" ]; then
+        PSRP_CHIAKI_LD_LIBRARY_PATH="$dir:$PSRP_CHIAKI_LD_LIBRARY_PATH"
     else
-        export "$var=$dir"
+        PSRP_CHIAKI_LD_LIBRARY_PATH="$dir"
     fi
 }
 
@@ -96,13 +99,14 @@ psrp_configure_chiaki_runtime()
     done
 
     if [ -n "$appdir" ]; then
-        export APPDIR="${APPDIR:-$appdir}"
-        psrp_prepend_env_path LD_LIBRARY_PATH "$appdir/usr/lib"
-        psrp_prepend_env_path LD_LIBRARY_PATH "$appdir/usr/lib/aarch64-linux-gnu"
-        psrp_prepend_env_path LD_LIBRARY_PATH "$appdir/usr/lib/aarch64-linux-gnu/nss"
-        psrp_prepend_env_path LD_LIBRARY_PATH "$appdir/usr/lib/nss"
-        if [ -x "$appdir/usr/libexec/QtWebEngineProcess" ]; then
-            export QTWEBENGINEPROCESS_PATH="${QTWEBENGINEPROCESS_PATH:-$appdir/usr/libexec/QtWebEngineProcess}"
+        PSRP_CHIAKI_APPDIR="${PSRP_CHIAKI_APPDIR:-$appdir}"
+        psrp_prepend_chiaki_library_path "$appdir/usr/lib"
+        psrp_prepend_chiaki_library_path "$appdir/usr/lib/aarch64-linux-gnu"
+        psrp_prepend_chiaki_library_path "$appdir/usr/lib/aarch64-linux-gnu/nss"
+        psrp_prepend_chiaki_library_path "$appdir/usr/lib/nss"
+        if [ -x "$appdir/usr/libexec/QtWebEngineProcess" ] &&
+            [ -z "$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH" ]; then
+            PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH="$appdir/usr/libexec/QtWebEngineProcess"
         fi
     fi
 
@@ -111,7 +115,7 @@ psrp_configure_chiaki_runtime()
         /usr/lib/arm-linux-gnueabihf/nss \
         /usr/lib/x86_64-linux-gnu/nss \
         /usr/lib/nss; do
-        psrp_prepend_env_path LD_LIBRARY_PATH "$nss_dir"
+        psrp_prepend_chiaki_library_path "$nss_dir"
     done
 }
 
@@ -282,6 +286,14 @@ psrp_enable_clocks
 
 unset DBUS_SESSION_BUS_ADDRESS DBUS_SYSTEM_BUS_ADDRESS
 PSRP_CLIENT_PREFIX=()
+PSRP_CLIENT_ENV=()
+PSRP_ENV_BIN="$(command -v env 2>/dev/null || true)"
+[ -n "$PSRP_ENV_BIN" ] || PSRP_ENV_BIN="/usr/bin/env"
+[ -n "$PSRP_CHIAKI_APPDIR" ] && PSRP_CLIENT_ENV+=("APPDIR=$PSRP_CHIAKI_APPDIR")
+[ -n "$PSRP_CHIAKI_LD_LIBRARY_PATH" ] && PSRP_CLIENT_ENV+=("LD_LIBRARY_PATH=$PSRP_CHIAKI_LD_LIBRARY_PATH")
+if [ -n "$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH" ]; then
+    PSRP_CLIENT_ENV+=("QTWEBENGINEPROCESS_PATH=$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH")
+fi
 PSRP_DBUS_RUN_SESSION="$(command -v dbus-run-session 2>/dev/null || true)"
 if [ -n "$PSRP_DBUS_RUN_SESSION" ]; then
     # xinit only treats absolute/relative paths as the client program; a bare
@@ -293,7 +305,9 @@ fi
 
 X_ARGS=("$DISPLAY_NO" "$VT" -nolisten tcp -nocursor -s 0 -dpms)
 if command -v xinit >/dev/null 2>&1; then
-    xinit "${PSRP_CLIENT_PREFIX[@]}" "${PSRP_CHIAKI[@]}" "${CLIENT_ARGS[@]}" -- "${X_ARGS[@]}"
+    xinit "$PSRP_ENV_BIN" "${PSRP_CLIENT_ENV[@]}" \
+        "${PSRP_CLIENT_PREFIX[@]}" "${PSRP_CHIAKI[@]}" \
+        "${CLIENT_ARGS[@]}" -- "${X_ARGS[@]}"
     client_rc=$?
     exit "$client_rc"
 fi
@@ -314,7 +328,8 @@ if ! kill -0 "$X_PID" 2>/dev/null; then
     exit 1
 fi
 
-"${PSRP_CLIENT_PREFIX[@]}" "${PSRP_CHIAKI[@]}" "${CLIENT_ARGS[@]}"
+"$PSRP_ENV_BIN" "${PSRP_CLIENT_ENV[@]}" \
+    "${PSRP_CLIENT_PREFIX[@]}" "${PSRP_CHIAKI[@]}" "${CLIENT_ARGS[@]}"
 client_rc=$?
 kill "$X_PID" 2>/dev/null || true
 wait "$X_PID" 2>/dev/null || true
