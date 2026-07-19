@@ -1,7 +1,6 @@
 #pragma once
 
 #include "display/views/overlay_view.h"
-#include "display/core/lvgl_image.h"
 #include "display/theme/terminal_theme.h"
 #include "display/widgets/telex_ime.h"
 #include "net/bluetooth_manager.h"
@@ -10,6 +9,7 @@
 #include <lvgl.h>
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -147,7 +147,6 @@ private:
     lv_obj_t *text_size_slider_ = nullptr;
     lv_obj_t *text_size_value_label_ = nullptr;
     lv_obj_t *terminal_size_value_label_ = nullptr;
-    std::unique_ptr<LvglImage> chromium_settings_icon_;
     lv_obj_t *night_warmth_slider_ = nullptr;
     lv_obj_t *vol_slider_ = nullptr;
     lv_obj_t *mute_switch_ = nullptr;
@@ -210,10 +209,6 @@ private:
     lv_obj_t *MakeSwitch(lv_obj_t *parent, bool on, lv_event_cb_t cb);
     lv_obj_t *MakeSlider(lv_obj_t *parent, int minv, int maxv, int val, lv_event_cb_t cb);
     lv_obj_t *MakeButton(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb);
-    /* Square action button carrying a PNG from assets/icons/app instead of a
-     * label -- lock / password / start / reload on the Nguồn & Khóa page. */
-    lv_obj_t *MakeIconButton(lv_obj_t *parent, const char *icon, uint32_t bg,
-                             lv_event_cb_t cb);
     lv_obj_t *DisplayCard();
     lv_obj_t *DisplayRow(lv_obj_t *card, const char *title, const char *sub = nullptr,
                          int height = 48);

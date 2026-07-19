@@ -55,6 +55,9 @@
 #define OSK_H       205
 #define PILL_H      36
 #define PILL_Y      3
+#define ISLAND_ICON 22  /* even size centres exactly in the even 36px pill */
+#define ISLAND_STEP 18
+#define ISLAND_MAX_ICONS 7
 
 /* Palette lifted from the firmware Dynamic Island. */
 #define COL_BAR_BG    0x000000
@@ -417,8 +420,10 @@ static void fill_round_rect(Drawable d, int x, int y, int w, int h, int r,
     }
 }
 
-/* Round every corner of a popup window (the app rail, toasts, the switch
- * pill) so nothing shows up as a hard black rectangle over the web page.
+/* Round every floating window with a symmetric pixel-centre raster. XFillArc
+ * on a 1-bit Shape mask produces visibly uneven left/right stair steps at the
+ * island's tiny 34-36 px size. Building one exact scanline per row keeps both
+ * caps identical and is much closer to LVGL's rounded firmware island.
  * Without the shape extension the windows still work, just square. */
 static void shape_round_corners(Window win, int w, int h, int r)
 {
@@ -431,15 +436,35 @@ static void shape_round_corners(Window win, int w, int h, int r)
     if (!shape_ok || w < 2 || h < 2) return;
     if (r * 2 > h) r = h / 2;
     if (r * 2 > w) r = w / 2;
-    Pixmap mask = XCreatePixmap(dpy, win, (unsigned)w, (unsigned)h, 1);
-    GC mgc = XCreateGC(dpy, mask, 0, NULL);
-    XSetForeground(dpy, mgc, 0);
-    XFillRectangle(dpy, mask, mgc, 0, 0, (unsigned)w, (unsigned)h);
-    XSetForeground(dpy, mgc, 1);
-    fill_round_rect_gc(mask, mgc, 0, 0, w, h, r);
-    XShapeCombineMask(dpy, win, ShapeBounding, 0, 0, mask, ShapeSet);
-    XFreeGC(dpy, mgc);
-    XFreePixmap(dpy, mask);
+    XRectangle *rows = calloc((size_t)h, sizeof(*rows));
+    if (!rows) return;
+    const int diameter = r * 2;
+    const int radius_sq = diameter * diameter;
+    int count = 0;
+    for (int y = 0; y < h; y++) {
+        int dy = 0;
+        if (y < r) dy = diameter - (y * 2 + 1);
+        else if (y >= h - r) dy = (y * 2 + 1) - 2 * (h - r);
+
+        int inset = 0;
+        if (dy) {
+            while (inset < r) {
+                const int dx = diameter - (inset * 2 + 1);
+                if (dx * dx + dy * dy <= radius_sq) break;
+                inset++;
+            }
+        }
+        const int row_w = w - inset * 2;
+        if (row_w <= 0) continue;
+        rows[count].x = (short)inset;
+        rows[count].y = (short)y;
+        rows[count].width = (unsigned short)row_w;
+        rows[count].height = 1;
+        count++;
+    }
+    XShapeCombineRectangles(dpy, win, ShapeBounding, 0, 0, rows, count,
+                            ShapeSet, Unsorted);
+    free(rows);
 #else
     (void)win; (void)w; (void)h; (void)r;
 #endif
@@ -449,14 +474,14 @@ static void shape_round_corners(Window win, int w, int h, int r)
 
 static int visible_window_count(void)
 {
-    return nwins > 7 ? 7 : nwins;
+    return nwins > ISLAND_MAX_ICONS ? ISLAND_MAX_ICONS : nwins;
 }
 
 static int queue_content_width(void)
 {
     const int count = visible_window_count();
-    if (count <= 0) return 23;
-    int width = 23 + (count - 1) * 18;
+    if (count <= 0) return ISLAND_ICON;
+    int width = ISLAND_ICON + (count - 1) * ISLAND_STEP;
     if (nwins > count) width += 16; /* trailing overflow ellipsis */
     return width;
 }
@@ -474,13 +499,17 @@ static int desired_island_width(void)
 
 static void sync_island_geometry(void)
 {
+    static int shaped_w = -1;
     const int wanted = desired_island_width();
     if (wanted != island_w) {
         island_w = wanted;
         XMoveResizeWindow(dpy, bar, (sw - island_w) / 2, PILL_Y,
                           (unsigned)island_w, PILL_H);
     }
-    shape_round_corners(bar, island_w, PILL_H, PILL_H / 2);
+    if (shaped_w != island_w) {
+        shape_round_corners(bar, island_w, PILL_H, PILL_H / 2);
+        shaped_w = island_w;
+    }
 }
 
 /* ---------------------------------------------------------- real app icons */
@@ -663,12 +692,12 @@ static int effective_app(int i)
 
 static int queue_x_for(int index, int count)
 {
-    const int icon = 23, step = 18;
-    int total = icon + (count - 1) * step;
+    int total = ISLAND_ICON + (count - 1) * ISLAND_STEP;
     if (nwins > count) total += 16;
     int area_w = queue_content_width();
     int left = island_advanced ? 6 : (island_w - area_w) / 2;
-    return left + (area_w - total) / 2 + icon / 2 + index * step;
+    return left + (area_w - total) / 2 + ISLAND_ICON / 2 +
+           index * ISLAND_STEP;
 }
 
 static void draw_queue(Drawable d)
@@ -699,11 +728,11 @@ static void draw_queue(Drawable d)
         int to_x = queue_x_for(i, count);
         int x = from_x + (int)((to_x - from_x) * ease);
         int lift = (i == 0 && t < 1.0) ? (int)(18.0 * t * (1.0 - t)) : 0;
-        draw_app_icon(d, effective_app(i), x, PILL_H / 2 - lift, 23);
+        draw_app_icon(d, effective_app(i), x, PILL_H / 2 - lift, ISLAND_ICON);
     }
     if (nwins > count) {
         XSetForeground(dpy, gc, px(0xffffff));
-        int x = queue_x_for(count - 1, count) + 19;
+        int x = queue_x_for(count - 1, count) + 14;
         for (int i = 0; i < 3; i++) XFillArc(dpy, d, gc, x + i * 4, 20, 2, 2, 0, 360 * 64);
     }
 }
@@ -712,15 +741,16 @@ static void redraw(int bat_level, int bat_charging)
 {
     sync_island_geometry();
     Drawable d = bar_buffer != None ? bar_buffer : bar;
-    XSetForeground(dpy, gc, px(COL_PILL_BG));
-    XFillRectangle(dpy, d, gc, 0, 0, (unsigned)island_w, PILL_H);
-
-    /* The island is the complete Chromium chrome: no black top strip and no
-     * Wi-Fi/Bluetooth/cache/sound/brightness/power status controls. */
-    XSetForeground(dpy, gc, px(COL_PILL_BG));
-    fill_round_rect(d, 0, 0, island_w, PILL_H, PILL_H / 2, 1);
-    XSetForeground(dpy, gc, px(COL_PILL_EDGE));
-    fill_round_rect(d, 0, 0, island_w, PILL_H, PILL_H / 2, 0);
+    /* Match the firmware's subtle black -> navy vertical surface. The outer
+     * silhouette comes exclusively from the Shape mask: no XDrawArc outline,
+     * which was the jagged bright ring visible on the physical panel. */
+    for (int y = 0; y < PILL_H; y++) {
+        const unsigned red = 0x0bU * (unsigned)y / (PILL_H - 1);
+        const unsigned green = 0x12U * (unsigned)y / (PILL_H - 1);
+        const unsigned blue = 0x20U * (unsigned)y / (PILL_H - 1);
+        XSetForeground(dpy, gc, px((red << 16) | (green << 8) | blue));
+        XFillRectangle(dpy, d, gc, 0, y, (unsigned)island_w, 1);
+    }
     draw_queue(d);
 
     if (island_advanced) {

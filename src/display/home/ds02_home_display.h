@@ -109,13 +109,28 @@ private:
 
     enum class StandbyState { Dim, Awake, Launcher };
 
-    static constexpr size_t kDockItemCount = 9;
-    static constexpr size_t kDrawerItemCount = 17;
+    // Keep Dock order in one place: click routing, running dots and switcher
+    // artwork all use these names instead of duplicating fragile integers.
+    enum DockIndex : size_t {
+        kDockFinder = 0,
+        kDockCalendar,
+        kDockDocuments,
+        kDockMusic,
+        kDockReminders,
+        kDockSettings,
+        kDockEkkoBot,
+        kDockTerminal,
+        kDockNightOwl,
+        kDockTranslate,
+        kDockTrash,
+        kDockItemCount,
+    };
+    static constexpr size_t kDrawerItemCount = 15;
     static constexpr size_t kDrawerItemsPerPage = 8;
     static constexpr size_t kDrawerPageCount =
         (kDrawerItemCount + kDrawerItemsPerPage - 1) / kDrawerItemsPerPage;
-    static constexpr size_t kGalleryDrawerIndex = 6;
-    static constexpr size_t kPodsDrawerIndex = 7;
+    static constexpr size_t kGalleryDrawerIndex = 5;
+    static constexpr size_t kPodsDrawerIndex = 6;
     static constexpr size_t kPsRemotePlayDrawerIndex = 2;
 
     /* ---- Multitasking ----

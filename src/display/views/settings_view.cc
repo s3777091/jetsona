@@ -899,23 +899,6 @@ lv_obj_t *SettingsView::MakeButton(lv_obj_t *parent, const char *text, uint32_t 
     return b;
 }
 
-lv_obj_t *SettingsView::MakeIconButton(lv_obj_t *parent, const char *icon, uint32_t bg,
-                                       lv_event_cb_t cb) {
-    auto *b = lv_button_create(parent);
-    lv_obj_set_size(b, 52, 40);
-    lv_obj_set_style_bg_color(b, Color(bg), 0);
-    lv_obj_set_style_radius(b, 10, 0);
-    lv_obj_set_style_pad_all(b, 0, 0);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, this);
-    /* PNG through the shared app-icon cache, recolored white: arial.ttf has no
-     * symbol block, so a text glyph here would spam the log every frame. */
-    auto *img = jetson::ui::CreateAppIcon(b, icon, 22);
-    lv_obj_set_style_image_recolor(img, lv_color_white(), 0);
-    lv_obj_set_style_image_recolor_opa(img, LV_OPA_COVER, 0);
-    lv_obj_center(img);
-    return b;
-}
-
 lv_obj_t *SettingsView::DisplayCard() {
     const auto &p = jetson::UiTheme::Instance().Palette();
     auto *card = lv_obj_create(detail_);
@@ -1305,8 +1288,8 @@ void SettingsView::BuildApplicationsMain() {
     auto *card = DisplayCard();
     const auto &p = jetson::UiTheme::Instance().Palette();
 
-    // app_icon names a PNG in assets/icons/app; nullptr falls back to the
-    // Chromium drawer artwork (Chromium has no app-icon asset).
+    // app_icon names a PNG in assets/icons/app. Keeping every Settings icon
+    // on the shared cache also makes replacement assets take effect uniformly.
     auto add_app_row = [&](const char *title_text, const char *subtitle_text,
                            const char *app_icon, lv_event_cb_t callback) {
         auto *row = DisplayRow(card, "", nullptr, 72);
@@ -1314,18 +1297,9 @@ void SettingsView::BuildApplicationsMain() {
         lv_obj_set_ext_click_area(row, 4);
         lv_obj_add_event_cb(row, callback, LV_EVENT_CLICKED, this);
 
-        lv_obj_t *icon = nullptr;
-        if (!app_icon) {
-            if (!chromium_settings_icon_)
-                chromium_settings_icon_ =
-                    LvglImageFromFileFit("assets/icons/drawer/chromium.png", 36);
-            icon = lv_image_create(row);
-            lv_obj_set_size(icon, 36, 36);
-            if (chromium_settings_icon_)
-                lv_image_set_src(icon, chromium_settings_icon_->image_dsc());
-        } else {
-            icon = jetson::ui::CreateAppIcon(row, app_icon, 36);
-        }
+        // Settings assets are exported as 32 px mini icons. Render them at
+        // their intended size instead of upscaling them like drawer artwork.
+        auto *icon = jetson::ui::CreateAppIcon(row, app_icon, 32);
         lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
 
         auto *labels = lv_obj_create(row);
@@ -1357,7 +1331,7 @@ void SettingsView::BuildApplicationsMain() {
 
     add_app_row("Terminal", "Cài đặt theme", "terminal", OnOpenTerminalSettings);
     DisplayDivider(card);
-    add_app_row("Web View", "Dynamic Island và các phiên tab", nullptr,
+    add_app_row("Web View", "Dynamic Island và các phiên tab", "chromium",
                 OnOpenWebViewSettings);
     DisplayDivider(card);
     add_app_row("Ekko Bot", "Màu orbit trong Dynamic Island", "ekko-bot",
@@ -2047,23 +2021,23 @@ void SettingsView::BuildGeneralPower() {
     }
     DisplayDivider(lock);
     auto *now = DisplayRow(lock, "Khóa màn hình ngay", nullptr, 52);
-    MakeIconButton(now, "lock", 0x2b6fd6, OnLockNow);
+    MakeButton(now, "Khóa", 0x2b6fd6, OnLockNow);
     DisplayDivider(lock);
     const std::string pin = Settings("system", false).GetString("pin", "");
     char pin_sub[32];
     if (pin.empty()) std::snprintf(pin_sub, sizeof(pin_sub), "Chưa đặt");
     else std::snprintf(pin_sub, sizeof(pin_sub), "Đã đặt · %d số", (int)pin.size());
     auto *pin_row = DisplayRow(lock, "Mã PIN khóa", pin_sub, 58);
-    MakeIconButton(pin_row, "password", 0x55565a, OnSetPin);
+    MakeButton(pin_row, pin.empty() ? "Đặt PIN" : "Thay đổi", 0x55565a, OnSetPin);
     if (auto_lock && pin.empty())
         DisplayCaption("Đặt mã PIN để màn hình khóa yêu cầu mở khóa.");
 
     auto *power = DisplayCard();
     auto *reboot = DisplayRow(power, "Khởi động lại thiết bị", nullptr, 52);
-    MakeIconButton(reboot, "reload", 0xb03a3a, OnReboot);
+    MakeButton(reboot, "Khởi động lại", 0xb03a3a, OnReboot);
     DisplayDivider(power);
     auto *shutdown = DisplayRow(power, "Tắt thiết bị", nullptr, 52);
-    MakeIconButton(shutdown, "start", 0xb03a3a, OnShutdown);
+    MakeButton(shutdown, "Tắt máy", 0xb03a3a, OnShutdown);
 }
 
 void SettingsView::BuildGeneralLockTimeout() {

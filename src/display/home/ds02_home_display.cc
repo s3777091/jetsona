@@ -409,12 +409,10 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
         {"assets/icons/drawer/game.png",        "Trò chơi",   9},
         {"assets/icons/drawer/github.png",      "GitHub",     2},
         {"assets/icons/drawer/agent.png",       "Agent",      3},
-        {"assets/icons/drawer/nightowl.png",    "NightOwl",   4},
         {"assets/icons/drawer/photos.png",      "Ảnh",        5},
         {"assets/icons/drawer/pods.png",        "Pods",      10},
         {"assets/icons/drawer/record.png",      "Ghi âm",    11},
         {"assets/icons/drawer/studio.png",      "Studio",    12},
-        {"assets/icons/drawer/translate.png",   "Dịch",       7},
         {"assets/icons/drawer/chat-gpt.png",    "ChatGPT",   13},
         {"assets/icons/drawer/youtube.png",     "YouTube",   14},
         {"assets/icons/drawer/messenger.png",   "Messenger", 15},
@@ -687,18 +685,20 @@ void Ds02HomeDisplay::CreateDockObjects() {
         "assets/icons/dock/folder.png", "assets/icons/dock/music.png",
         "assets/icons/dock/reminders.png", "assets/icons/dock/settings.png",
         "assets/icons/dock/siri.png", "assets/icons/dock/terminal.png",
+        "assets/icons/dock/nightowl.png", "assets/icons/dock/translate.png",
         "assets/icons/dock/trash.png",
     };
     static const char *kFallbackIcons[kDockItemCount] = {
         FONT_AWESOME_FINDER, FONT_AWESOME_BOOK_OPEN, FONT_AWESOME_BOOK,
         FONT_AWESOME_MUSIC, FONT_AWESOME_MICROPHONE_LINES, FONT_AWESOME_GEAR,
-        FONT_AWESOME_MICROPHONE, FONT_AWESOME_TERMINAL, LV_SYMBOL_TRASH,
+        FONT_AWESOME_MICROPHONE, FONT_AWESOME_TERMINAL,
+        LV_SYMBOL_EYE_OPEN, FONT_AWESOME_LANGUAGE, LV_SYMBOL_TRASH,
     };
 
     for (size_t i = 0; i < kDockItemCount; ++i) {
         // Keep Trash visually separate from the default application group,
         // matching the macOS Dock convention.
-        if (i == kDockItemCount - 1) {
+        if (i == kDockTrash) {
             auto *divider = lv_obj_create(dock_);
             lv_obj_remove_style_all(divider);
             lv_obj_set_size(divider, kDockDividerWidth, 40);
@@ -861,7 +861,8 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     BounceDockButton(target);
 
     // Dock icons (in file order): finder, calendar, folder, music, reminders,
-    // settings, siri (Ekko Bot), terminal, separator, trash. The finder icon
+    // settings, siri (Ekko Bot), terminal, NightOwl, Translate, separator,
+    // trash. The finder icon
     // toggles the app drawer open/closed (no touch swipe on this panel); the
     // folder icon opens the Documents file browser. Music opens the native
     // Zing browser/player while Reminders keeps its own persistent task list;
@@ -870,25 +871,31 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     // toggles the Ekko Bot orbit inside the Dynamic Island instead of opening
     // a full-screen app.
     switch (focused) {
-    case 0: // finder -> toggle app drawer
+    case kDockFinder: // finder -> toggle app drawer
         self->standby_state_ = (self->standby_state_ == StandbyState::Launcher)
                                    ? StandbyState::Awake
                                    : StandbyState::Launcher;
         self->ApplyStandbyState();
         break;
-    case 1: self->OpenCalendar(); break;
-    case 2: self->OpenDocuments(); break;
-    case 3: self->OpenMusic(); break;
-    case 4: self->OpenReminders(); break;
-    case 5: self->OpenSettings(); break;
-    case 6:
+    case kDockCalendar: self->OpenCalendar(); break;
+    case kDockDocuments: self->OpenDocuments(); break;
+    case kDockMusic: self->OpenMusic(); break;
+    case kDockReminders: self->OpenReminders(); break;
+    case kDockSettings: self->OpenSettings(); break;
+    case kDockEkkoBot:
         if (self->status_bar_) {
             DisplayLockGuard lock(self);
             self->status_bar_->ToggleAssistantOrbit();
         }
         break;
-    case 7: self->OpenTerminal(); break;
-    case 8: self->OpenTrash(); break;
+    case kDockTerminal: self->OpenTerminal(); break;
+    case kDockNightOwl:
+        self->ShowNotification("NightOwl: Sắp ra mắt", 1500);
+        break;
+    case kDockTranslate:
+        self->ShowNotification("Dịch: Sắp ra mắt", 1500);
+        break;
+    case kDockTrash: self->OpenTrash(); break;
     default: self->AdvanceStandbyButtonState(); break;
     }
 }
@@ -1453,9 +1460,11 @@ void Ds02HomeDisplay::UpdateDockDots() {
     auto running = [this](AppId id) {
         return std::find(task_queue_.begin(), task_queue_.end(), id) != task_queue_.end();
     };
-    static constexpr struct { int dock_index; AppId app; } kDockApps[] = {
-        {1, kAppCalendar}, {2, kAppDocuments}, {3, kAppMusic}, {4, kAppReminders}, {5, kAppSettings},
-        {6, kAppChat},     {7, kAppTerminal},  {8, kAppTrash},
+    static constexpr struct { size_t dock_index; AppId app; } kDockApps[] = {
+        {kDockCalendar, kAppCalendar},   {kDockDocuments, kAppDocuments},
+        {kDockMusic, kAppMusic},         {kDockReminders, kAppReminders},
+        {kDockSettings, kAppSettings},   {kDockEkkoBot, kAppChat},
+        {kDockTerminal, kAppTerminal},   {kDockTrash, kAppTrash},
     };
     for (const auto &m : kDockApps) {
         if (!dock_indicators_[m.dock_index]) continue;
@@ -1478,14 +1487,14 @@ void Ds02HomeDisplay::OpenAppSwitcher() {
 
     auto icon_for = [this](AppId id, const char **path) -> const LvglImage * {
         switch (id) {
-        case kAppCalendar:  *path = "assets/icons/dock/calendar.png"; return dock_icon_cache_[1].get();
-        case kAppDocuments: *path = "assets/icons/dock/folder.png";   return dock_icon_cache_[2].get();
-        case kAppMusic:     *path = "assets/icons/dock/music.png";    return dock_icon_cache_[3].get();
-        case kAppReminders: *path = "assets/icons/dock/reminders.png"; return dock_icon_cache_[4].get();
-        case kAppSettings:  *path = "assets/icons/dock/settings.png"; return dock_icon_cache_[5].get();
-        case kAppChat:      *path = "assets/icons/dock/siri.png";     return dock_icon_cache_[6].get();
-        case kAppTerminal:  *path = "assets/icons/dock/terminal.png"; return dock_icon_cache_[7].get();
-        case kAppTrash:     *path = "assets/icons/dock/trash.png";    return dock_icon_cache_[8].get();
+        case kAppCalendar:  *path = "assets/icons/dock/calendar.png"; return dock_icon_cache_[kDockCalendar].get();
+        case kAppDocuments: *path = "assets/icons/dock/folder.png";   return dock_icon_cache_[kDockDocuments].get();
+        case kAppMusic:     *path = "assets/icons/dock/music.png";    return dock_icon_cache_[kDockMusic].get();
+        case kAppReminders: *path = "assets/icons/dock/reminders.png"; return dock_icon_cache_[kDockReminders].get();
+        case kAppSettings:  *path = "assets/icons/dock/settings.png"; return dock_icon_cache_[kDockSettings].get();
+        case kAppChat:      *path = "assets/icons/dock/siri.png";     return dock_icon_cache_[kDockEkkoBot].get();
+        case kAppTerminal:  *path = "assets/icons/dock/terminal.png"; return dock_icon_cache_[kDockTerminal].get();
+        case kAppTrash:     *path = "assets/icons/dock/trash.png";    return dock_icon_cache_[kDockTrash].get();
         case kAppGallery:   *path = "assets/icons/drawer/photos.png"; return drawer_icon_cache_[kGalleryDrawerIndex].get();
         case kAppPsRemotePlay: *path = "assets/icons/drawer/game.png"; return drawer_icon_cache_[kPsRemotePlayDrawerIndex].get();
         case kAppPods:      *path = "assets/icons/drawer/pods.png";   return drawer_icon_cache_[kPodsDrawerIndex].get();
