@@ -995,6 +995,51 @@ void PsRemotePlayView::OpenBluetoothSettings() {
 namespace {
 constexpr char kLauncherStateDir[] = "/var/lib/jetson-fw";
 constexpr char kLauncherStateFile[] = "/var/lib/jetson-fw/ps-remote-play.conf";
+
+std::string DecodeQsettingsText(std::string value) {
+    if (value.rfind("@String(", 0) == 0 && !value.empty() && value.back() == ')') {
+        value = value.substr(8, value.size() - 9);
+    }
+    return value;
+}
+
+bool SafeChiakiProfile(const std::string &profile) {
+    if (profile.empty() || profile.size() > 96) return false;
+    if (!std::isalnum(static_cast<unsigned char>(profile.front()))) return false;
+    for (unsigned char c : profile) {
+        if (!std::isalnum(c) && c != '.' && c != '_' && c != '-' && c != ' ')
+            return false;
+    }
+    return true;
+}
+
+bool ConfigHasRegistKey(const std::string &path) {
+    FILE *file = std::fopen(path.c_str(), "r");
+    if (!file) return false;
+    char line[512];
+    bool found = false;
+    while (!found && std::fgets(line, sizeof(line), file))
+        found = std::strstr(line, "rp_regist_key=") != nullptr;
+    std::fclose(file);
+    return found;
+}
+
+std::string ReadChiakiProfile(const std::string &default_config) {
+    FILE *file = std::fopen(default_config.c_str(), "r");
+    if (!file) return {};
+    char line[512];
+    std::string profile;
+    while (profile.empty() && std::fgets(line, sizeof(line), file)) {
+        std::string entry(line);
+        while (!entry.empty() && (entry.back() == '\n' || entry.back() == '\r'))
+            entry.pop_back();
+        if (entry.rfind("current_profile=", 0) != 0) continue;
+        profile = Trim(DecodeQsettingsText(entry.substr(16)));
+        if (!SafeChiakiProfile(profile)) profile.clear();
+    }
+    std::fclose(file);
+    return profile;
+}
 } // namespace
 
 void PsRemotePlayView::WriteLauncherState() const {
@@ -1035,19 +1080,17 @@ void PsRemotePlayView::WriteLauncherState() const {
 bool PsRemotePlayView::HasChiakiRegistration() const {
     // The launcher keeps Chiaki's QSettings under /var/lib/jetson-fw/chiaki.
     // A registered console always serializes an rp_regist_key entry.
-    static const char *kConfigs[] = {
-        "/var/lib/jetson-fw/chiaki/.config/Chiaki/Chiaki.conf",
-        "/var/lib/jetson-fw/chiaki/.config/chiaki/Chiaki.conf",
+    static const char *kConfigDirs[] = {
+        "/var/lib/jetson-fw/chiaki/.config/Chiaki",
+        "/var/lib/jetson-fw/chiaki/.config/chiaki",
     };
-    for (const char *path : kConfigs) {
-        FILE *file = std::fopen(path, "r");
-        if (!file) continue;
-        char line[512];
-        bool found = false;
-        while (!found && std::fgets(line, sizeof(line), file))
-            found = std::strstr(line, "rp_regist_key=") != nullptr;
-        std::fclose(file);
-        if (found) return true;
+    for (const char *dir : kConfigDirs) {
+        const std::string default_config = std::string(dir) + "/Chiaki.conf";
+        const std::string profile = ReadChiakiProfile(default_config);
+        if (!profile.empty() &&
+            ConfigHasRegistKey(std::string(dir) + "/Chiaki-" + profile + ".conf"))
+            return true;
+        if (ConfigHasRegistKey(default_config)) return true;
     }
     return false;
 }
