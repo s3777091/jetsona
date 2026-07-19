@@ -158,6 +158,10 @@ case ":${LD_LIBRARY_PATH:-}:" in
         exit 46
         ;;
 esac
+case ":${LD_LIBRARY_PATH:-}:" in
+    *":$EXPECTED_SYSTEM_NSS_DIR:"*) ;;
+    *) echo "browser missing isolated system NSS path: ${LD_LIBRARY_PATH:-}" >&2; exit 50 ;;
+esac
 [ "${1:-}" = "--no-sandbox" ] || { echo "browser missing --no-sandbox" >&2; exit 47; }
 : > "$EXPECTED_BROWSER_MARKER"
 EOF
@@ -165,9 +169,30 @@ chmod 700 "$FAKE_XINIT_DIR/chromium-browser"
 
 EXTRACTED_CHIAKI_DIR="$TMP_ROOT/extracted-chiaki"
 EXTRACTED_APPDIR="$EXTRACTED_CHIAKI_DIR/squashfs-root"
+EXTRACTED_SYSROOT_LIB="$EXTRACTED_CHIAKI_DIR/sysroot/root/usr/lib/aarch64-linux-gnu"
+FAKE_SYSTEM_NSS_DIR="$TMP_ROOT/system-nss"
 mkdir -p "$EXTRACTED_APPDIR/usr/lib" \
     "$EXTRACTED_APPDIR/usr/lib/aarch64-linux-gnu/nss" \
-    "$EXTRACTED_APPDIR/usr/libexec"
+    "$EXTRACTED_APPDIR/usr/libexec" "$EXTRACTED_SYSROOT_LIB" \
+    "$FAKE_SYSTEM_NSS_DIR"
+: > "$FAKE_SYSTEM_NSS_DIR/libsoftokn3.so"
+cat > "$EXTRACTED_SYSROOT_LIB/ld-linux-aarch64.so.1" <<'EOF'
+#!/bin/bash
+[ "${1:-}" = "--library-path" ] || { echo "custom loader missing --library-path" >&2; exit 51; }
+loader_library_path="${2:-}"
+shift 2
+case ":$loader_library_path:" in
+    *":$EXPECTED_APPDIR/usr/lib:"*) ;;
+    *) echo "custom loader missing AppImage libraries: $loader_library_path" >&2; exit 52 ;;
+esac
+case ":$loader_library_path:" in
+    *"/sysroot/root/usr/lib/aarch64-linux-gnu:"*) ;;
+    *) echo "custom loader missing sysroot libraries: $loader_library_path" >&2; exit 53 ;;
+esac
+: > "$EXPECTED_LOADER_MARKER"
+exec "$@"
+EOF
+chmod 700 "$EXTRACTED_SYSROOT_LIB/ld-linux-aarch64.so.1"
 cat > "$EXTRACTED_APPDIR/usr/libexec/QtWebEngineProcess" <<'EOF'
 #!/bin/bash
 case ":${LD_LIBRARY_PATH:-}:" in
@@ -203,13 +228,18 @@ env PATH="$FAKE_XINIT_DIR:$PATH" \
     PS_REMOTE_PLAY_DRY_RUN=0 \
     EXPECTED_APPDIR="$EXTRACTED_APPDIR" \
     EXPECTED_BROWSER_MARKER="$TMP_ROOT/extracted-browser-ok" \
+    EXPECTED_LOADER_MARKER="$TMP_ROOT/extracted-loader-ok" \
     EXPECTED_MARKER="$TMP_ROOT/extracted-runtime-ok" \
     EXPECTED_QT_MARKER="$TMP_ROOT/extracted-qt-ok" \
+    EXPECTED_SYSTEM_NSS_DIR="$FAKE_SYSTEM_NSS_DIR" \
+    PS_REMOTE_PLAY_NSS_LIBRARY_PATH="$FAKE_SYSTEM_NSS_DIR" \
     "$LAUNCHER" configure >/dev/null
 [[ -e "$TMP_ROOT/extracted-runtime-ok" ]] || \
     fail "extracted Chiaki runtime was not launched"
 [[ -e "$TMP_ROOT/extracted-qt-ok" ]] || \
     fail "QtWebEngineProcess wrapper did not run"
+[[ -e "$TMP_ROOT/extracted-loader-ok" ]] || \
+    fail "QtWebEngineProcess did not use the companion glibc loader"
 [[ -e "$TMP_ROOT/extracted-browser-ok" ]] || \
     fail "clean PSN browser wrapper did not run"
 

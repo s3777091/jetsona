@@ -63,7 +63,9 @@ fi
 
 PSRP_CHIAKI_APPDIR="${APPDIR:-}"
 PSRP_CHIAKI_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+PSRP_CHIAKI_LOADER=""
 PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH="${QTWEBENGINEPROCESS_PATH:-}"
+PSRP_BROWSER_LD_LIBRARY_PATH=""
 PSRP_QTWEBENGINEPROCESS_WRAPPER=""
 PSRP_BROWSER_WRAPPER=""
 
@@ -81,9 +83,23 @@ psrp_prepend_chiaki_library_path()
     fi
 }
 
+psrp_prepend_browser_library_path()
+{
+    local dir="$1"
+    [ -d "$dir" ] || return 0
+    case ":$PSRP_BROWSER_LD_LIBRARY_PATH:" in
+        *":$dir:"*) return 0 ;;
+    esac
+    if [ -n "$PSRP_BROWSER_LD_LIBRARY_PATH" ]; then
+        PSRP_BROWSER_LD_LIBRARY_PATH="$dir:$PSRP_BROWSER_LD_LIBRARY_PATH"
+    else
+        PSRP_BROWSER_LD_LIBRARY_PATH="$dir"
+    fi
+}
+
 psrp_configure_chiaki_runtime()
 {
-    local bin dir probe appdir nss_dir
+    local bin dir probe appdir loader nss_dir
     bin="${PSRP_CHIAKI[0]}"
     dir="$(cd "$(dirname "$bin")" && pwd -P)" || return 0
     appdir=""
@@ -110,14 +126,39 @@ psrp_configure_chiaki_runtime()
             [ -z "$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH" ]; then
             PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH="$appdir/usr/libexec/QtWebEngineProcess"
         fi
+
+        # JetPack 4 / Ubuntu 18.04 cannot load current chiaki-ng releases with
+        # its system glibc. Local installations can provide a newer sysroot and
+        # start the main Chiaki binary through its dynamic loader. QtWebEngine
+        # is a separate executable, so merely setting LD_LIBRARY_PATH makes it
+        # fall back to the old system loader and crash. Detect the companion
+        # loader and use it for QtWebEngineProcess as well.
+        for loader in \
+            "$dir/sysroot/root/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" \
+            "$dir/sysroot/root/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"; do
+            [ -x "$loader" ] || continue
+            PSRP_CHIAKI_LOADER="$loader"
+            psrp_prepend_chiaki_library_path "$(dirname "$loader")"
+            break
+        done
     fi
 
+    if [ -n "${PS_REMOTE_PLAY_NSS_LIBRARY_PATH:-}" ]; then
+        psrp_prepend_chiaki_library_path "$PS_REMOTE_PLAY_NSS_LIBRARY_PATH"
+        [ ! -f "$PS_REMOTE_PLAY_NSS_LIBRARY_PATH/libsoftokn3.so" ] || \
+            psrp_prepend_browser_library_path "$PS_REMOTE_PLAY_NSS_LIBRARY_PATH"
+    fi
     for nss_dir in \
         /usr/lib/aarch64-linux-gnu/nss \
         /usr/lib/arm-linux-gnueabihf/nss \
         /usr/lib/x86_64-linux-gnu/nss \
         /usr/lib/nss; do
         psrp_prepend_chiaki_library_path "$nss_dir"
+        # Chromium loads libsoftokn3.so by basename. These NSS module folders
+        # are not always in ld.so's default search path (notably on Bionic).
+        # Keep this system-only path separate from the AppImage libraries.
+        [ ! -f "$nss_dir/libsoftokn3.so" ] || \
+            psrp_prepend_browser_library_path "$nss_dir"
     done
 }
 
@@ -135,6 +176,11 @@ fi
 if [ -n "${PSRP_QTWEBENGINE_LD_LIBRARY_PATH:-}" ]; then
     export LD_LIBRARY_PATH="$PSRP_QTWEBENGINE_LD_LIBRARY_PATH"
 fi
+if [ -n "${PSRP_QTWEBENGINE_LOADER:-}" ]; then
+    exec "$PSRP_QTWEBENGINE_LOADER" \
+        --library-path "$PSRP_QTWEBENGINE_LD_LIBRARY_PATH" \
+        "$PSRP_REAL_QTWEBENGINEPROCESS" "$@"
+fi
 exec "$PSRP_REAL_QTWEBENGINEPROCESS" "$@"
 EOF
         chmod 700 "$PSRP_QTWEBENGINEPROCESS_WRAPPER" 2>/dev/null || true
@@ -143,8 +189,13 @@ EOF
     PSRP_BROWSER_WRAPPER="$RUNTIME_DIR/psrp-browser"
     cat > "$PSRP_BROWSER_WRAPPER" <<'EOF'
 #!/bin/bash
+browser_ld_library_path="${PSRP_BROWSER_LD_LIBRARY_PATH:-}"
 unset APPDIR LD_LIBRARY_PATH QTWEBENGINEPROCESS_PATH
 unset PSRP_REAL_QTWEBENGINEPROCESS PSRP_QTWEBENGINE_APPDIR PSRP_QTWEBENGINE_LD_LIBRARY_PATH
+unset PSRP_QTWEBENGINE_LOADER PSRP_BROWSER_LD_LIBRARY_PATH
+if [ -n "$browser_ld_library_path" ]; then
+    export LD_LIBRARY_PATH="$browser_ld_library_path"
+fi
 
 if [ -n "${PS_REMOTE_PLAY_BROWSER:-}" ] && [ -x "$PS_REMOTE_PLAY_BROWSER" ]; then
     exec "$PS_REMOTE_PLAY_BROWSER" "$@"
@@ -344,8 +395,12 @@ if [ -n "$PSRP_QTWEBENGINEPROCESS_WRAPPER" ]; then
     PSRP_CLIENT_ENV+=("PSRP_REAL_QTWEBENGINEPROCESS=$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH")
     PSRP_CLIENT_ENV+=("PSRP_QTWEBENGINE_APPDIR=$PSRP_CHIAKI_APPDIR")
     PSRP_CLIENT_ENV+=("PSRP_QTWEBENGINE_LD_LIBRARY_PATH=$PSRP_CHIAKI_LD_LIBRARY_PATH")
+    PSRP_CLIENT_ENV+=("PSRP_QTWEBENGINE_LOADER=$PSRP_CHIAKI_LOADER")
 fi
-[ -n "$PSRP_BROWSER_WRAPPER" ] && PSRP_CLIENT_ENV+=("BROWSER=$PSRP_BROWSER_WRAPPER")
+if [ -n "$PSRP_BROWSER_WRAPPER" ]; then
+    PSRP_CLIENT_ENV+=("BROWSER=$PSRP_BROWSER_WRAPPER")
+    PSRP_CLIENT_ENV+=("PSRP_BROWSER_LD_LIBRARY_PATH=$PSRP_BROWSER_LD_LIBRARY_PATH")
+fi
 PSRP_DBUS_RUN_SESSION="$(command -v dbus-run-session 2>/dev/null || true)"
 if [ -n "$PSRP_DBUS_RUN_SESSION" ]; then
     # xinit only treats absolute/relative paths as the client program; a bare
