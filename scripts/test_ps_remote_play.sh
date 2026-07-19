@@ -139,28 +139,62 @@ done
 "${client[@]}"
 EOF
 chmod 700 "$FAKE_XINIT_DIR/xinit"
+cat > "$FAKE_XINIT_DIR/dbus-run-session" <<'EOF'
+#!/bin/bash
+case ":${LD_LIBRARY_PATH:-}:" in
+    *"/extracted-chiaki/squashfs-root/usr/lib"*)
+        echo "dbus-run-session inherited AppImage LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-}" >&2
+        exit 45
+        ;;
+esac
+"$@"
+EOF
+chmod 700 "$FAKE_XINIT_DIR/dbus-run-session"
+cat > "$FAKE_XINIT_DIR/chromium-browser" <<'EOF'
+#!/bin/bash
+case ":${LD_LIBRARY_PATH:-}:" in
+    *"/extracted-chiaki/squashfs-root/usr/lib"*)
+        echo "browser inherited AppImage LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-}" >&2
+        exit 46
+        ;;
+esac
+[ "${1:-}" = "--no-sandbox" ] || { echo "browser missing --no-sandbox" >&2; exit 47; }
+: > "$EXPECTED_BROWSER_MARKER"
+EOF
+chmod 700 "$FAKE_XINIT_DIR/chromium-browser"
 
 EXTRACTED_CHIAKI_DIR="$TMP_ROOT/extracted-chiaki"
 EXTRACTED_APPDIR="$EXTRACTED_CHIAKI_DIR/squashfs-root"
 mkdir -p "$EXTRACTED_APPDIR/usr/lib" \
     "$EXTRACTED_APPDIR/usr/lib/aarch64-linux-gnu/nss" \
     "$EXTRACTED_APPDIR/usr/libexec"
-: > "$EXTRACTED_APPDIR/usr/libexec/QtWebEngineProcess"
+cat > "$EXTRACTED_APPDIR/usr/libexec/QtWebEngineProcess" <<'EOF'
+#!/bin/bash
+case ":${LD_LIBRARY_PATH:-}:" in
+    *":$EXPECTED_APPDIR/usr/lib:"*|*"/extracted-chiaki/squashfs-root/usr/lib:"*) ;;
+    *) echo "QtWebEngineProcess missing AppImage usr/lib: ${LD_LIBRARY_PATH:-}" >&2; exit 48 ;;
+esac
+case ":${LD_LIBRARY_PATH:-}:" in
+    *":$EXPECTED_APPDIR/usr/lib/aarch64-linux-gnu/nss:"*|*"/extracted-chiaki/squashfs-root/usr/lib/aarch64-linux-gnu/nss:"*) ;;
+    *) echo "QtWebEngineProcess missing AppImage NSS dir: ${LD_LIBRARY_PATH:-}" >&2; exit 49 ;;
+esac
+: > "$EXPECTED_QT_MARKER"
+EOF
 chmod 700 "$EXTRACTED_APPDIR/usr/libexec/QtWebEngineProcess"
 cat > "$EXTRACTED_CHIAKI_DIR/chiaki-ng" <<'EOF'
 #!/bin/bash
 case ":${LD_LIBRARY_PATH:-}:" in
-    *":$EXPECTED_APPDIR/usr/lib:"*|*"/extracted-chiaki/squashfs-root/usr/lib:"*) ;;
-    *) echo "missing AppImage usr/lib in LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-}" >&2; exit 42 ;;
-esac
-case ":${LD_LIBRARY_PATH:-}:" in
-    *":$EXPECTED_APPDIR/usr/lib/aarch64-linux-gnu/nss:"*|*"/extracted-chiaki/squashfs-root/usr/lib/aarch64-linux-gnu/nss:"*) ;;
-    *) echo "missing AppImage NSS dir in LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-}" >&2; exit 43 ;;
+    *"/extracted-chiaki/squashfs-root/usr/lib"*)
+        echo "Chiaki parent inherited AppImage LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-}" >&2
+        exit 42
+        ;;
 esac
 case "${QTWEBENGINEPROCESS_PATH:-}" in
-    "$EXPECTED_APPDIR/usr/libexec/QtWebEngineProcess"|*"/extracted-chiaki/squashfs-root/usr/libexec/QtWebEngineProcess") ;;
+    *"/QtWebEngineProcess") ;;
     *) echo "missing QtWebEngineProcess path: ${QTWEBENGINEPROCESS_PATH:-}" >&2; exit 44 ;;
 esac
+"$QTWEBENGINEPROCESS_PATH"
+"$BROWSER" "https://example.invalid/psn"
 : > "$EXPECTED_MARKER"
 EOF
 chmod 700 "$EXTRACTED_CHIAKI_DIR/chiaki-ng"
@@ -168,10 +202,16 @@ env PATH="$FAKE_XINIT_DIR:$PATH" \
     CHIAKI_BIN="$EXTRACTED_CHIAKI_DIR/chiaki-ng" \
     PS_REMOTE_PLAY_DRY_RUN=0 \
     EXPECTED_APPDIR="$EXTRACTED_APPDIR" \
+    EXPECTED_BROWSER_MARKER="$TMP_ROOT/extracted-browser-ok" \
     EXPECTED_MARKER="$TMP_ROOT/extracted-runtime-ok" \
+    EXPECTED_QT_MARKER="$TMP_ROOT/extracted-qt-ok" \
     "$LAUNCHER" configure >/dev/null
 [[ -e "$TMP_ROOT/extracted-runtime-ok" ]] || \
     fail "extracted Chiaki runtime was not launched"
+[[ -e "$TMP_ROOT/extracted-qt-ok" ]] || \
+    fail "QtWebEngineProcess wrapper did not run"
+[[ -e "$TMP_ROOT/extracted-browser-ok" ]] || \
+    fail "clean PSN browser wrapper did not run"
 
 # Applying a new preset must update both the default file and active profile.
 (

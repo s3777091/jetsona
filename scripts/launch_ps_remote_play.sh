@@ -64,6 +64,8 @@ fi
 PSRP_CHIAKI_APPDIR="${APPDIR:-}"
 PSRP_CHIAKI_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH="${QTWEBENGINEPROCESS_PATH:-}"
+PSRP_QTWEBENGINEPROCESS_WRAPPER=""
+PSRP_BROWSER_WRAPPER=""
 
 psrp_prepend_chiaki_library_path()
 {
@@ -120,6 +122,53 @@ psrp_configure_chiaki_runtime()
 }
 
 psrp_configure_chiaki_runtime
+
+psrp_write_runtime_wrappers()
+{
+    if [ -n "$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH" ]; then
+        PSRP_QTWEBENGINEPROCESS_WRAPPER="$RUNTIME_DIR/QtWebEngineProcess"
+        cat > "$PSRP_QTWEBENGINEPROCESS_WRAPPER" <<'EOF'
+#!/bin/bash
+if [ -n "${PSRP_QTWEBENGINE_APPDIR:-}" ]; then
+    export APPDIR="$PSRP_QTWEBENGINE_APPDIR"
+fi
+if [ -n "${PSRP_QTWEBENGINE_LD_LIBRARY_PATH:-}" ]; then
+    export LD_LIBRARY_PATH="$PSRP_QTWEBENGINE_LD_LIBRARY_PATH"
+fi
+exec "$PSRP_REAL_QTWEBENGINEPROCESS" "$@"
+EOF
+        chmod 700 "$PSRP_QTWEBENGINEPROCESS_WRAPPER" 2>/dev/null || true
+    fi
+
+    PSRP_BROWSER_WRAPPER="$RUNTIME_DIR/psrp-browser"
+    cat > "$PSRP_BROWSER_WRAPPER" <<'EOF'
+#!/bin/bash
+unset APPDIR LD_LIBRARY_PATH QTWEBENGINEPROCESS_PATH
+unset PSRP_REAL_QTWEBENGINEPROCESS PSRP_QTWEBENGINE_APPDIR PSRP_QTWEBENGINE_LD_LIBRARY_PATH
+
+if [ -n "${PS_REMOTE_PLAY_BROWSER:-}" ] && [ -x "$PS_REMOTE_PLAY_BROWSER" ]; then
+    exec "$PS_REMOTE_PLAY_BROWSER" "$@"
+fi
+
+for candidate in chromium-browser chromium google-chrome; do
+    resolved="$(command -v "$candidate" 2>/dev/null || true)"
+    [ -n "$resolved" ] || continue
+    exec "$resolved" --no-sandbox --disable-setuid-sandbox "$@"
+done
+
+for candidate in www-browser x-www-browser; do
+    resolved="$(command -v "$candidate" 2>/dev/null || true)"
+    [ -n "$resolved" ] || continue
+    exec "$resolved" "$@"
+done
+
+echo "launch_ps_remote_play: no browser available for Chiaki PSN login URL" >&2
+exit 127
+EOF
+    chmod 700 "$PSRP_BROWSER_WRAPPER" 2>/dev/null || true
+}
+
+psrp_write_runtime_wrappers
 
 psrp_load_state
 if ! psrp_apply_preset "$PSRP_PRESET"; then
@@ -290,10 +339,13 @@ PSRP_CLIENT_CMD=()
 PSRP_ENV_BIN="$(command -v env 2>/dev/null || true)"
 [ -n "$PSRP_ENV_BIN" ] || PSRP_ENV_BIN="/usr/bin/env"
 [ -n "$PSRP_CHIAKI_APPDIR" ] && PSRP_CLIENT_ENV+=("APPDIR=$PSRP_CHIAKI_APPDIR")
-[ -n "$PSRP_CHIAKI_LD_LIBRARY_PATH" ] && PSRP_CLIENT_ENV+=("LD_LIBRARY_PATH=$PSRP_CHIAKI_LD_LIBRARY_PATH")
-if [ -n "$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH" ]; then
-    PSRP_CLIENT_ENV+=("QTWEBENGINEPROCESS_PATH=$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH")
+if [ -n "$PSRP_QTWEBENGINEPROCESS_WRAPPER" ]; then
+    PSRP_CLIENT_ENV+=("QTWEBENGINEPROCESS_PATH=$PSRP_QTWEBENGINEPROCESS_WRAPPER")
+    PSRP_CLIENT_ENV+=("PSRP_REAL_QTWEBENGINEPROCESS=$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH")
+    PSRP_CLIENT_ENV+=("PSRP_QTWEBENGINE_APPDIR=$PSRP_CHIAKI_APPDIR")
+    PSRP_CLIENT_ENV+=("PSRP_QTWEBENGINE_LD_LIBRARY_PATH=$PSRP_CHIAKI_LD_LIBRARY_PATH")
 fi
+[ -n "$PSRP_BROWSER_WRAPPER" ] && PSRP_CLIENT_ENV+=("BROWSER=$PSRP_BROWSER_WRAPPER")
 PSRP_DBUS_RUN_SESSION="$(command -v dbus-run-session 2>/dev/null || true)"
 if [ -n "$PSRP_DBUS_RUN_SESSION" ]; then
     # xinit only treats absolute/relative paths as the client program; a bare
