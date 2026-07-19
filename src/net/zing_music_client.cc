@@ -1014,12 +1014,16 @@ void CacheDiscoverArtwork(ZingMusicClient &client, DiscoverData &data) {
     CacheArtworkTargets(client, targets);
 }
 
-void CacheAlbumArtwork(ZingMusicClient &client, Album &album) {
+void CacheAlbumArtwork(ZingMusicClient &client, Album &album,
+                       bool include_tracks) {
     std::vector<ArtworkTarget> targets;
     std::unordered_map<std::string, size_t> indices;
     AddArtworkTarget(targets, indices, album.artwork_url, &album.artwork_path);
-    for (auto &track : album.tracks)
-        AddArtworkTarget(targets, indices, track.artwork_url, &track.artwork_path);
+    if (include_tracks) {
+        for (auto &track : album.tracks)
+            AddArtworkTarget(targets, indices, track.artwork_url,
+                             &track.artwork_path);
+    }
     CacheArtworkTargets(client, targets);
 }
 
@@ -1253,20 +1257,22 @@ bool ZingMusicClient::FetchAlbum(const std::string &id, Album &out,
         err = "Zing playlist response is missing a title";
         return false;
     }
-    CacheAlbumArtwork(*this, out);
-    size_t missing_artwork = 0;
-    if (!out.artwork_url.empty() && out.artwork_path.empty()) ++missing_artwork;
-    for (const auto &track : out.tracks)
-        if (!track.artwork_url.empty() && track.artwork_path.empty())
-            ++missing_artwork;
-    if (missing_artwork > 0) {
-        ESP_LOGW(TAG, "%zu album covers failed to download", missing_artwork);
-        err = "Thiếu " + std::to_string(missing_artwork) +
-              " ảnh bìa — kéo xuống để tải lại";
+    /* Only the one header cover is on the critical path. A playlist can have
+     * hundreds of distinct track covers; waiting for all of them here made a
+     * card click look frozen and then forced MusicView to decode every image
+     * in one LVGL frame. MusicView starts WarmAlbumArtwork after rendering. */
+    CacheAlbumArtwork(*this, out, false);
+    if (!out.artwork_url.empty() && out.artwork_path.empty()) {
+        ESP_LOGW(TAG, "album header cover failed to download");
+        err = "Thiếu ảnh bìa album — kéo xuống để tải lại";
     } else {
         err.clear();
     }
     return true;
+}
+
+void ZingMusicClient::WarmAlbumArtwork(Album &album) {
+    CacheAlbumArtwork(*this, album, true);
 }
 
 bool ZingMusicClient::FetchStreamingUrl(const std::string &id, std::string &out,

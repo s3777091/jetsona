@@ -251,6 +251,24 @@ std::unique_ptr<LvglImage> LvglImageFromFileFit(const std::string &path, int box
         return nullptr;
     }
 
+    /* Artwork is remote input. Validate dimensions before lodepng/TJPGD is
+     * allowed to allocate the full decoded frame; a tiny corrupt/compressed
+     * file claiming enormous dimensions must not OOM the firmware while an
+     * album is being rendered. Real Zing covers are currently only 240 px. */
+    uint32_t encoded_w = 0;
+    uint32_t encoded_h = 0;
+    constexpr uint32_t kMaxArtworkDimension = 2048;
+    constexpr uint64_t kMaxArtworkPixels = 4ULL * 1024ULL * 1024ULL;
+    if (!parseEncodedDims(static_cast<const uint8_t *>(raw), raw_size,
+                          &encoded_w, &encoded_h) ||
+        encoded_w > kMaxArtworkDimension ||
+        encoded_h > kMaxArtworkDimension ||
+        static_cast<uint64_t>(encoded_w) * encoded_h > kMaxArtworkPixels) {
+        ESP_LOGW(TAG, "unsafe artwork dimensions in %s", path.c_str());
+        std::free(raw);
+        return nullptr;
+    }
+
     unsigned w = 0, h = 0;
     uint8_t *pixels = nullptr;
     int channels = 0;

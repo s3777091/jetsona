@@ -1,6 +1,7 @@
 #include "display/views/music_view.h"
 
 #include "application.h"
+#include "esp_log.h"
 #include "display/common/lvgl_utils.h"
 #include "display/theme/ui_theme.h"
 #include "fonts.h"
@@ -132,6 +133,7 @@ MusicView::~MusicView() {
     }
     pull_inputs_.clear();
     if (player_timer_) { lv_timer_del(player_timer_); player_timer_ = nullptr; }
+    StopArtworkTimer();
     ClearArtwork();
 }
 
@@ -206,14 +208,15 @@ void MusicView::ClearArtwork() {
 }
 
 void MusicView::ClearPage() {
+    StopArtworkTimer();
     ClearArtwork();
     track_rows_.clear();
     loading_label_ = nullptr;
     if (page_) lv_obj_clean(page_);
 }
 
-lv_obj_t *MusicView::CreateArtwork(lv_obj_t *parent, const std::string &path,
-                                   int size, bool circular) {
+lv_obj_t *MusicView::CreateArtworkHost(lv_obj_t *parent, int size,
+                                       bool circular) {
     const auto &p = jetson::UiTheme::Instance().Palette();
     auto *host = lv_obj_create(parent);
     lv_obj_remove_style_all(host);
@@ -233,7 +236,12 @@ lv_obj_t *MusicView::CreateArtwork(lv_obj_t *parent, const std::string &path,
     lv_obj_center(fallback);
     RemoveInteraction(fallback);
 
-    if (path.empty()) return host;
+    return host;
+}
+
+bool MusicView::AttachArtwork(lv_obj_t *host, const std::string &path,
+                              int size) {
+    if (!host || path.empty()) return false;
 
     /* Every cover (fresh .jpg/.png cache entries AND legacy .img files from
      * older firmwares/user albums) is decoded ONCE into raw pixels already
@@ -250,7 +258,7 @@ lv_obj_t *MusicView::CreateArtwork(lv_obj_t *parent, const std::string &path,
         image = cached->second;
     } else {
         auto owner = LvglImageFromFileFit(path, size);
-        if (!owner) return host;  // decode failed: keep the note placeholder
+        if (!owner) return false;  // decode failed: keep the note placeholder
         image = owner.get();
         artwork_by_path_.emplace(cache_key, image);
         artwork_.push_back(std::move(owner));
@@ -264,7 +272,50 @@ lv_obj_t *MusicView::CreateArtwork(lv_obj_t *parent, const std::string &path,
     lv_obj_center(obj);
     RemoveInteraction(obj);
     image_objects_.push_back(obj);
+    return true;
+}
+
+lv_obj_t *MusicView::CreateArtwork(lv_obj_t *parent, const std::string &path,
+                                   int size, bool circular) {
+    auto *host = CreateArtworkHost(parent, size, circular);
+    AttachArtwork(host, path, size);
     return host;
+}
+
+void MusicView::StopArtworkTimer() {
+    if (artwork_timer_) {
+        lv_timer_del(artwork_timer_);
+        artwork_timer_ = nullptr;
+    }
+    pending_artwork_.clear();
+    pending_artwork_index_ = 0;
+}
+
+void MusicView::QueueAlbumArtwork(const jetson::music::Album &source) {
+    StopArtworkTimer();
+    const size_t count = std::min(source.tracks.size(), track_rows_.size());
+    pending_artwork_.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        auto *ctx = track_rows_[i];
+        if (!ctx || !ctx->artwork_host) continue;
+
+        /* Album refreshes preserve track order. Still require the id to match
+         * before merging a late background artwork result, so a stale/mutated
+         * response can never paint a cover onto the wrong song. */
+        if (i >= album_.tracks.size() ||
+            source.tracks[i].id != album_.tracks[i].id)
+            continue;
+        const std::string &path = source.tracks[i].artwork_path;
+        if (path.empty() || path == ctx->rendered_artwork_path) continue;
+        album_.tracks[i].artwork_path = path;
+        pending_artwork_.push_back(PendingArtwork{ctx, path});
+    }
+    if (pending_artwork_.empty()) return;
+
+    /* One 40 px cover per tick prevents a cached 50-100 song playlist from
+     * doing all JPEG/PNG decode and LVGL object creation in one frame. */
+    artwork_timer_ = lv_timer_create(OnArtworkTimer, 16, this);
+    lv_timer_ready(artwork_timer_);
 }
 
 lv_obj_t *MusicView::CreateSkeletonCard(lv_obj_t *rail, bool circular) {
@@ -727,6 +778,12 @@ void MusicView::LoadAlbum(const CatalogItem &item) {
                 error = "Không thể đọc album Zing";
             }
         }
+
+        /* Render metadata + the single header cover immediately. Per-track
+         * covers continue in the prefetch lane and are merged only if this is
+         * still the album on screen. */
+        std::shared_ptr<jetson::music::Album> warmed_album;
+        if (ok) warmed_album = std::make_shared<jetson::music::Album>(*album);
         Application::GetInstance().Schedule(
             [weak, album, ok, error, generation]() {
                 auto self = weak.lock();
@@ -759,12 +816,44 @@ void MusicView::LoadAlbum(const CatalogItem &item) {
                 self->RenderAlbum();
                 if (!error.empty()) self->Notify(error);
             });
+        if (warmed_album) {
+            jetson::TaskPool::Instance().Post(
+                jetson::TaskPool::Lane::Prefetch,
+                [weak, warmed_album, generation]() {
+                try {
+                    jetson::ZingMusicClient client;
+                    client.WarmAlbumArtwork(*warmed_album);
+                } catch (const std::exception &exception) {
+                    ESP_LOGW("MusicView", "album artwork warm-up failed: %s",
+                             exception.what());
+                } catch (...) {
+                    ESP_LOGW("MusicView", "album artwork warm-up failed");
+                }
+                Application::GetInstance().Schedule(
+                    [weak, warmed_album, generation]() {
+                    auto self = weak.lock();
+                    if (!self) return;
+                    LvglLockGuard lock;
+                    if (generation != self->request_generation_.load() ||
+                        !self->album_mode_ ||
+                        self->album_.id != warmed_album->id)
+                        return;
+                    self->QueueAlbumArtwork(*warmed_album);
+                });
+            });
+        }
     });
 }
 
 void MusicView::RenderAlbum() {
     ClearPage();
     album_mode_ = true;
+    /* The album cover is an immediate, already-cached fallback for tracks
+     * whose individual covers are still warming in the background. */
+    for (auto &track : album_.tracks) {
+        if (track.artwork_path.empty())
+            track.artwork_path = album_.artwork_path;
+    }
     const auto &p = jetson::UiTheme::Instance().Palette();
 
     auto *toolbar = lv_obj_create(page_);
@@ -867,7 +956,10 @@ void MusicView::RenderAlbum() {
         lv_label_set_text(index, number);
         RemoveInteraction(index);
 
-        auto *art = CreateArtwork(row, track.artwork_path, 40, false);
+        /* Row covers are attached by a short timer after the layout exists.
+         * Building every row is cheap; decoding every cover in this same call
+         * was the visible freeze at the end of album loading. */
+        auto *art = CreateArtworkHost(row, 40, false);
         lv_obj_set_pos(art, 52, 8);
         if (track.premium) lv_obj_set_style_opa(art, LV_OPA_50, 0);
         auto *song = lv_label_create(row);
@@ -907,7 +999,7 @@ void MusicView::RenderAlbum() {
         lv_label_set_text(duration, duration_text.c_str());
         if (track.premium) lv_obj_set_style_opa(duration, LV_OPA_60, 0);
         RemoveInteraction(duration);
-        auto *ctx = new TrackCtx{this, i, row};
+        auto *ctx = new TrackCtx{this, i, row, art, {}};
         track_rows_.push_back(ctx);
         lv_obj_add_event_cb(row, OnTrackEvent, LV_EVENT_CLICKED, ctx);
         lv_obj_add_event_cb(row, OnTrackDeleted, LV_EVENT_DELETE, ctx);
@@ -951,6 +1043,7 @@ void MusicView::RenderAlbum() {
     }
     lv_obj_scroll_to_y(page_, 0, LV_ANIM_OFF);
     RefreshTrackRows();
+    QueueAlbumArtwork(album_);
 }
 
 void MusicView::ShowDiscovery() {
@@ -1169,8 +1262,20 @@ void MusicView::OnCardEvent(lv_event_t *e) {
         if (ctx->overlay && (!target || !lv_obj_has_state(target, LV_STATE_HOVERED)))
             lv_obj_add_flag(ctx->overlay, LV_OBJ_FLAG_HIDDEN);
     } else if (code == LV_EVENT_CLICKED) {
-        LvglLockGuard lock;
-        ctx->self->OpenItem(ctx->item);
+        /* OpenItem replaces page_ for albums. Doing that inline deletes this
+         * card while LVGL is still dispatching its CLICKED event, leaving the
+         * event walker with a freed current target. Copy the item and navigate
+         * on the main-loop turn after this callback has fully returned. */
+        auto weak = std::weak_ptr<MusicView>(
+            std::static_pointer_cast<MusicView>(ctx->self->shared_from_this()));
+        CatalogItem item = ctx->item;
+        Application::GetInstance().Schedule(
+            [weak, item = std::move(item)]() {
+            auto self = weak.lock();
+            if (!self) return;
+            LvglLockGuard lock;
+            self->OpenItem(item);
+        });
     }
 }
 
@@ -1190,8 +1295,18 @@ void MusicView::OnTrackDeleted(lv_event_t *e) {
 }
 
 void MusicView::OnBack(lv_event_t *e) {
-    LvglLockGuard lock;
-    static_cast<MusicView *>(lv_event_get_user_data(e))->ShowDiscovery();
+    auto *self = static_cast<MusicView *>(lv_event_get_user_data(e));
+    if (!self) return;
+    /* ShowDiscovery cleans the toolbar containing this button, so defer it for
+     * the same event-lifetime reason as album-card navigation above. */
+    auto weak = std::weak_ptr<MusicView>(
+        std::static_pointer_cast<MusicView>(self->shared_from_this()));
+    Application::GetInstance().Schedule([weak]() {
+        auto view = weak.lock();
+        if (!view) return;
+        LvglLockGuard lock;
+        view->ShowDiscovery();
+    });
 }
 
 void MusicView::OnPlayAll(lv_event_t *e) {
@@ -1400,6 +1515,32 @@ void MusicView::OnCreateAlbum(lv_event_t *e) {
     library.AddTrack(id, self->pending_add_track_);
     self->Notify("Đã tạo \"" + stored.name + "\" và thêm bài hát");
     self->CloseAddModal();
+}
+
+void MusicView::OnArtworkTimer(lv_timer_t *t) {
+    auto *self = static_cast<MusicView *>(lv_timer_get_user_data(t));
+    if (!self) return;
+    LvglLockGuard lock;
+    if (self->pending_artwork_index_ >= self->pending_artwork_.size()) {
+        lv_timer_del(t);
+        self->artwork_timer_ = nullptr;
+        self->pending_artwork_.clear();
+        self->pending_artwork_index_ = 0;
+        return;
+    }
+
+    auto &pending = self->pending_artwork_[self->pending_artwork_index_++];
+    auto *ctx = pending.track;
+    if (ctx && ctx->artwork_host &&
+        self->AttachArtwork(ctx->artwork_host, pending.path, 40)) {
+        ctx->rendered_artwork_path = pending.path;
+    }
+    if (self->pending_artwork_index_ >= self->pending_artwork_.size()) {
+        lv_timer_del(t);
+        self->artwork_timer_ = nullptr;
+        self->pending_artwork_.clear();
+        self->pending_artwork_index_ = 0;
+    }
 }
 
 void MusicView::OnPlayerTimer(lv_timer_t *t) {

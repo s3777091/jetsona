@@ -45,6 +45,13 @@ private:
         MusicView *self = nullptr;
         size_t index = 0;
         lv_obj_t *row = nullptr;
+        lv_obj_t *artwork_host = nullptr;
+        std::string rendered_artwork_path;
+    };
+
+    struct PendingArtwork {
+        TrackCtx *track = nullptr;
+        std::string path;
     };
 
     // Per-row context for the "add to album" modal's album picker.
@@ -76,8 +83,12 @@ private:
     void OpenAddToAlbumModal(size_t index);
     void CloseAddModal();
 
+    lv_obj_t *CreateArtworkHost(lv_obj_t *parent, int size, bool circular);
+    bool AttachArtwork(lv_obj_t *host, const std::string &path, int size);
     lv_obj_t *CreateArtwork(lv_obj_t *parent, const std::string &path,
                             int size, bool circular);
+    void QueueAlbumArtwork(const jetson::music::Album &source);
+    void StopArtworkTimer();
     lv_obj_t *CreateSkeletonCard(lv_obj_t *rail, bool circular);
     /* Pull-to-refresh: dragging the page below its top edge (LVGL's elastic
      * overscroll) reveals a down-arrow badge; releasing past the threshold
@@ -97,6 +108,7 @@ private:
     static void OnPlayAll(lv_event_t *e);
     static void OnTrackEvent(lv_event_t *e);
     static void OnTrackDeleted(lv_event_t *e);
+    static void OnArtworkTimer(lv_timer_t *t);
     static void OnPlayerTimer(lv_timer_t *t);
     static void OnAddToAlbum(lv_event_t *e);
     static void OnAddModalDismiss(lv_event_t *e);
@@ -116,6 +128,9 @@ private:
     bool pull_refresh_scheduled_ = false;
     std::vector<lv_indev_t *> pull_inputs_;
     lv_timer_t *player_timer_ = nullptr;
+    lv_timer_t *artwork_timer_ = nullptr;
+    std::vector<PendingArtwork> pending_artwork_;
+    size_t pending_artwork_index_ = 0;
     jetson::music::Track pending_add_track_;
 
     bool loading_ = false;

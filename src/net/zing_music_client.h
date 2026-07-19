@@ -21,6 +21,11 @@ public:
 
     bool FetchDiscover(music::DiscoverData &out, std::string &err);
     bool FetchAlbum(const std::string &id, music::Album &out, std::string &err);
+    /* Download the per-track covers after album metadata is already visible.
+     * This is intentionally separate from FetchAlbum: a large playlist must
+     * not hold the UI on its loading skeleton while dozens of CDN requests
+     * finish. The supplied album is updated with the cached file paths. */
+    void WarmAlbumArtwork(music::Album &album);
     bool FetchStreamingUrl(const std::string &id, std::string &out,
                            std::string &err);
     bool DownloadArtwork(const std::string &url, std::string &out_path,
