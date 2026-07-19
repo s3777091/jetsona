@@ -104,7 +104,7 @@ psrp_configure_chiaki_runtime()
         psrp_prepend_chiaki_library_path "$appdir/usr/lib/aarch64-linux-gnu"
         psrp_prepend_chiaki_library_path "$appdir/usr/lib/aarch64-linux-gnu/nss"
         psrp_prepend_chiaki_library_path "$appdir/usr/lib/nss"
-        if [ -x "$appdir/usr/libexec/QtWebEngineProcess" ] &&
+        if [ -f "$appdir/usr/libexec/QtWebEngineProcess" ] &&
             [ -z "$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH" ]; then
             PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH="$appdir/usr/libexec/QtWebEngineProcess"
         fi
