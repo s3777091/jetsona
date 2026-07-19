@@ -124,6 +124,55 @@ stream_output="$("$LAUNCHER" stream)"
 [[ "$stream_output" == *"<redacted-passcode>"* ]] || fail "passcode was not redacted"
 [[ "$stream_output" != *" 1234"* ]] || fail "passcode leaked in dry-run output"
 
+# An extracted chiaki-ng AppImage can be launched through a wrapper next to
+# squashfs-root. QtWebEngineProcess then needs the AppImage lib paths from the
+# launcher environment or PSN Login crashes before loading Qt/NSS.
+FAKE_XINIT_DIR="$TMP_ROOT/fake-xinit-bin"
+mkdir -p "$FAKE_XINIT_DIR"
+cat > "$FAKE_XINIT_DIR/xinit" <<'EOF'
+#!/bin/bash
+client=()
+while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    client+=("$1")
+    shift
+done
+"${client[@]}"
+EOF
+chmod 700 "$FAKE_XINIT_DIR/xinit"
+
+EXTRACTED_CHIAKI_DIR="$TMP_ROOT/extracted-chiaki"
+EXTRACTED_APPDIR="$EXTRACTED_CHIAKI_DIR/squashfs-root"
+mkdir -p "$EXTRACTED_APPDIR/usr/lib" \
+    "$EXTRACTED_APPDIR/usr/lib/aarch64-linux-gnu/nss" \
+    "$EXTRACTED_APPDIR/usr/libexec"
+: > "$EXTRACTED_APPDIR/usr/libexec/QtWebEngineProcess"
+chmod 700 "$EXTRACTED_APPDIR/usr/libexec/QtWebEngineProcess"
+cat > "$EXTRACTED_CHIAKI_DIR/chiaki-ng" <<'EOF'
+#!/bin/bash
+case ":${LD_LIBRARY_PATH:-}:" in
+    *":$EXPECTED_APPDIR/usr/lib:"*) ;;
+    *) echo "missing AppImage usr/lib in LD_LIBRARY_PATH" >&2; exit 42 ;;
+esac
+case ":${LD_LIBRARY_PATH:-}:" in
+    *":$EXPECTED_APPDIR/usr/lib/aarch64-linux-gnu/nss:"*) ;;
+    *) echo "missing AppImage NSS dir in LD_LIBRARY_PATH" >&2; exit 43 ;;
+esac
+[ "${QTWEBENGINEPROCESS_PATH:-}" = "$EXPECTED_APPDIR/usr/libexec/QtWebEngineProcess" ] || {
+    echo "missing QtWebEngineProcess path" >&2
+    exit 44
+}
+: > "$EXPECTED_MARKER"
+EOF
+chmod 700 "$EXTRACTED_CHIAKI_DIR/chiaki-ng"
+env PATH="$FAKE_XINIT_DIR:$PATH" \
+    CHIAKI_BIN="$EXTRACTED_CHIAKI_DIR/chiaki-ng" \
+    PS_REMOTE_PLAY_DRY_RUN=0 \
+    EXPECTED_APPDIR="$EXTRACTED_APPDIR" \
+    EXPECTED_MARKER="$TMP_ROOT/extracted-runtime-ok" \
+    "$LAUNCHER" configure >/dev/null
+[[ -e "$TMP_ROOT/extracted-runtime-ok" ]] || \
+    fail "extracted Chiaki runtime was not launched"
+
 # Applying a new preset must update both the default file and active profile.
 (
     # shellcheck source=ps_remote_play_ctl.sh
