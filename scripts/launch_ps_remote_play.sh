@@ -64,8 +64,10 @@ fi
 PSRP_CHIAKI_APPDIR="${APPDIR:-}"
 PSRP_CHIAKI_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 PSRP_CHIAKI_LOADER=""
+PSRP_CHIAKI_REAL_BIN=""
 PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH="${QTWEBENGINEPROCESS_PATH:-}"
 PSRP_BROWSER_LD_LIBRARY_PATH=""
+PSRP_CHIAKI_RUNTIME_WRAPPER=""
 PSRP_QTWEBENGINEPROCESS_WRAPPER=""
 PSRP_BROWSER_WRAPPER=""
 
@@ -78,6 +80,20 @@ psrp_prepend_chiaki_library_path()
     esac
     if [ -n "$PSRP_CHIAKI_LD_LIBRARY_PATH" ]; then
         PSRP_CHIAKI_LD_LIBRARY_PATH="$dir:$PSRP_CHIAKI_LD_LIBRARY_PATH"
+    else
+        PSRP_CHIAKI_LD_LIBRARY_PATH="$dir"
+    fi
+}
+
+psrp_append_chiaki_library_path()
+{
+    local dir="$1"
+    [ -d "$dir" ] || return 0
+    case ":$PSRP_CHIAKI_LD_LIBRARY_PATH:" in
+        *":$dir:"*) return 0 ;;
+    esac
+    if [ -n "$PSRP_CHIAKI_LD_LIBRARY_PATH" ]; then
+        PSRP_CHIAKI_LD_LIBRARY_PATH="$PSRP_CHIAKI_LD_LIBRARY_PATH:$dir"
     else
         PSRP_CHIAKI_LD_LIBRARY_PATH="$dir"
     fi
@@ -99,7 +115,7 @@ psrp_prepend_browser_library_path()
 
 psrp_configure_chiaki_runtime()
 {
-    local bin dir probe appdir loader nss_dir
+    local bin dir probe appdir loader main_bin nss_dir system_dir
     bin="${PSRP_CHIAKI[0]}"
     dir="$(cd "$(dirname "$bin")" && pwd -P)" || return 0
     appdir=""
@@ -141,6 +157,13 @@ psrp_configure_chiaki_runtime()
             psrp_prepend_chiaki_library_path "$(dirname "$loader")"
             break
         done
+        if [ -n "$PSRP_CHIAKI_LOADER" ]; then
+            for main_bin in "$appdir/usr/bin/chiaki" "$appdir/usr/bin/chiaki-ng"; do
+                [ -x "$main_bin" ] || continue
+                PSRP_CHIAKI_REAL_BIN="$main_bin"
+                break
+            done
+        fi
     fi
 
     if [ -n "${PS_REMOTE_PLAY_NSS_LIBRARY_PATH:-}" ]; then
@@ -160,12 +183,41 @@ psrp_configure_chiaki_runtime()
         [ ! -f "$nss_dir/libsoftokn3.so" ] || \
             psrp_prepend_browser_library_path "$nss_dir"
     done
+    # Preserve the Tegra/system fallbacks used by local JetPack-compatible
+    # wrappers, while keeping the companion glibc and AppImage libraries first.
+    for system_dir in \
+        /usr/lib/aarch64-linux-gnu \
+        /lib/aarch64-linux-gnu \
+        /usr/lib/aarch64-linux-gnu/tegra; do
+        psrp_append_chiaki_library_path "$system_dir"
+    done
 }
 
 psrp_configure_chiaki_runtime
 
 psrp_write_runtime_wrappers()
 {
+    if [ -n "$PSRP_CHIAKI_LOADER" ] && [ -n "$PSRP_CHIAKI_REAL_BIN" ]; then
+        PSRP_CHIAKI_RUNTIME_WRAPPER="$RUNTIME_DIR/chiaki-ng"
+        cat > "$PSRP_CHIAKI_RUNTIME_WRAPPER" <<'EOF'
+#!/bin/bash
+if [ -n "${PSRP_RUNTIME_CHIAKI_APPDIR:-}" ]; then
+    export APPDIR="$PSRP_RUNTIME_CHIAKI_APPDIR"
+    export QT_PLUGIN_PATH="$PSRP_RUNTIME_CHIAKI_APPDIR/usr/plugins"
+    export QML_IMPORT_PATH="$PSRP_RUNTIME_CHIAKI_APPDIR/usr/qml"
+    export QML2_IMPORT_PATH="$PSRP_RUNTIME_CHIAKI_APPDIR/usr/qml"
+fi
+# The main Qt process initializes Chromium/NSS before it starts a separate
+# QtWebEngineProcess. Bypass compatibility launchers whose fixed --library-path
+# omits the NSS module directory, and give both processes one complete path.
+unset LD_LIBRARY_PATH
+exec "$PSRP_RUNTIME_CHIAKI_LOADER" \
+    --library-path "$PSRP_RUNTIME_CHIAKI_LD_LIBRARY_PATH" \
+    "$PSRP_RUNTIME_CHIAKI_REAL_BIN" "$@"
+EOF
+        chmod 700 "$PSRP_CHIAKI_RUNTIME_WRAPPER" 2>/dev/null || true
+    fi
+
     if [ -n "$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH" ]; then
         PSRP_QTWEBENGINEPROCESS_WRAPPER="$RUNTIME_DIR/QtWebEngineProcess"
         cat > "$PSRP_QTWEBENGINEPROCESS_WRAPPER" <<'EOF'
@@ -173,13 +225,19 @@ psrp_write_runtime_wrappers()
 if [ -n "${PSRP_QTWEBENGINE_APPDIR:-}" ]; then
     export APPDIR="$PSRP_QTWEBENGINE_APPDIR"
 fi
-if [ -n "${PSRP_QTWEBENGINE_LD_LIBRARY_PATH:-}" ]; then
-    export LD_LIBRARY_PATH="$PSRP_QTWEBENGINE_LD_LIBRARY_PATH"
-fi
 if [ -n "${PSRP_QTWEBENGINE_LOADER:-}" ]; then
+    # QtWebEngine re-executes QTWEBENGINEPROCESS_PATH for its child processes.
+    # Do not export the newer sysroot through LD_LIBRARY_PATH here: the shell
+    # wrapper itself uses the host /bin/bash and would then mix the host loader
+    # with the companion libc. The explicit loader path is inherited safely via
+    # PSRP_* and each child comes back through this wrapper.
+    unset LD_LIBRARY_PATH
     exec "$PSRP_QTWEBENGINE_LOADER" \
         --library-path "$PSRP_QTWEBENGINE_LD_LIBRARY_PATH" \
         "$PSRP_REAL_QTWEBENGINEPROCESS" "$@"
+fi
+if [ -n "${PSRP_QTWEBENGINE_LD_LIBRARY_PATH:-}" ]; then
+    export LD_LIBRARY_PATH="$PSRP_QTWEBENGINE_LD_LIBRARY_PATH"
 fi
 exec "$PSRP_REAL_QTWEBENGINEPROCESS" "$@"
 EOF
@@ -193,6 +251,8 @@ browser_ld_library_path="${PSRP_BROWSER_LD_LIBRARY_PATH:-}"
 unset APPDIR LD_LIBRARY_PATH QTWEBENGINEPROCESS_PATH
 unset PSRP_REAL_QTWEBENGINEPROCESS PSRP_QTWEBENGINE_APPDIR PSRP_QTWEBENGINE_LD_LIBRARY_PATH
 unset PSRP_QTWEBENGINE_LOADER PSRP_BROWSER_LD_LIBRARY_PATH
+unset PSRP_RUNTIME_CHIAKI_APPDIR PSRP_RUNTIME_CHIAKI_LOADER
+unset PSRP_RUNTIME_CHIAKI_LD_LIBRARY_PATH PSRP_RUNTIME_CHIAKI_REAL_BIN
 if [ -n "$browser_ld_library_path" ]; then
     export LD_LIBRARY_PATH="$browser_ld_library_path"
 fi
@@ -220,6 +280,10 @@ EOF
 }
 
 psrp_write_runtime_wrappers
+PSRP_GUI_CHIAKI=("${PSRP_CHIAKI[@]}")
+if [ -n "$PSRP_CHIAKI_RUNTIME_WRAPPER" ]; then
+    PSRP_GUI_CHIAKI=("$PSRP_CHIAKI_RUNTIME_WRAPPER")
+fi
 
 psrp_load_state
 if ! psrp_apply_preset "$PSRP_PRESET"; then
@@ -294,7 +358,7 @@ if [ "$MODE" = "stream" ] && ! psrp_is_true "${PS_REMOTE_PLAY_DRY_RUN:-0}"; then
 fi
 
 if psrp_is_true "${PS_REMOTE_PLAY_DRY_RUN:-0}"; then
-    dry_command="${PSRP_CHIAKI[0]}"
+    dry_command="${PSRP_GUI_CHIAKI[0]}"
     printf 'launch_ps_remote_play: dry-run: %s' "$dry_command"
     for arg in "${CLIENT_ARGS[@]}"; do
         if [ -n "$PSRP_PASSCODE" ] && [ "$arg" = "$PSRP_PASSCODE" ]; then
@@ -390,6 +454,12 @@ PSRP_CLIENT_CMD=()
 PSRP_ENV_BIN="$(command -v env 2>/dev/null || true)"
 [ -n "$PSRP_ENV_BIN" ] || PSRP_ENV_BIN="/usr/bin/env"
 [ -n "$PSRP_CHIAKI_APPDIR" ] && PSRP_CLIENT_ENV+=("APPDIR=$PSRP_CHIAKI_APPDIR")
+if [ -n "$PSRP_CHIAKI_RUNTIME_WRAPPER" ]; then
+    PSRP_CLIENT_ENV+=("PSRP_RUNTIME_CHIAKI_APPDIR=$PSRP_CHIAKI_APPDIR")
+    PSRP_CLIENT_ENV+=("PSRP_RUNTIME_CHIAKI_LOADER=$PSRP_CHIAKI_LOADER")
+    PSRP_CLIENT_ENV+=("PSRP_RUNTIME_CHIAKI_LD_LIBRARY_PATH=$PSRP_CHIAKI_LD_LIBRARY_PATH")
+    PSRP_CLIENT_ENV+=("PSRP_RUNTIME_CHIAKI_REAL_BIN=$PSRP_CHIAKI_REAL_BIN")
+fi
 if [ -n "$PSRP_QTWEBENGINEPROCESS_WRAPPER" ]; then
     PSRP_CLIENT_ENV+=("QTWEBENGINEPROCESS_PATH=$PSRP_QTWEBENGINEPROCESS_WRAPPER")
     PSRP_CLIENT_ENV+=("PSRP_REAL_QTWEBENGINEPROCESS=$PSRP_CHIAKI_QTWEBENGINEPROCESS_PATH")
@@ -414,7 +484,7 @@ fi
 X_ARGS=("$DISPLAY_NO" "$VT" -nolisten tcp -nocursor -s 0 -dpms)
 if command -v xinit >/dev/null 2>&1; then
     xinit "${PSRP_CLIENT_CMD[@]}" "${PSRP_CLIENT_ENV[@]}" \
-        "${PSRP_CHIAKI[@]}" \
+        "${PSRP_GUI_CHIAKI[@]}" \
         "${CLIENT_ARGS[@]}" -- "${X_ARGS[@]}"
     client_rc=$?
     exit "$client_rc"
@@ -437,7 +507,7 @@ if ! kill -0 "$X_PID" 2>/dev/null; then
 fi
 
 "${PSRP_CLIENT_CMD[@]}" "${PSRP_CLIENT_ENV[@]}" \
-    "${PSRP_CHIAKI[@]}" "${CLIENT_ARGS[@]}"
+    "${PSRP_GUI_CHIAKI[@]}" "${CLIENT_ARGS[@]}"
 client_rc=$?
 kill "$X_PID" 2>/dev/null || true
 wait "$X_PID" 2>/dev/null || true

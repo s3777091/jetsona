@@ -173,11 +173,17 @@ EXTRACTED_SYSROOT_LIB="$EXTRACTED_CHIAKI_DIR/sysroot/root/usr/lib/aarch64-linux-
 FAKE_SYSTEM_NSS_DIR="$TMP_ROOT/system-nss"
 mkdir -p "$EXTRACTED_APPDIR/usr/lib" \
     "$EXTRACTED_APPDIR/usr/lib/aarch64-linux-gnu/nss" \
-    "$EXTRACTED_APPDIR/usr/libexec" "$EXTRACTED_SYSROOT_LIB" \
+    "$EXTRACTED_APPDIR/usr/libexec" "$EXTRACTED_APPDIR/usr/bin" \
+    "$EXTRACTED_APPDIR/usr/plugins" "$EXTRACTED_APPDIR/usr/qml" \
+    "$EXTRACTED_SYSROOT_LIB" \
     "$FAKE_SYSTEM_NSS_DIR"
 : > "$FAKE_SYSTEM_NSS_DIR/libsoftokn3.so"
 cat > "$EXTRACTED_SYSROOT_LIB/ld-linux-aarch64.so.1" <<'EOF'
 #!/bin/bash
+[ -z "${LD_LIBRARY_PATH:-}" ] || {
+    echo "custom loader inherited unsafe LD_LIBRARY_PATH: $LD_LIBRARY_PATH" >&2
+    exit 54
+}
 [ "${1:-}" = "--library-path" ] || { echo "custom loader missing --library-path" >&2; exit 51; }
 loader_library_path="${2:-}"
 shift 2
@@ -189,31 +195,41 @@ case ":$loader_library_path:" in
     *"/sysroot/root/usr/lib/aarch64-linux-gnu:"*) ;;
     *) echo "custom loader missing sysroot libraries: $loader_library_path" >&2; exit 53 ;;
 esac
+case ":$loader_library_path:" in
+    *":$EXPECTED_SYSTEM_NSS_DIR:"*) ;;
+    *) echo "custom loader missing system NSS modules: $loader_library_path" >&2; exit 56 ;;
+esac
 : > "$EXPECTED_LOADER_MARKER"
 exec "$@"
 EOF
 chmod 700 "$EXTRACTED_SYSROOT_LIB/ld-linux-aarch64.so.1"
 cat > "$EXTRACTED_APPDIR/usr/libexec/QtWebEngineProcess" <<'EOF'
 #!/bin/bash
-case ":${LD_LIBRARY_PATH:-}:" in
-    *":$EXPECTED_APPDIR/usr/lib:"*|*"/extracted-chiaki/squashfs-root/usr/lib:"*) ;;
-    *) echo "QtWebEngineProcess missing AppImage usr/lib: ${LD_LIBRARY_PATH:-}" >&2; exit 48 ;;
-esac
-case ":${LD_LIBRARY_PATH:-}:" in
-    *":$EXPECTED_APPDIR/usr/lib/aarch64-linux-gnu/nss:"*|*"/extracted-chiaki/squashfs-root/usr/lib/aarch64-linux-gnu/nss:"*) ;;
-    *) echo "QtWebEngineProcess missing AppImage NSS dir: ${LD_LIBRARY_PATH:-}" >&2; exit 49 ;;
-esac
+[ -z "${LD_LIBRARY_PATH:-}" ] || {
+    echo "QtWebEngineProcess child inherited unsafe LD_LIBRARY_PATH: $LD_LIBRARY_PATH" >&2
+    exit 48
+}
+if [ -z "${FAKE_QTWEBENGINE_CHILD:-}" ]; then
+    # Chromium re-executes the configured helper for renderer/utility children.
+    # The second invocation must survive the host shell before using the custom
+    # loader again.
+    FAKE_QTWEBENGINE_CHILD=1 "$QTWEBENGINEPROCESS_PATH"
+    exit $?
+fi
 : > "$EXPECTED_QT_MARKER"
 EOF
 chmod 700 "$EXTRACTED_APPDIR/usr/libexec/QtWebEngineProcess"
-cat > "$EXTRACTED_CHIAKI_DIR/chiaki-ng" <<'EOF'
+cat > "$EXTRACTED_APPDIR/usr/bin/chiaki" <<'EOF'
 #!/bin/bash
-case ":${LD_LIBRARY_PATH:-}:" in
-    *"/extracted-chiaki/squashfs-root/usr/lib"*)
-        echo "Chiaki parent inherited AppImage LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-}" >&2
-        exit 42
-        ;;
-esac
+[ -z "${LD_LIBRARY_PATH:-}" ] || {
+    echo "Chiaki parent inherited unsafe LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-}" >&2
+    exit 42
+}
+[ "${APPDIR:-}" = "$EXPECTED_APPDIR" ] || { echo "Chiaki parent missing APPDIR" >&2; exit 57; }
+[ "${QT_PLUGIN_PATH:-}" = "$EXPECTED_APPDIR/usr/plugins" ] || {
+    echo "Chiaki parent missing AppImage Qt plugins" >&2
+    exit 58
+}
 case "${QTWEBENGINEPROCESS_PATH:-}" in
     *"/QtWebEngineProcess") ;;
     *) echo "missing QtWebEngineProcess path: ${QTWEBENGINEPROCESS_PATH:-}" >&2; exit 44 ;;
@@ -221,6 +237,12 @@ esac
 "$QTWEBENGINEPROCESS_PATH"
 "$BROWSER" "https://example.invalid/psn"
 : > "$EXPECTED_MARKER"
+EOF
+chmod 700 "$EXTRACTED_APPDIR/usr/bin/chiaki"
+cat > "$EXTRACTED_CHIAKI_DIR/chiaki-ng" <<'EOF'
+#!/bin/bash
+echo "outer compatibility wrapper was used for GUI launch" >&2
+exit 55
 EOF
 chmod 700 "$EXTRACTED_CHIAKI_DIR/chiaki-ng"
 env PATH="$FAKE_XINIT_DIR:$PATH" \
