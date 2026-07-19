@@ -38,8 +38,11 @@ export QT_QPA_PLATFORM=xcb
 export QT_QUICK_CONTROLS_MATERIAL_VARIANT="${QT_QUICK_CONTROLS_MATERIAL_VARIANT:-Dense}"
 if [ "$(id -u)" -eq 0 ]; then
     export QTWEBENGINE_DISABLE_SANDBOX="${QTWEBENGINE_DISABLE_SANDBOX:-1}"
+    PSRP_QTWEBENGINE_ROOT_FLAGS="--no-sandbox --disable-setuid-sandbox"
+else
+    PSRP_QTWEBENGINE_ROOT_FLAGS=""
 fi
-export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:---disable-gpu --disable-gpu-compositing --disable-dev-shm-usage}"
+export QTWEBENGINE_CHROMIUM_FLAGS="${PSRP_QTWEBENGINE_ROOT_FLAGS} ${QTWEBENGINE_CHROMIUM_FLAGS:---disable-gpu --disable-gpu-compositing --disable-dev-shm-usage}"
 
 psrp_ensure_dirs || {
     echo "launch_ps_remote_play: cannot prepare $PSRP_HOME" >&2
