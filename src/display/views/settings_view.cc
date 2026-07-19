@@ -106,10 +106,14 @@ std::string RunCapture(const std::string &cmd) {
 
 // Sidebar glyphs (FONT_AWESOME / LV_SYMBOL).
 struct SleepOpt { int seconds; const char *label; };
+/* Sleep delays offered once auto-lock is on. 0 is not in the list: turning the
+ * feature off is the switch on the Nguồn & Khóa page, which writes 0. */
 const SleepOpt kSleepOpts[] = {
-    {30, "30 giây"}, {60, "1 phút"}, {120, "2 phút"}, {180, "3 phút"},
-    {240, "4 phút"}, {300, "5 phút"}, {0, "Không"},
+    {10, "10 giây"}, {30, "30 giây"}, {50, "50 giây"},
+    {120, "2 phút"}, {200, "3 phút 20 giây"}, {300, "5 phút"},
 };
+// Restored when auto-lock is switched back on without a remembered delay.
+constexpr int kDefaultSleepSeconds = 30;
 constexpr int kFontSizes[] = {22, 24, 26, 28, 30, 32, 34};
 constexpr int kDefaultFontSize = 26;
 
@@ -894,6 +898,23 @@ lv_obj_t *SettingsView::MakeButton(lv_obj_t *parent, const char *text, uint32_t 
     return b;
 }
 
+lv_obj_t *SettingsView::MakeIconButton(lv_obj_t *parent, const char *icon, uint32_t bg,
+                                       lv_event_cb_t cb) {
+    auto *b = lv_button_create(parent);
+    lv_obj_set_size(b, 52, 40);
+    lv_obj_set_style_bg_color(b, Color(bg), 0);
+    lv_obj_set_style_radius(b, 10, 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, this);
+    /* PNG through the shared app-icon cache, recolored white: arial.ttf has no
+     * symbol block, so a text glyph here would spam the log every frame. */
+    auto *img = jetson::ui::CreateAppIcon(b, icon, 22);
+    lv_obj_set_style_image_recolor(img, lv_color_white(), 0);
+    lv_obj_set_style_image_recolor_opa(img, LV_OPA_COVER, 0);
+    lv_obj_center(img);
+    return b;
+}
+
 lv_obj_t *SettingsView::DisplayCard() {
     const auto &p = jetson::UiTheme::Instance().Palette();
     auto *card = lv_obj_create(detail_);
@@ -1203,10 +1224,13 @@ void SettingsView::BuildAutoLockPage() {
     DisplayPageHeader("Tự động khóa", true);
     const int current = Settings("display", false).GetInt("sleep_timeout", 0);
     auto *card = DisplayCard();
-    for (size_t i = 0; i < sizeof(kSleepOpts) / sizeof(kSleepOpts[0]); ++i) {
-        const auto &option = kSleepOpts[i];
-        // Seven choices fit inside the shorter content area below the system
-        // bar, including the final "Không" option, without clipping its text.
+    /* The delays plus a trailing "Không": kSleepOpts itself has no off entry
+     * because the Nguồn & Khóa page turns auto-lock off with a switch, but this
+     * page is a plain picker and still needs a way out. */
+    constexpr size_t kOptCount = sizeof(kSleepOpts) / sizeof(kSleepOpts[0]);
+    static const SleepOpt kOff = {0, "Không"};
+    for (size_t i = 0; i <= kOptCount; ++i) {
+        const auto &option = i < kOptCount ? kSleepOpts[i] : kOff;
         auto *row = DisplayRow(card, option.label, nullptr, 42);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         auto *ctx = new OptCtx{this, std::to_string(option.seconds)};
@@ -1218,7 +1242,7 @@ void SettingsView::BuildAutoLockPage() {
             lv_obj_set_style_text_color(check, Color(p.accent), 0);
             lv_label_set_text(check, LV_SYMBOL_OK);
         }
-        if (i + 1 < sizeof(kSleepOpts) / sizeof(kSleepOpts[0])) DisplayDivider(card);
+        if (i < kOptCount) DisplayDivider(card);
     }
 }
 
@@ -1903,22 +1927,37 @@ void SettingsView::DownloadAndApplyFont(const FontCtx &font) {
 void SettingsView::BuildGeneralPower() {
     GeneralPageHeader("Nguồn & Khóa");
     const int sleep = Settings("display", false).GetInt("sleep_timeout", 0);
+    const bool auto_lock = sleep > 0;
+
     auto *lock = DisplayCard();
-    MakeDisplayNavigationRow(lock, "Tự động khóa", SleepLabel(sleep), OnOpenGeneralLockTimeout);
+    auto *auto_row = DisplayRow(lock, "Tự động khóa", nullptr, 52);
+    MakeSwitch(auto_row, auto_lock, OnAutoLockToggle);
+    /* The delay only means something while auto-lock is on, so the row appears
+     * with the switch instead of sitting there greyed out. */
+    if (auto_lock) {
+        DisplayDivider(lock);
+        MakeDisplayNavigationRow(lock, "Thời gian chờ", SleepLabel(sleep),
+                                 OnOpenGeneralLockTimeout);
+    }
     DisplayDivider(lock);
     auto *now = DisplayRow(lock, "Khóa màn hình ngay", nullptr, 52);
-    MakeButton(now, "Khóa", 0x2b6fd6, OnLockNow);
+    MakeIconButton(now, "lock", 0x2b6fd6, OnLockNow);
     DisplayDivider(lock);
-    const bool has_pin = !Settings("system", false).GetString("pin", "").empty();
-    auto *pin = DisplayRow(lock, "Mã PIN khóa", has_pin ? "Đã đặt" : "Chưa đặt", 58);
-    MakeButton(pin, has_pin ? "Thay đổi" : "Đặt PIN", 0x55565a, OnSetPin);
+    const std::string pin = Settings("system", false).GetString("pin", "");
+    char pin_sub[32];
+    if (pin.empty()) std::snprintf(pin_sub, sizeof(pin_sub), "Chưa đặt");
+    else std::snprintf(pin_sub, sizeof(pin_sub), "Đã đặt · %d số", (int)pin.size());
+    auto *pin_row = DisplayRow(lock, "Mã PIN khóa", pin_sub, 58);
+    MakeIconButton(pin_row, "password", 0x55565a, OnSetPin);
+    if (auto_lock && pin.empty())
+        DisplayCaption("Đặt mã PIN để màn hình khóa yêu cầu mở khóa.");
 
     auto *power = DisplayCard();
     auto *reboot = DisplayRow(power, "Khởi động lại thiết bị", nullptr, 52);
-    MakeButton(reboot, "Khởi động lại", 0xb03a3a, OnReboot);
+    MakeIconButton(reboot, "reload", 0xb03a3a, OnReboot);
     DisplayDivider(power);
     auto *shutdown = DisplayRow(power, "Tắt thiết bị", nullptr, 52);
-    MakeButton(shutdown, "Tắt máy", 0xb03a3a, OnShutdown);
+    MakeIconButton(shutdown, "start", 0xb03a3a, OnShutdown);
 }
 
 void SettingsView::BuildGeneralLockTimeout() {
@@ -3282,6 +3321,7 @@ void SettingsView::CloseModal() {
     popup_confirm_btn_ = nullptr;
     popup_input_ = nullptr; // freed via its LV_EVENT_DELETE -> delete self
     pin_a_ = nullptr; pin_b_ = nullptr;
+    pin_len_4_ = nullptr; pin_len_6_ = nullptr;
     modal_yes_ = nullptr;
 }
 
@@ -3346,9 +3386,9 @@ void SettingsView::OpenPinModal() {
 
     popup_card_ = lv_obj_create(popup_);
     lv_obj_remove_style_all(popup_card_);
-    // Two labeled fields plus actions need their real content height.  The old
-    // 230 px card forced the flex children past its lower edge.
-    lv_obj_set_size(popup_card_, 330, 330);
+    // Length picker + two labeled fields + actions need their real content
+    // height. The old 230 px card forced the flex children past its lower edge.
+    lv_obj_set_size(popup_card_, 330, 392);
     lv_obj_set_style_bg_color(popup_card_, Color(p.row), 0);
     lv_obj_set_style_bg_opa(popup_card_, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(popup_card_, 16, 0);
@@ -3358,10 +3398,27 @@ void SettingsView::OpenPinModal() {
     lv_obj_align(popup_card_, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(popup_card_, LV_OBJ_FLAG_CLICKABLE);
 
+    // Reuse the existing PIN's length so "Thay đổi" defaults to what is set.
+    pin_len_ = cur.size() == 6 ? 6 : 4;
+
     auto *t = lv_label_create(popup_card_);
     lv_obj_set_style_text_font(t, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(t, Color(p.text), 0);
-    lv_label_set_text(t, cur.empty() ? "Đặt PIN (4 số)" : "Đổi PIN (4 số)");
+    lv_label_set_text(t, cur.empty() ? "Đặt PIN" : "Đổi PIN");
+
+    /* Length picker. Switching it clears both fields, because a half-typed
+     * 6-digit PIN is not a valid 4-digit one. */
+    auto *len_row = lv_obj_create(popup_card_);
+    lv_obj_remove_style_all(len_row);
+    lv_obj_set_width(len_row, lv_pct(100));
+    lv_obj_set_height(len_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(len_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(len_row, 8, 0);
+    lv_obj_clear_flag(len_row, LV_OBJ_FLAG_SCROLLABLE);
+    pin_len_4_ = MakeButton(len_row, "4 số", pin_len_ == 4 ? 0x2b6fd6 : 0x3a3a3a,
+                            OnPinLengthSelected);
+    pin_len_6_ = MakeButton(len_row, "6 số", pin_len_ == 6 ? 0x2b6fd6 : 0x3a3a3a,
+                            OnPinLengthSelected);
 
     auto *lbl1 = lv_label_create(popup_card_);
     lv_obj_set_style_text_font(lbl1, &BUILTIN_TEXT_FONT, 0);
@@ -3370,9 +3427,9 @@ void SettingsView::OpenPinModal() {
     pin_a_ = new TelexInput(popup_card_, 302, 44);
     pin_a_->SetTelex(false);
     pin_a_->SetPassword(true);
-    pin_a_->SetMaxLen(4);
+    pin_a_->SetMaxLen(pin_len_);
     pin_a_->SetAcceptedChars("0123456789");
-    pin_a_->SetPlaceholder("4 chữ số");
+    pin_a_->SetPlaceholder(pin_len_ == 6 ? "6 chữ số" : "4 chữ số");
     lv_obj_add_event_cb(pin_a_->obj(), [](lv_event_t *event) {
         auto *self = static_cast<SettingsView *>(lv_event_get_user_data(event));
         if (self->pin_b_) self->pin_b_->Focus();
@@ -3386,9 +3443,9 @@ void SettingsView::OpenPinModal() {
     pin_b_ = new TelexInput(popup_card_, 302, 44);
     pin_b_->SetTelex(false);
     pin_b_->SetPassword(true);
-    pin_b_->SetMaxLen(4);
+    pin_b_->SetMaxLen(pin_len_);
     pin_b_->SetAcceptedChars("0123456789");
-    pin_b_->SetPlaceholder("Nhập lại 4 chữ số");
+    pin_b_->SetPlaceholder(pin_len_ == 6 ? "Nhập lại 6 chữ số" : "Nhập lại 4 chữ số");
     lv_obj_add_event_cb(pin_b_->obj(), OnPinSave, LV_EVENT_READY, this);
 
     auto *btns = lv_obj_create(popup_card_);
@@ -4212,7 +4269,11 @@ void SettingsView::OnSleepSelected(lv_event_t *e) {
     if (!ctx) return;
     int secs = 0;
     try { secs = std::stoi(ctx->value); } catch (...) { secs = 0; }
-    Settings("display", true).SetInt("sleep_timeout", secs);
+    Settings display("display", true);
+    display.SetInt("sleep_timeout", secs);
+    // Remembered so the Nguồn & Khóa switch can restore this delay when it is
+    // turned back on.
+    if (secs > 0) display.SetInt("sleep_timeout_last", secs);
     ctx->self->SetStatus(secs == 0 ? "Tự tắt: Không"
                                    : ("Tự tắt sau " + std::to_string(secs) + "s").c_str());
     if (ctx->self->current_ == Cat::Display &&
@@ -4246,10 +4307,57 @@ void SettingsView::OnRefreshFontCatalog(lv_event_t *e) {
     self->ShowCategory(Cat::General);
 }
 
+void SettingsView::OnAutoLockToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    Settings display("display", true);
+    if (on) {
+        /* Restore the delay the user last picked; sleep_timeout itself is 0
+         * while auto-lock is off, so the choice is remembered separately. */
+        int secs = display.GetInt("sleep_timeout_last", kDefaultSleepSeconds);
+        if (secs <= 0) secs = kDefaultSleepSeconds;
+        display.SetInt("sleep_timeout", secs);
+        self->SetStatus(("Tự động khóa sau " + std::string(SleepLabel(secs))).c_str());
+    } else {
+        const int secs = display.GetInt("sleep_timeout", 0);
+        if (secs > 0) display.SetInt("sleep_timeout_last", secs);
+        display.SetInt("sleep_timeout", 0);
+        self->SetStatus("Tự động khóa: Tắt");
+    }
+    // Rebuild so the delay row appears/disappears with the switch.
+    if (self->current_ == Cat::General && self->general_page_ == GeneralPage::Power)
+        self->ShowCategory(Cat::General);
+}
+
 void SettingsView::OnLockNow(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     if (self->lock_cb_) self->lock_cb_();
+}
+
+void SettingsView::OnPinLengthSelected(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const int len = (lv_obj_t *)lv_event_get_target(e) == self->pin_len_6_ ? 6 : 4;
+    if (len == self->pin_len_) return;
+    self->pin_len_ = len;
+    if (self->pin_len_4_)
+        lv_obj_set_style_bg_color(self->pin_len_4_, Color(len == 4 ? 0x2b6fd6 : 0x3a3a3a), 0);
+    if (self->pin_len_6_)
+        lv_obj_set_style_bg_color(self->pin_len_6_, Color(len == 6 ? 0x2b6fd6 : 0x3a3a3a), 0);
+    // A half-typed PIN of the other length is never valid -- start over.
+    for (TelexInput *field : {self->pin_a_, self->pin_b_}) {
+        if (!field) continue;
+        field->SetMaxLen(len);
+        field->Clear();
+    }
+    if (self->pin_a_) {
+        self->pin_a_->SetPlaceholder(len == 6 ? "6 chữ số" : "4 chữ số");
+        self->pin_a_->Focus();
+    }
+    if (self->pin_b_)
+        self->pin_b_->SetPlaceholder(len == 6 ? "Nhập lại 6 chữ số" : "Nhập lại 4 chữ số");
 }
 
 void SettingsView::OnSetPin(lv_event_t *e) {
@@ -4349,8 +4457,11 @@ void SettingsView::OnPinSave(lv_event_t *e) {
     if (!self->pin_a_ || !self->pin_b_) return;
     std::string a = self->pin_a_->Text();
     std::string b = self->pin_b_->Text();
-    if (a.size() != 4 || a != b) {
-        self->SetStatus("PIN không hợp lệ hoặc không khớp (cần 4 ký tự)");
+    if ((int)a.size() != self->pin_len_ || a != b) {
+        char msg[64];
+        std::snprintf(msg, sizeof(msg),
+                      "PIN không hợp lệ hoặc không khớp (cần %d chữ số)", self->pin_len_);
+        self->SetStatus(msg);
         return;
     }
     Settings("system", true).SetString("pin", a);

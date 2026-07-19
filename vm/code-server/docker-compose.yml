@@ -3,8 +3,8 @@
 # running (see Ds02HomeDisplay::OpenStudio + JETSON_STUDIO_URL in config.yaml).
 #
 # Deployed by deploy.py, which writes the VM-local .env (STUDIO_PASSWORD) and
-# pre-creates ./project + ./config owned by uid 1000 (the container's `coder`
-# user) so the workspace is writable.
+# pre-creates ./project + ./config + ./data owned by uid 1000 (the container's
+# `coder` user) so the workspace, settings, and extensions persist.
 #
 # No `command:` override: the image's ENTRYPOINT already binds 0.0.0.0:8080
 # and opens the coder home; adding command args would append a second
@@ -14,6 +14,9 @@ services:
     image: codercom/code-server:latest
     container_name: jetsona-code-server
     restart: unless-stopped
+    # The image entrypoint opens ".". Resolve it to the persistent project
+    # mount so tapping Studio lands in VM-backed source files immediately.
+    working_dir: /home/coder/project
     ports:
       # Tailnet-only by default. deploy.py resolves STUDIO_BIND_IP from
       # `tailscale ip -4`; public 0.0.0.0 binding requires an explicit opt-in.
@@ -23,3 +26,4 @@ services:
     volumes:
       - ./project:/home/coder/project
       - ./config:/home/coder/.config
+      - ./data:/home/coder/.local/share/code-server

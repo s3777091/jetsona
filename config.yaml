@@ -6,7 +6,7 @@ EXA_SEARCH_TYPE: "auto"
 
 RUNPOD_BASE_URL: "https://rest.runpod.io/v1"
 RUNPOD_GRAPHQL_URL: "https://api.runpod.io/graphql"
-JETSON_STUDIO_URL: ""
+JETSON_STUDIO_URL: "http://100.114.144.106:8443"
 
 # Native music browser. The checked-in version/key compatibility defaults are
 # not an availability guarantee: Zing can rotate signatures at any time. Put
@@ -26,9 +26,11 @@ ASSETS_FETCH_CLOUD_FONTS: "1"
 JETSON_FONT_CATALOG_OBJECT: "fonts/cloud/catalog.tsv"
 JETSON_S3_ASSET_HELPER: ""
 
-JETSON_WEATHER_LAT: "10.7769"
-JETSON_WEATHER_LON: "106.7009"
-JETSON_WEATHER_NAME: "TP.HCM"
+# Weather on the lock screen. Empty = detect the device's real location from
+# its public IP on every boot. Set all three to pin a fixed city instead.
+JETSON_WEATHER_LAT: ""
+JETSON_WEATHER_LON: ""
+JETSON_WEATHER_NAME: ""
 
 # Network and local paths.
 JETSON_VPN_EXIT_NODE: "jetsona-vpn"

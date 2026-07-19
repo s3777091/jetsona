@@ -67,6 +67,11 @@ public:
     void Hide();
     void Show();
 
+    /* Lock screen mode: the bar stays visible (clock, island and status icons
+     * are part of the locked design) but every popover is closed and disarmed,
+     * so its Wi-Fi/Bluetooth/power menus cannot be used to work around the PIN. */
+    void SetLocked(bool locked);
+
     /* Bloom a notification from the island; auto-collapses after ms. */
     void ShowNotification(const char *text, int duration_ms = 3000);
     void ShowWelcome(int duration_ms = 3800);
@@ -74,6 +79,14 @@ public:
 private:
     lv_obj_t *status_strip_ = nullptr;
     lv_obj_t *pill_ = nullptr;
+    // Companion droplet: while music plays *and* a Bluetooth device is
+    // connected the island splits in two -- the media pill plus this small
+    // circle carrying the device icon. Any notification/quick menu merges the
+    // droplet back into the main island first, then splits it out again.
+    lv_obj_t *companion_ = nullptr;
+    lv_obj_t *companion_icon_ = nullptr;
+    bool companion_visible_ = false;
+    int companion_offset_x_ = 0;
     // Resting island content: Bluetooth device mini icon (controller-mini /
     // headphones / unknow-device) + connection status ring. Hidden while a
     // notification blooms the pill.
@@ -118,7 +131,6 @@ private:
     lv_obj_t *bt_icon_ = nullptr;
     lv_obj_t *sound_icon_ = nullptr;
     lv_obj_t *brightness_icon_ = nullptr;
-    lv_obj_t *charge_icon_ = nullptr;
     lv_obj_t *battery_icon_root_ = nullptr;
     lv_obj_t *battery_icon_body_ = nullptr;
     lv_obj_t *battery_icon_fill_ = nullptr;
@@ -129,7 +141,7 @@ private:
     lv_obj_t *datetime_label_ = nullptr;
 
     // Compact quick settings. Exactly one of these popovers is visible at a
-    // time; cache owns the first status icon and its own disk/RAM popover.
+    // time; cache owns the last status icon and its own disk/RAM popover.
     std::unique_ptr<OptimizeWidget> optimize_widget_;
     lv_obj_t *wifi_menu_ = nullptr;
     lv_obj_t *bt_menu_ = nullptr;
@@ -189,6 +201,7 @@ private:
     bool battery_read_done_ = false;
     bool low_warned_ = false;
     bool visible_ = true;
+    bool locked_ = false;
     bool island_expanded_ = false;
     bool notification_visible_ = false;
     bool media_available_ = false;
@@ -258,6 +271,14 @@ private:
     void ShowIslandMessage(const char *title, const char *text,
                            const char *icon, uint32_t accent,
                            int duration_ms);
+    // Connected Bluetooth device kind with airplane mode applied (0 = none).
+    int EffectiveBtDevice() const;
+    // Resting island size: camera-dot circle with nothing active, the wide
+    // pill (device icon + status ring) while a Bluetooth device is connected.
+    int RestingW() const;
+    int RestingH() const;
+    void SyncCompanion(bool animated);
+    void PositionCompanion(int pill_w, bool animated);
     void AnimateIslandSize(int width, int height, bool collapsing);
     void CollapseIsland(bool animated = true);
     // Show island_rest_ only while the pill is a plain resting island (no
@@ -306,6 +327,8 @@ private:
     static void OnDropOpa(void *var, int32_t v);
     static void OnDropY(void *var, int32_t v);
     static void OnDropHidden(lv_anim_t *a);
+    static void OnCompanionX(void *var, int32_t v);
+    static void OnCompanionClick(lv_event_t *e);
 };
 
 } // namespace home

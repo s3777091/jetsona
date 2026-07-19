@@ -51,7 +51,7 @@ private:
     static void OnOptimizeClicked(lv_event_t *e);
 
     lv_obj_t *root_ = nullptr;
-    lv_obj_t *button_ = nullptr; // 20 px clean-cache icon in the status row
+    lv_obj_t *button_ = nullptr; // 20 px clean icon in the status row
     lv_obj_t *disk_bar_ = nullptr;
     lv_obj_t *disk_label_ = nullptr;
     lv_obj_t *ram_bar_ = nullptr;

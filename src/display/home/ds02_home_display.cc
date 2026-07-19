@@ -321,11 +321,13 @@ void Ds02HomeDisplay::SetupUI() {
 }
 
 void Ds02HomeDisplay::StartWeatherUpdater() {
-    /* The standby weather line comes from open-meteo (free, keyless; location
-     * via JETSON_WEATHER_LAT/LON). Blocking HTTP, so a detached worker loop:
-     * fetch, marshal the text to the LVGL thread, sleep 30 min (5 min after a
-     * failure so a flaky boot-time network recovers quickly). `this` lives for
-     * the whole process, like the theme subscription above. */
+    /* The lock screen's weather card comes from open-meteo (free, keyless;
+     * located from the device's public IP unless JETSON_WEATHER_LAT/LON pin
+     * it). Blocking HTTP, so a detached worker loop: fetch, marshal the text to
+     * the LVGL thread, sleep 30 min (5 min after a failure so a flaky boot-time
+     * network recovers quickly). `this` lives for the whole process, like the
+     * theme subscription above. The line is cached because the lock screen is
+     * usually not open when a fetch lands. */
     std::thread([this]() {
         for (;;) {
             jetson::WeatherInfo info;
@@ -335,7 +337,8 @@ void Ds02HomeDisplay::StartWeatherUpdater() {
                 std::string line = jetson::WeatherClient::FormatLine(info);
                 Application::GetInstance().Schedule([this, line]() {
                     DisplayLockGuard lock(this);
-                    if (weather_label_) lv_label_set_text(weather_label_, line.c_str());
+                    weather_line_ = line;
+                    if (lock_screen_view_) lock_screen_view_->SetWeather(line);
                 });
             } else {
                 ESP_LOGW(TAG, "weather fetch failed: %s", err.c_str());
@@ -367,16 +370,10 @@ void Ds02HomeDisplay::CreateStandbyObjects() {
     lv_obj_clear_flag(dim_overlay_, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     // The clock + weekday + date all live in the global StatusBar (Dynamic
-    // Island) built by CreateSystemBarObjects, so the standby layer only needs
-    // the weather line. The old big center "Wednesday, 15 July" date label was
+    // Island) built by CreateSystemBarObjects, and the weather line moved to
+    // the lock screen's top-right card, so the standby layer carries only the
+    // chat subtitle. The old big center "Wednesday, 15 July" date label was
     // redundant with the island and was removed.
-
-    // Weather, bottom-center.
-    weather_label_ = lv_label_create(standby_layer_);
-    lv_obj_set_style_text_font(weather_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(weather_label_, lv_color_white(), 0);
-    lv_label_set_text(weather_label_, "");
-    lv_obj_align(weather_label_, LV_ALIGN_BOTTOM_MID, 0, -(kDockHeight + kDockBottomMargin + 8));
 
     // Chat subtitle (assistant / user messages).
     chat_label_ = lv_label_create(standby_layer_);
@@ -423,6 +420,7 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
         {"assets/icons/drawer/messenger.png",   "Messenger", 15},
         {"assets/icons/drawer/team.png",        "Teams",     16},
         {"assets/icons/drawer/facebook.png",    "Facebook",  17},
+        {"assets/icons/drawer/gmail.png",       "Gmail",     18},
     };
     constexpr int kCols = 4;
     static const int32_t kGridCols[] = {
@@ -579,6 +577,7 @@ void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
     case 15: self->OpenChromium("https://www.messenger.com/"); break;
     case 16: self->OpenChromium("https://teams.microsoft.com/"); break;
     case 17: self->OpenChromium("https://www.facebook.com/"); break;
+    case 18: self->OpenChromium("https://mail.google.com/"); break;
     default: self->ShowNotification("Sắp ra mắt", 1500); break;
     }
 }
@@ -1049,19 +1048,21 @@ void Ds02HomeDisplay::OpenLockScreen() {
     if (lock_screen_view_) return;
     // No PIN set -> nothing to unlock against; nudge the user instead.
     if (Settings("system").GetString("pin", "").empty()) {
-        ShowNotification("Chưa đặt PIN — mở Cài đặt > Nguồn & Bảo mật", 2500);
+        ShowNotification("Chưa đặt PIN — mở Cài đặt > Chung > Nguồn & Khóa", 2500);
         return;
     }
     if (!root_) root_ = lv_screen_active();
-    // The global bar lives above the lock overlay (it's on lv_layer_top()), so
-    // hide it while locked -- otherwise its clickable wifi/bt icons would let
-    // someone escape the lock screen.
-    if (status_bar_) status_bar_->Hide();
+    /* The global bar lives above the lock overlay (it's on lv_layer_top()) and
+     * the locked design keeps it -- clock, island and status icons are part of
+     * the screen. SetLocked disarms its menus so the clickable wifi/bt/power
+     * icons cannot be used to escape the PIN. */
+    if (status_bar_) status_bar_->SetLocked(true);
     lock_screen_view_ = std::make_shared<LockScreenView>(
         root_, width_, height_, [this]() {
             lock_screen_view_.reset();
-            if (status_bar_) status_bar_->Show();
+            if (status_bar_) status_bar_->SetLocked(false);
         });
+    lock_screen_view_->SetWeather(weather_line_);
     lock_screen_view_->Start();
 }
 
@@ -1702,9 +1703,7 @@ void Ds02HomeDisplay::ApplyWallpaperForState() {
 void Ds02HomeDisplay::SetTextColor(uint32_t color) {
     text_color_ = color;
     lv_color_t c = Color(color);
-    for (lv_obj_t *lbl : {weather_label_, chat_label_}) {
-        if (lbl) lv_obj_set_style_text_color(lbl, c, 0);
-    }
+    if (chat_label_) lv_obj_set_style_text_color(chat_label_, c, 0);
 }
 
 void Ds02HomeDisplay::UpdateStatusBar(bool /*update_all*/) {

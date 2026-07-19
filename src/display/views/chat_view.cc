@@ -21,7 +21,7 @@ using jetson::ui::LvglLockGuard;
 
 ChatView::ChatView(lv_obj_t *parent, int width, int height,
                    std::shared_ptr<jetson::Conversation> conv, ClosedCb on_closed)
-    : OverlayView(parent, width, height, "Tro chuyen", std::move(on_closed)),
+    : OverlayView(parent, width, height, "ekko", std::move(on_closed)),
       conv_(std::move(conv)) {
     // body_ is created by OverlayView::BuildShell; fill it here.
     const auto &p = jetson::UiTheme::Instance().Palette();
@@ -216,7 +216,11 @@ void ChatView::OnInputReady(lv_event_t *e) {
 void ChatView::OnInputFocused(lv_event_t *e) {
     auto *self = static_cast<ChatView *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
-    if (self->input_) lv_group_focus_obj(self->input_);
+    // LV_EVENT_FOCUSED means LVGL has already focused this textarea. Calling
+    // lv_group_focus_obj() here emits LV_EVENT_FOCUSED again, recursively,
+    // until the process exhausts its stack. This is especially easy to hit
+    // when the chat input is the keypad group's first object: adding it to the
+    // group focuses it synchronously while the ekko view is being opened.
     if (self->keyboard_) lv_obj_clear_flag(self->keyboard_, LV_OBJ_FLAG_HIDDEN);
 }
 

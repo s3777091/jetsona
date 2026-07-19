@@ -10,6 +10,8 @@ Usage
   python3 scripts/s3_assets.py upload     # one-time seed: push ./assets -> bucket
   python3 scripts/s3_assets.py upload-file icons/app/reload.png
                                          # upload one changed local asset
+  python3 scripts/s3_assets.py delete-file icons/app/old.png
+                                         # delete selected local/S3 asset keys
   python3 scripts/s3_assets.py list      # debug: list objects in the bucket
   python3 scripts/s3_assets.py fetch-file fonts/cloud/Example.ttf
                                          # runtime: fetch exactly one asset
@@ -54,6 +56,52 @@ Response = namedtuple("Response", "status headers body")
 DEFAULT_BUCKET = "jetsona-assets"
 DEFAULT_REGION = "us-east-1"
 DEFAULT_ASSETS_DIR = "assets"
+
+
+def _unquote_flat_value(value):
+    value = value.strip()
+    if (len(value) >= 2 and value[0] == value[-1] and
+            value[0] in ("'", '"')):
+        return value[1:-1]
+    return value
+
+
+def _load_project_defaults():
+    """Load the repository's flat config when no shell wrapper did it.
+
+    Build/install wrappers already export these values. Direct CLI usage from
+    README (including delete-file) also needs to work without echoing secrets.
+    Existing process environment always wins.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_keys = {
+        "MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_REGION",
+        "JETSON_ASSETS_DIR", "ASSETS_S3_PREFIX", "ASSETS_VERBOSE",
+    }
+    config_path = os.path.join(repo_root, "config.yaml")
+    if os.path.isfile(config_path):
+        with open(config_path, "r", encoding="utf-8") as stream:
+            for raw in stream:
+                line = raw.strip()
+                if not line or line.startswith("#") or ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                key = key.strip()
+                if key in config_keys and key not in os.environ:
+                    os.environ[key] = _unquote_flat_value(value)
+
+    secret_keys = {"MINIO_ACCESS_KEY", "MINIO_SECRET_KEY"}
+    env_path = os.path.join(repo_root, ".env")
+    if os.path.isfile(env_path):
+        with open(env_path, "r", encoding="utf-8") as stream:
+            for raw in stream:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key in secret_keys and key not in os.environ:
+                    os.environ[key] = _unquote_flat_value(value)
 
 
 def cfg():
@@ -299,6 +347,12 @@ def put_object(s3, bucket, key, src_path):
         die("upload {} failed: HTTP {} {}".format(key, resp.status, _body_text(resp.body)))
 
 
+def delete_object(s3, bucket, key):
+    resp = s3._request("DELETE", path="/" + _path_quote(bucket + "/" + key))
+    if resp.status not in (200, 202, 204):
+        die("delete {} failed: HTTP {} {}".format(key, resp.status, _body_text(resp.body)))
+
+
 def ensure_bucket(s3, bucket, region):
     """Create the bucket if it doesn't exist. Idempotent."""
     resp = s3._request("HEAD", path="/" + _path_quote(bucket))
@@ -466,6 +520,32 @@ def cmd_upload_files(c, paths):
             rel, os.path.getsize(source)))
 
 
+def cmd_delete_files(c, paths):
+    """Delete selected object keys without touching any sibling assets."""
+    rels = []
+    for rel in paths:
+        rel = rel.replace("\\", "/")
+        if (not rel or rel.startswith("/") or rel.endswith("/") or
+                any(part in ("", ".", "..") for part in rel.split("/"))):
+            die("delete-file requires safe relative asset paths.", code=2)
+        rels.append(rel)
+
+    s3 = _make_s3(c)
+    for rel in rels:
+        key = (c["prefix"] + rel) if c["prefix"] else rel
+        matches = [obj_key for obj_key, _ in list_objects(s3, c["bucket"], key)
+                   if obj_key == key]
+        if not matches:
+            print("==> delete-file: already absent {}".format(key))
+            continue
+        delete_object(s3, c["bucket"], key)
+        remaining = [obj_key for obj_key, _ in list_objects(s3, c["bucket"], key)
+                     if obj_key == key]
+        if remaining:
+            die("object '{}' still exists after DELETE.".format(key))
+        print("==> delete-file: deleted {}".format(key))
+
+
 def _iter_local_files(assets_dir):
     for root, dirs, files in os.walk(assets_dir):
         # Trash is local mutable state, not a source asset to seed back into
@@ -503,6 +583,7 @@ COMMANDS = {"fetch": cmd_fetch, "upload": cmd_upload, "list": cmd_list}
 
 
 def main(argv):
+    _load_project_defaults()
     if len(argv) >= 2 and argv[1] == "fetch-file":
         if len(argv) != 3:
             die("usage: s3_assets.py fetch-file <relative-object-key>", code=2)
@@ -513,11 +594,17 @@ def main(argv):
             die("usage: s3_assets.py upload-file <relative-asset-path> [...]", code=2)
         cmd_upload_files(cfg(), argv[2:])
         return
+    if len(argv) >= 2 and argv[1] == "delete-file":
+        if len(argv) < 3:
+            die("usage: s3_assets.py delete-file <relative-asset-path> [...]", code=2)
+        cmd_delete_files(cfg(), argv[2:])
+        return
     if len(argv) < 2 or argv[1] not in COMMANDS:
-        die("usage: s3_assets.py <fetch|fetch-file|upload|upload-file|list>\n"
+        die("usage: s3_assets.py <fetch|fetch-file|upload|upload-file|delete-file|list>\n"
             "  fetch  - download missing/mismatched assets from MinIO\n"
             "  fetch-file <key> - download exactly one on-demand asset\n"
             "  upload-file <path> - upload exactly one local asset\n"
+            "  delete-file <path> - delete selected objects from MinIO\n"
             "  upload - seed ./assets into the MinIO bucket\n"
             "  list   - list objects in the bucket", code=2)
     COMMANDS[argv[1]](cfg())

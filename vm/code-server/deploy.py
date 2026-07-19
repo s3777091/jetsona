@@ -4,7 +4,8 @@
 - SSH to the VM, SFTP docker-compose.yml into /root/jetsona-code-server/
 - Generate (or reuse) STUDIO_PASSWORD, write the VM-local .env
 - Bind port 8443 to the VM's Tailscale IPv4 by default (not public HTTP)
-- Pre-create ./project and ./config owned by uid 1000 (container `coder` user)
+- Pre-create ./project, ./config, and ./data owned by uid 1000
+  (container `coder` user)
 - docker compose up -d, then test GET /healthz from inside the VM
 - Print JETSON_STUDIO_URL (goes into config.yaml) + the login password
 
@@ -83,8 +84,10 @@ def main():
     print(f"\nSFTP -> {REMOTE_DIR}")
     # Workspace + config dirs must exist before compose mounts them, and must
     # be writable by the container's non-root `coder` user (uid/gid 1000).
-    run(ssh, f"mkdir -p {REMOTE_DIR}/project {REMOTE_DIR}/config && "
-             f"chown -R 1000:1000 {REMOTE_DIR}/project {REMOTE_DIR}/config")
+    run(ssh, f"mkdir -p {REMOTE_DIR}/project {REMOTE_DIR}/config "
+             f"{REMOTE_DIR}/data && "
+             f"chown -R 1000:1000 {REMOTE_DIR}/project {REMOTE_DIR}/config "
+             f"{REMOTE_DIR}/data")
 
     # Reuse the password from the VM-local .env if present (idempotent
     # redeploys keep the login stable); otherwise generate a fresh one.

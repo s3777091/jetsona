@@ -2,7 +2,7 @@
 
 /* "Pods" drawer app: rent and manage RunPod GPU cloud pods from the panel.
  *
- * Body: a toolbar (status text + "Thuê GPU" + refresh) over a scrollable list
+ * Body: a toolbar (status text + "Thuê GPU") over a pull-to-refresh list
  * of the account's pods (status dot, name, GPU / price line, and per-row
  * Studio / power / delete buttons). Tapping a row opens a detail sheet with
  * the connect info (SSH command, web-IDE proxy URL, password) and the same
@@ -73,7 +73,7 @@ private:
     void RunAsync(std::function<std::string(jetson::RunpodClient &)> work,
                   std::function<void(PodsView &, const std::string &err)> done);
 
-    static void OnRefresh(lv_event_t *e);
+    static void OnListPull(lv_event_t *e);
     static void OnRent(lv_event_t *e);
     static void OnRowClicked(lv_event_t *e);
     static void OnRowStudio(lv_event_t *e);
@@ -101,6 +101,7 @@ private:
     lv_obj_t *preset_btns_[2] = {nullptr, nullptr};
     std::string selected_gpu_id_;
     bool creating_ = false;
+    bool pull_armed_ = false;
 
     // Two-tap terminate confirmation.
     std::string pending_delete_id_;

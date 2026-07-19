@@ -110,7 +110,7 @@ private:
     enum class StandbyState { Dim, Awake, Launcher };
 
     static constexpr size_t kDockItemCount = 9;
-    static constexpr size_t kDrawerItemCount = 16;
+    static constexpr size_t kDrawerItemCount = 17;
     static constexpr size_t kDrawerItemsPerPage = 8;
     static constexpr size_t kDrawerPageCount =
         (kDrawerItemCount + kDrawerItemsPerPage - 1) / kDrawerItemsPerPage;
@@ -217,7 +217,9 @@ private:
     // screen. Self-refreshes; home wires the functional controls.
     std::unique_ptr<StatusBar> status_bar_;
     bool volume_muted_ = false;
-    lv_obj_t *weather_label_ = nullptr;
+    // Latest formatted weather line; shown by the lock screen, which is usually
+    // closed when the updater thread delivers one.
+    std::string weather_line_;
     lv_obj_t *chat_label_ = nullptr;
     lv_obj_t *launcher_layer_ = nullptr;
     lv_obj_t *dock_ = nullptr;

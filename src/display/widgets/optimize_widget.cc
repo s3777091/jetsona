@@ -70,7 +70,7 @@ OptimizeWidget::OptimizeWidget(lv_obj_t *icon_parent, lv_obj_t *popup_parent) {
 
     // The action itself participates in StatusBar's flex row. The usage bars
     // are parented to the shared Dynamic Island content host.
-    button_ = jetson::ui::CreateAppIcon(icon_parent, "clean-cache", 20);
+    button_ = jetson::ui::CreateAppIcon(icon_parent, "clean", 20);
     lv_obj_set_style_image_recolor(button_, lv_color_white(), 0);
     lv_obj_set_style_image_recolor_opa(button_, LV_OPA_COVER, 0);
     lv_obj_add_flag(button_, LV_OBJ_FLAG_CLICKABLE);

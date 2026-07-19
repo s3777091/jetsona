@@ -45,6 +45,15 @@ constexpr int kMediaExpandedW = 430;
 constexpr int kMediaExpandedH = 126;
 constexpr int kTopInset = 3;
 constexpr int kAutoCloseMs = 6000;
+// Samsung-style resting state: with nothing active the island shrinks to a
+// camera-cutout-like black dot. kPillW/kPillH stays the resting size while a
+// Bluetooth device is connected (mini icon + status ring need the width).
+constexpr int kDotD = 34;
+// Companion droplet that splits off beside the media island while music plays
+// with a Bluetooth device connected.
+constexpr int kCompanionD = 34;
+constexpr int kCompanionGap = 8;
+constexpr int kCompanionY = kTopInset + (kMediaCompactH - kCompanionD) / 2;
 
 // Box size for the PNG status icons (assets/icons/app, 28x28 sources).
 constexpr int kStatusIconPx = 20;
@@ -92,11 +101,11 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_clear_flag(left_cluster_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // Six quick-setting icons followed by the persistent battery indicator.
-    // The wider cluster still leaves a clear gap beside the centered island.
+    // Connectivity/actions followed by battery, power and clear-cache.
+    // 220 px fits the complete row while keeping it clear of the island.
     right_cluster_ = lv_obj_create(status_strip_);
     lv_obj_remove_style_all(right_cluster_);
-    lv_obj_set_size(right_cluster_, 250, lv_pct(100));
+    lv_obj_set_size(right_cluster_, 220, lv_pct(100));
     lv_obj_align(right_cluster_, LV_ALIGN_RIGHT_MID, -10, 0);
     lv_obj_set_flex_flow(right_cluster_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(right_cluster_, LV_FLEX_ALIGN_END,
@@ -127,10 +136,38 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_set_style_text_color(datetime_label_, lv_color_white(), 0);
     lv_label_set_text(datetime_label_, "--:--  --/--");
 
+    // Companion droplet, created *before* the pill so it stays underneath it:
+    // during merge/split it slides beneath the island and the two black
+    // surfaces read as one blob separating like water drops.
+    companion_ = lv_obj_create(parent);
+    lv_obj_remove_style_all(companion_);
+    lv_obj_set_size(companion_, kCompanionD, kCompanionD);
+    lv_obj_align(companion_, LV_ALIGN_TOP_MID, 0, kCompanionY);
+    lv_obj_set_style_bg_color(companion_, Color(0x000000), 0);
+    lv_obj_set_style_bg_grad_color(companion_, Color(0x0b1220), 0);
+    lv_obj_set_style_bg_grad_dir(companion_, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_bg_opa(companion_, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(companion_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(companion_, 1, 0);
+    lv_obj_set_style_border_color(companion_, Color(0x30d158), 0);
+    lv_obj_set_style_border_opa(companion_, LV_OPA_50, 0);
+    lv_obj_set_style_shadow_color(companion_, lv_color_black(), 0);
+    lv_obj_set_style_shadow_width(companion_, 12, 0);
+    lv_obj_set_style_shadow_opa(companion_, LV_OPA_30, 0);
+    lv_obj_clear_flag(companion_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(companion_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(companion_, 6);
+    lv_obj_add_event_cb(companion_, OnCompanionClick, LV_EVENT_CLICKED, this);
+    lv_obj_add_flag(companion_, LV_OBJ_FLAG_HIDDEN);
+    companion_icon_ = jetson::ui::CreateAppIcon(companion_, "unknow-device", 18);
+    lv_obj_set_style_image_recolor(companion_icon_, lv_color_white(), 0);
+    lv_obj_set_style_image_recolor_opa(companion_icon_, LV_OPA_COVER, 0);
+    lv_obj_center(companion_icon_);
+
     // ---- Resting Dynamic Island (centered, solid black) ----
     pill_ = lv_obj_create(parent);
     lv_obj_remove_style_all(pill_);
-    lv_obj_set_size(pill_, kPillW, kPillH);
+    lv_obj_set_size(pill_, kDotD, kDotD);
     lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
     lv_obj_set_style_bg_color(pill_, Color(0x000000), 0);
     lv_obj_set_style_bg_grad_color(pill_, Color(0x0b1220), 0);
@@ -238,25 +275,10 @@ StatusBar::StatusBar(lv_obj_t *parent) {
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     lv_obj_add_flag(quick_host_, LV_OBJ_FLAG_HIDDEN);
 
-    optimize_widget_ = std::make_unique<OptimizeWidget>(right_cluster_, quick_host_);
-    optimize_widget_->SetBeforeOpenCb([this](lv_obj_t *content, lv_obj_t *icon) {
-        ShowQuickMenu(content, icon);
-    });
-
     add_icon(&bt_icon_, "bluetooth", OnBtClick);
     add_icon(&wifi_icon_, "wifi", OnWifiClick);
     add_icon(&sound_icon_, "speaker", OnSoundClick);
     add_icon(&brightness_icon_, "sun", OnBrightnessClick);
-    add_icon(&power_icon_, "start", OnPowerClick);
-
-    // Keep charging state separate from the percentage so the digits remain
-    // legible. Hidden LVGL flex children do not reserve a gap, so the battery
-    // simply slides next to the power icon while the charger is disconnected.
-    charge_icon_ = jetson::ui::CreateAppIcon(
-        right_cluster_, "charge-batery", 16);
-    lv_obj_set_style_image_recolor(charge_icon_, Color(0x34c759), 0);
-    lv_obj_set_style_image_recolor_opa(charge_icon_, LV_OPA_COVER, 0);
-    lv_obj_add_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
 
     battery_icon_root_ = lv_obj_create(right_cluster_);
     lv_obj_remove_style_all(battery_icon_root_);
@@ -307,6 +329,14 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_clear_flag(
         battery_icon_nub_,
         (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    // Requested tail order: battery -> power -> clear-cache. Charging is
+    // represented by a bolt inside the battery instead of a separate PNG.
+    add_icon(&power_icon_, "start", OnPowerClick);
+    optimize_widget_ = std::make_unique<OptimizeWidget>(right_cluster_, quick_host_);
+    optimize_widget_->SetBeforeOpenCb([this](lv_obj_t *content, lv_obj_t *icon) {
+        ShowQuickMenu(content, icon);
+    });
 
     // Build every quick surface only after the shared island host exists.
     BuildQuickMenus();
@@ -543,10 +573,121 @@ void StatusBar::BuildMediaContent() {
 
 void StatusBar::SyncIslandRest() {
     if (!island_rest_) return;
-    if (!notification_visible_ && !media_available_ && !quick_island_open_)
+    // The device icon + ring need the wide resting pill; in the camera-dot
+    // state (no Bluetooth device) the island shows nothing at all.
+    if (!notification_visible_ && !media_available_ && !quick_island_open_ &&
+        EffectiveBtDevice() > 0)
         lv_obj_clear_flag(island_rest_, LV_OBJ_FLAG_HIDDEN);
     else
         lv_obj_add_flag(island_rest_, LV_OBJ_FLAG_HIDDEN);
+}
+
+int StatusBar::EffectiveBtDevice() const {
+    if (cached_airplane_mode_) return 0;
+    return cached_bt_device_ > 0 ? cached_bt_device_ : 0;
+}
+
+int StatusBar::RestingW() const { return EffectiveBtDevice() > 0 ? kPillW : kDotD; }
+int StatusBar::RestingH() const { return EffectiveBtDevice() > 0 ? kPillH : kDotD; }
+
+void StatusBar::PositionCompanion(int pill_w, bool animated) {
+    if (!companion_) return;
+    const int offset = pill_w / 2 + kCompanionGap + kCompanionD / 2;
+    const int prev = companion_offset_x_;
+    companion_offset_x_ = offset;
+    lv_obj_align(companion_, LV_ALIGN_TOP_MID, offset, kCompanionY);
+    lv_anim_delete(companion_, OnCompanionX);
+    if (!animated || prev <= 0 || prev == offset) {
+        lv_obj_set_style_translate_x(companion_, 0, 0);
+        return;
+    }
+    // The align jump is countered by a translate that eases back to 0, so the
+    // droplet visibly slides along while the island itself resizes.
+    lv_obj_set_style_translate_x(companion_, prev - offset, 0);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, companion_);
+    lv_anim_set_exec_cb(&a, OnCompanionX);
+    lv_anim_set_values(&a, prev - offset, 0);
+    lv_anim_set_time(&a, 360);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_start(&a);
+}
+
+void StatusBar::SyncCompanion(bool animated) {
+    if (!companion_) return;
+    const int device = EffectiveBtDevice();
+    const bool want = visible_ && media_available_ && device > 0 &&
+                      !notification_visible_ && !quick_island_open_;
+    if (want && companion_icon_) {
+        jetson::ui::SetAppIcon(
+            companion_icon_,
+            jetson::BtKindIconName(static_cast<jetson::BtDeviceKind>(device)),
+            18);
+    }
+    if (want == companion_visible_) return;
+    companion_visible_ = want;
+    lv_anim_delete(companion_, OnCompanionX);
+    lv_anim_delete(companion_, OnDropOpa);
+    if (want) {
+        // Split: the droplet emerges from beneath the media island and
+        // overshoots slightly before settling beside it, like a drop of water
+        // separating from a larger one.
+        const int pill_w = media_expanded_open_ ? kMediaExpandedW : kMediaCompactW;
+        const int offset = pill_w / 2 + kCompanionGap + kCompanionD / 2;
+        companion_offset_x_ = offset;
+        lv_obj_align(companion_, LV_ALIGN_TOP_MID, offset, kCompanionY);
+        lv_obj_clear_flag(companion_, LV_OBJ_FLAG_HIDDEN);
+        if (!animated) {
+            lv_obj_set_style_translate_x(companion_, 0, 0);
+            lv_obj_set_style_opa(companion_, LV_OPA_COVER, 0);
+            return;
+        }
+        lv_obj_set_style_opa(companion_, LV_OPA_0, 0);
+        lv_obj_set_style_translate_x(companion_, -offset, 0);
+        lv_anim_t x;
+        lv_anim_init(&x);
+        lv_anim_set_var(&x, companion_);
+        lv_anim_set_exec_cb(&x, OnCompanionX);
+        lv_anim_set_values(&x, -offset, 0);
+        lv_anim_set_time(&x, 420);
+        lv_anim_set_path_cb(&x, lv_anim_path_overshoot);
+        lv_anim_start(&x);
+        lv_anim_t o;
+        lv_anim_init(&o);
+        lv_anim_set_var(&o, companion_);
+        lv_anim_set_exec_cb(&o, OnDropOpa);
+        lv_anim_set_values(&o, 0, 255);
+        lv_anim_set_time(&o, 200);
+        lv_anim_set_delay(&o, 60);
+        lv_anim_set_path_cb(&o, lv_anim_path_ease_out);
+        lv_anim_start(&o);
+    } else {
+        if (!animated || lv_obj_has_flag(companion_, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(companion_, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
+        // Merge: the droplet is pulled back into the island (which is usually
+        // blooming a notification or quick menu at the same time).
+        lv_anim_t x;
+        lv_anim_init(&x);
+        lv_anim_set_var(&x, companion_);
+        lv_anim_set_exec_cb(&x, OnCompanionX);
+        lv_anim_set_values(&x, lv_obj_get_style_translate_x(companion_, 0),
+                           -companion_offset_x_);
+        lv_anim_set_time(&x, 260);
+        lv_anim_set_path_cb(&x, lv_anim_path_ease_in);
+        lv_anim_set_completed_cb(&x, OnDropHidden);
+        lv_anim_start(&x);
+        lv_anim_t o;
+        lv_anim_init(&o);
+        lv_anim_set_var(&o, companion_);
+        lv_anim_set_exec_cb(&o, OnDropOpa);
+        lv_anim_set_values(&o, lv_obj_get_style_opa(companion_, 0), 0);
+        lv_anim_set_time(&o, 220);
+        lv_anim_set_path_cb(&o, lv_anim_path_ease_in);
+        lv_anim_start(&o);
+    }
 }
 
 void StatusBar::HideMediaContent() {
@@ -626,6 +767,9 @@ void StatusBar::ShowMediaPresentation(bool animate) {
         lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
     }
     island_expanded_ = media_expanded_open_;
+    // Always animated: the water-drop split is the point of the effect, and
+    // SyncCompanion is a no-op while the droplet state is unchanged.
+    SyncCompanion(true);
 }
 
 void StatusBar::RefreshMedia(bool force_layout) {
@@ -638,10 +782,11 @@ void StatusBar::RefreshMedia(bool force_layout) {
         media_expanded_open_ = false;
         HideMediaContent();
         SyncIslandRest();
+        SyncCompanion(true);
         if (was_available && !notification_visible_ && !quick_island_open_ && pill_) {
             lv_anim_delete(pill_, OnIslandWidth);
             lv_anim_delete(pill_, OnIslandHeight);
-            lv_obj_set_size(pill_, kPillW, kPillH);
+            lv_obj_set_size(pill_, RestingW(), RestingH());
             lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
             lv_obj_set_style_border_color(pill_, Color(0x253142), 0);
         }
@@ -1052,6 +1197,8 @@ void StatusBar::ShowQuickMenu(lv_obj_t *menu, lv_obj_t *anchor) {
     quick_island_open_ = true;
     quick_island_closing_ = false;
     island_expanded_ = true;
+    // Quick menus behave like notifications: merge the droplet, then bloom.
+    SyncCompanion(true);
     lv_obj_clear_flag(quick_host_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_opa(quick_host_, LV_OPA_COVER, 0);
     lv_obj_clear_flag(menu, LV_OBJ_FLAG_HIDDEN);
@@ -1106,7 +1253,7 @@ void StatusBar::CloseQuickIsland(bool animated) {
         } else {
             lv_anim_delete(pill_, OnIslandWidth);
             lv_anim_delete(pill_, OnIslandHeight);
-            lv_obj_set_size(pill_, kPillW, kPillH);
+            lv_obj_set_size(pill_, RestingW(), RestingH());
             lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
             lv_obj_set_style_border_color(pill_, Color(0x253142), 0);
             SyncIslandRest();
@@ -1115,8 +1262,8 @@ void StatusBar::CloseQuickIsland(bool animated) {
     }
 
     quick_island_closing_ = true;
-    AnimateIslandSize(media_available_ ? kMediaCompactW : kPillW,
-                      media_available_ ? kMediaCompactH : kPillH, true);
+    AnimateIslandSize(media_available_ ? kMediaCompactW : RestingW(),
+                      media_available_ ? kMediaCompactH : RestingH(), true);
 }
 
 void StatusBar::ArmQuickMenuTimer() {
@@ -1181,6 +1328,7 @@ StatusBar::~StatusBar() {
         if (*menu) { lv_obj_del(*menu); *menu = nullptr; }
     }
     if (pill_) { lv_obj_del(pill_); pill_ = nullptr; }
+    if (companion_) { lv_obj_del(companion_); companion_ = nullptr; }
     if (status_strip_) { lv_obj_del(status_strip_); status_strip_ = nullptr; }
     if (media_artwork_) {
         lv_image_cache_drop(media_artwork_->image_dsc());
@@ -1199,9 +1347,15 @@ void StatusBar::Hide() {
     if (pill_) {
         lv_anim_delete(pill_, OnIslandWidth);
         lv_anim_delete(pill_, OnIslandHeight);
-        lv_obj_set_size(pill_, kPillW, kPillH);
+        lv_obj_set_size(pill_, RestingW(), RestingH());
         lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
         lv_obj_add_flag(pill_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (companion_) {
+        lv_anim_delete(companion_, OnCompanionX);
+        lv_anim_delete(companion_, OnDropOpa);
+        lv_obj_add_flag(companion_, LV_OBJ_FLAG_HIDDEN);
+        companion_visible_ = false;
     }
     if (island_content_) {
         lv_anim_delete(island_content_, OnIslandContentOpa);
@@ -1214,6 +1368,16 @@ void StatusBar::Hide() {
     notification_visible_ = false;
     media_expanded_open_ = false;
     SyncIslandRest();
+}
+
+void StatusBar::SetLocked(bool locked) {
+    locked_ = locked;
+    if (!locked) return;
+    // Collapse anything already open, otherwise a menu left up when the screen
+    // locked would stay interactive above the lock overlay.
+    HidePowerMenu();
+    HideQuickMenus();
+    if (quick_island_open_) CloseQuickIsland(false);
 }
 
 void StatusBar::Show() {
@@ -1250,6 +1414,9 @@ void StatusBar::RefreshConnectivity() {
     const int bt_device_polled = polled_bt_device_.load();
     const bool eth_changed = eth_connected != cached_eth_connected_;
     const bool internet_changed = internet_state != cached_internet_state_;
+    const bool bt_changed = bt_device_polled != cached_bt_device_ ||
+                            !airplane_state_read_ ||
+                            airplane != cached_airplane_mode_;
     if (airplane_state_read_ && airplane == cached_airplane_mode_ &&
         vpn_state_read_ && vpn == cached_vpn_enabled_ &&
         wifi_signal == cached_wifi_signal_ &&
@@ -1317,6 +1484,16 @@ void StatusBar::RefreshConnectivity() {
     if (island_ring_)
         lv_obj_set_style_border_color(
             island_ring_, Color(bt_device > 0 ? 0x30d158 : 0x3a3a3c), 0);
+    // Device connect/disconnect: split or merge the companion droplet, and
+    // morph the resting island between the camera dot and the device pill.
+    if (bt_changed) {
+        SyncCompanion(true);
+        SyncIslandRest();
+        if (visible_ && pill_ && !media_available_ && !notification_visible_ &&
+            !quick_island_open_) {
+            AnimateIslandSize(RestingW(), RestingH(), false);
+        }
+    }
     if ((eth_changed || internet_changed) && wifi_menu_) RebuildWifiMenu();
     if (internet_changed && !ethernet &&
         internet_state == static_cast<int>(
@@ -1359,17 +1536,6 @@ void StatusBar::RefreshBattery() {
         (void)discharging;
     }
 
-    // The green charging mark is visible only when the INA219 reports current
-    // flowing into the pack. Refreshing every five seconds matches the sensor
-    // polling interval above.
-    if (charge_icon_) {
-        const bool show_charge = has_battery_ && cached_battery_charging_;
-        if (show_charge)
-            lv_obj_clear_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
-        else
-            lv_obj_add_flag(charge_icon_, LV_OBJ_FLAG_HIDDEN);
-    }
-
     // Keep a percentage-style battery visible even on installations without a
     // readable battery sensor; those retain the neutral 100% fallback.
     const int level = has_battery_ ? cached_battery_level_ : 100;
@@ -1392,8 +1558,11 @@ void StatusBar::RefreshBattery() {
             lv_obj_set_style_bg_color(battery_icon_nub_, Color(fill_color), 0);
     }
     if (battery_percent_label_) {
-        char buf[8];
-        std::snprintf(buf, sizeof(buf), "%d%%", level);
+        char buf[16];
+        if (has_battery_ && cached_battery_charging_)
+            std::snprintf(buf, sizeof(buf), LV_SYMBOL_CHARGE "%d%%", level);
+        else
+            std::snprintf(buf, sizeof(buf), "%d%%", level);
         lv_label_set_text(battery_percent_label_, buf);
         lv_obj_set_style_text_color(battery_percent_label_, lv_color_white(), 0);
     }
@@ -1447,6 +1616,8 @@ void StatusBar::AnimateIslandSize(int width, int height, bool collapsing) {
         lv_anim_set_user_data(&h, this);
     }
     lv_anim_start(&h);
+    // Keep the split-off droplet riding beside the island while it resizes.
+    if (companion_visible_) PositionCompanion(width, true);
 }
 
 void StatusBar::ShowIslandMessage(const char *title, const char *text,
@@ -1468,6 +1639,8 @@ void StatusBar::ShowIslandMessage(const char *title, const char *text,
     media_expanded_open_ = false;
     notification_visible_ = true;
     SyncIslandRest();
+    // Every notification first swallows the split-off droplet, then blooms.
+    SyncCompanion(true);
     lv_obj_clear_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
     lv_anim_delete(island_content_, OnIslandContentOpa);
     lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
@@ -1497,7 +1670,7 @@ void StatusBar::CollapseIsland(bool animated) {
     if (!animated) {
         lv_anim_delete(pill_, OnIslandWidth);
         lv_anim_delete(pill_, OnIslandHeight);
-        lv_obj_set_size(pill_, kPillW, kPillH);
+        lv_obj_set_size(pill_, RestingW(), RestingH());
         lv_obj_align(pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
         lv_obj_set_style_opa(island_content_, LV_OPA_0, 0);
         lv_obj_add_flag(island_content_, LV_OBJ_FLAG_HIDDEN);
@@ -1520,8 +1693,8 @@ void StatusBar::CollapseIsland(bool animated) {
     lv_anim_set_path_cb(&content, lv_anim_path_ease_in);
     lv_anim_start(&content);
     media_expanded_open_ = false;
-    AnimateIslandSize(media_available_ ? kMediaCompactW : kPillW,
-                      media_available_ ? kMediaCompactH : kPillH, true);
+    AnimateIslandSize(media_available_ ? kMediaCompactW : RestingW(),
+                      media_available_ ? kMediaCompactH : RestingH(), true);
 }
 
 void StatusBar::AnimateDrop(lv_obj_t *obj, bool show) {
@@ -1625,6 +1798,7 @@ void StatusBar::OnPowerMenuDeleted(lv_event_t *e) {
 void StatusBar::OnWifiClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
+    if (self->locked_) return;
     if (self->polled_eth_connected_.load() != 1) self->StartWifiScan();
     self->RebuildWifiMenu();
     self->ShowQuickMenu(self->wifi_menu_, self->wifi_icon_);
@@ -1633,6 +1807,7 @@ void StatusBar::OnWifiClick(lv_event_t *e) {
 void StatusBar::OnSoundClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
+    if (self->locked_) return;
     const int volume = Clamp(Settings("display").GetInt("volume", 50), 0, 100);
     const bool muted = Settings("display").GetBool("muted", false);
     self->suppress_quick_events_ = true;
@@ -1651,6 +1826,7 @@ void StatusBar::OnSoundClick(lv_event_t *e) {
 void StatusBar::OnBrightnessClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
+    if (self->locked_) return;
     const int brightness = Clamp(Settings("display").GetInt("brightness", 100), 20, 100);
     self->suppress_quick_events_ = true;
     if (self->brightness_slider_)
@@ -1813,6 +1989,7 @@ void StatusBar::OnBrightnessChanged(lv_event_t *e) {
 void StatusBar::OnIslandClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
+    if (self->locked_) return;
     if (self->suppress_island_click_) {
         self->suppress_island_click_ = false;
         return;
@@ -1844,6 +2021,7 @@ void StatusBar::OnIslandClick(lv_event_t *e) {
 void StatusBar::OnIslandLongPress(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
+    if (self->locked_) return;
     self->suppress_island_click_ = true;
     if (self->quick_island_open_) self->CloseQuickIsland(false);
     self->media_expanded_open_ = false;
@@ -1882,6 +2060,7 @@ int StatusBar::IslandCenterY() const {
 void StatusBar::OnBtClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
+    if (self->locked_) return;
     if (self->polled_bt_powered_.load() == 1) self->StartBluetoothScan();
     self->RebuildBluetoothMenu();
     self->ShowQuickMenu(self->bt_menu_, self->bt_icon_);
@@ -1890,6 +2069,7 @@ void StatusBar::OnBtClick(lv_event_t *e) {
 void StatusBar::OnPowerClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
+    if (self->locked_) return;
     // Toggle: open if closed, close if open.
     if (self->power_menu_ && !lv_obj_has_flag(self->power_menu_, LV_OBJ_FLAG_HIDDEN))
         self->HidePowerMenu();
@@ -1959,9 +2139,10 @@ void StatusBar::OnIslandCollapsed(lv_anim_t *a) {
     self->island_expanded_ = false;
     self->SyncIslandRest();
     if (self->media_available_) {
+        // Re-splits the droplet via ShowMediaPresentation -> SyncCompanion.
         self->RefreshMedia(true);
     } else {
-        lv_obj_set_size(self->pill_, kPillW, kPillH);
+        lv_obj_set_size(self->pill_, self->RestingW(), self->RestingH());
         lv_obj_align(self->pill_, LV_ALIGN_TOP_MID, 0, kTopInset);
         lv_obj_set_style_border_color(self->pill_, Color(0x253142), 0);
     }
@@ -1978,6 +2159,21 @@ void StatusBar::OnDropY(void *var, int32_t v) {
 void StatusBar::OnDropHidden(lv_anim_t *a) {
     // lv_anim_t::var is a public field (there is no lv_anim_get_var accessor).
     if (a && a->var) lv_obj_add_flag(static_cast<lv_obj_t *>(a->var), LV_OBJ_FLAG_HIDDEN);
+}
+
+void StatusBar::OnCompanionX(void *var, int32_t v) {
+    lv_obj_set_style_translate_x(static_cast<lv_obj_t *>(var), v, 0);
+}
+
+void StatusBar::OnCompanionClick(lv_event_t *e) {
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    LvglLockGuard lock;
+    if (self->locked_) return;
+    // The droplet is the connected device: open the Bluetooth quick menu.
+    // ShowQuickMenu merges the droplet back into the island first.
+    if (self->polled_bt_powered_.load() == 1) self->StartBluetoothScan();
+    self->RebuildBluetoothMenu();
+    self->ShowQuickMenu(self->bt_menu_, self->bt_icon_);
 }
 
 } // namespace home

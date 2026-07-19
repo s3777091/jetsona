@@ -1,6 +1,5 @@
 #include "display/views/pods_view.h"
 #include "display/common/lvgl_utils.h"
-#include "display/core/app_icons.h"
 #include "display/theme/ui_theme.h"
 #include "fonts.h"
 #include "application.h"
@@ -23,8 +22,45 @@ namespace {
 constexpr uint32_t kRunningGreen = 0x30d158;
 constexpr uint32_t kStoppedGray  = 0x8e8e93;
 constexpr uint32_t kDangerRed    = 0xff453a;
+constexpr int kPullRefreshTriggerPx = 56;
 // Web-IDE password baked into the presets (shown in the detail sheet).
 constexpr const char *kIdePassword = "jetsona";
+
+bool PullRefreshTriggered(lv_event_t *e, lv_obj_t *list, bool busy,
+                          bool *armed) {
+    if (!e || !list || !armed) return false;
+    const lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_active();
+    if (code == LV_EVENT_GESTURE) {
+        *armed = false;
+        return !busy && indev &&
+               lv_indev_get_gesture_dir(indev) == LV_DIR_BOTTOM &&
+               lv_obj_get_scroll_y(list) <= 0;
+    }
+    if (code == LV_EVENT_SCROLL_BEGIN) {
+        // Elastic snap-back emits another begin after release. Preserve an
+        // already armed pull unless this begin came from the user's finger.
+        if (indev && lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED)
+            *armed = false;
+        return false;
+    }
+
+    const bool pressed = indev &&
+        lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED;
+    if (code == LV_EVENT_SCROLL && pressed) {
+        *armed = *armed ||
+                 (!busy && -lv_obj_get_scroll_y(list) >= kPullRefreshTriggerPx);
+        return false;
+    }
+    const bool terminal = code == LV_EVENT_SCROLL_END ||
+                          code == LV_EVENT_RELEASED ||
+                          code == LV_EVENT_PRESS_LOST ||
+                          (code == LV_EVENT_SCROLL && !pressed);
+    if (!terminal || pressed) return false;
+    const bool trigger = *armed && !busy;
+    *armed = false;
+    return trigger;
+}
 
 struct Preset {
     const char *label;
@@ -78,7 +114,7 @@ void PodsView::BuildBody() {
     lv_obj_set_style_pad_row(body_, 6, 0);
     lv_obj_clear_flag(body_, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ---- Toolbar: status text | "+ Thuê GPU" | refresh ----
+    // ---- Toolbar: status text | "+ Thuê GPU" ----
     auto *bar = lv_obj_create(body_);
     lv_obj_remove_style_all(bar);
     lv_obj_set_width(bar, lv_pct(100));
@@ -101,14 +137,6 @@ void PodsView::BuildBody() {
     lv_obj_set_style_bg_color(rent, Color(p.accent), 0);
     lv_obj_add_event_cb(rent, OnRent, LV_EVENT_CLICKED, this);
 
-    auto *refresh = MakeSmallButton(bar, "", true);
-    auto *reload_ic = jetson::ui::CreateAppIcon(refresh, "reload", 18);
-    lv_obj_set_style_image_recolor(reload_ic, Color(p.text), 0);
-    lv_obj_set_style_image_recolor_opa(reload_ic, LV_OPA_COVER, 0);
-    lv_obj_center(reload_ic);
-    lv_obj_delete(ButtonLabel(refresh)); // PNG replaces the empty glyph label
-    lv_obj_add_event_cb(refresh, OnRefresh, LV_EVENT_CLICKED, this);
-
     // ---- Pod list ----
     list_ = lv_obj_create(body_);
     lv_obj_remove_style_all(list_);
@@ -117,8 +145,16 @@ void PodsView::BuildBody() {
     lv_obj_set_flex_flow(list_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list_, 6, 0);
     lv_obj_add_flag(list_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(list_, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_clear_flag(list_, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_set_scroll_dir(list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(list_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_SCROLL_BEGIN, this);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_SCROLL, this);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_SCROLL_END, this);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_RELEASED, this);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_PRESS_LOST, this);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_GESTURE, this);
 }
 
 void PodsView::SetStatusLine(const std::string &text) {
@@ -669,8 +705,12 @@ void PodsView::DoCreatePod() {
 
 // ---- Event trampolines ---------------------------------------------------
 
-void PodsView::OnRefresh(lv_event_t *e) {
-    static_cast<PodsView *>(lv_event_get_user_data(e))->Refresh();
+void PodsView::OnListPull(lv_event_t *e) {
+    auto *self = static_cast<PodsView *>(lv_event_get_user_data(e));
+    if (!self || !self->list_) return;
+    if (PullRefreshTriggered(e, self->list_, self->busy_,
+                             &self->pull_armed_))
+        self->Refresh();
 }
 
 void PodsView::OnRent(lv_event_t *e) {

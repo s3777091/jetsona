@@ -171,6 +171,9 @@ private:
     TelexInput *popup_input_ = nullptr;     // WiFi password / PIN entry
     TelexInput *pin_a_ = nullptr;           // PIN set: first field
     TelexInput *pin_b_ = nullptr;           // PIN set: confirm field
+    int pin_len_ = 4;                       // PIN set: 4 or 6 digits
+    lv_obj_t *pin_len_4_ = nullptr;         // PIN set: length segment buttons
+    lv_obj_t *pin_len_6_ = nullptr;
     std::string modal_ssid_;
     jetson::WifiNetwork modal_wifi_;
     std::string modal_bt_addr_;
@@ -205,6 +208,10 @@ private:
     lv_obj_t *MakeSwitch(lv_obj_t *parent, bool on, lv_event_cb_t cb);
     lv_obj_t *MakeSlider(lv_obj_t *parent, int minv, int maxv, int val, lv_event_cb_t cb);
     lv_obj_t *MakeButton(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb);
+    /* Square action button carrying a PNG from assets/icons/app instead of a
+     * label -- lock / password / start / reload on the Nguồn & Khóa page. */
+    lv_obj_t *MakeIconButton(lv_obj_t *parent, const char *icon, uint32_t bg,
+                             lv_event_cb_t cb);
     lv_obj_t *DisplayCard();
     lv_obj_t *DisplayRow(lv_obj_t *card, const char *title, const char *sub = nullptr,
                          int height = 48);
@@ -367,7 +374,9 @@ private:
     static void OnFontSelected(lv_event_t *e);
     static void OnRefreshFontCatalog(lv_event_t *e);
 
+    static void OnAutoLockToggle(lv_event_t *e);
     static void OnLockNow(lv_event_t *e);
+    static void OnPinLengthSelected(lv_event_t *e);
     static void OnSetPin(lv_event_t *e);
     static void OnPinClear(lv_event_t *e);
     static void OnReboot(lv_event_t *e);
