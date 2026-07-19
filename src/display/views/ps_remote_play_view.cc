@@ -995,12 +995,6 @@ void PsRemotePlayView::OpenBluetoothSettings() {
 namespace {
 constexpr char kLauncherStateDir[] = "/var/lib/jetson-fw";
 constexpr char kLauncherStateFile[] = "/var/lib/jetson-fw/ps-remote-play.conf";
-// Direct-stream credentials written by launch_ps_remote_play.sh after a
-// headless chiaki-cli registration (Chiaki's own Qt config is untouched in
-// that path). "Play" must accept these as proof of registration too, not
-// only Chiaki's own Chiaki.conf.
-constexpr char kRegistKeysFile[] =
-    "/var/lib/jetson-fw/ps-remote-play-regist.conf";
 } // namespace
 
 void PsRemotePlayView::WriteLauncherState() const {
@@ -1054,20 +1048,6 @@ bool PsRemotePlayView::HasChiakiRegistration() const {
             found = std::strstr(line, "rp_regist_key=") != nullptr;
         std::fclose(file);
         if (found) return true;
-    }
-    // Fall back to the direct-stream credentials a headless registration stored
-    // (registkey= + morning=). Chiaki's Qt config is never written in that
-    // path, so without this check "Play" would bounce back to the PIN sheet
-    // even though the launcher can stream directly.
-    if (FILE *file = std::fopen(kRegistKeysFile, "r")) {
-        char line[512];
-        bool has_key = false, has_morning = false;
-        while (std::fgets(line, sizeof(line), file)) {
-            if (!has_key && std::strstr(line, "registkey=")) has_key = true;
-            if (!has_morning && std::strstr(line, "morning=")) has_morning = true;
-        }
-        std::fclose(file);
-        if (has_key && has_morning) return true;
     }
     return false;
 }
