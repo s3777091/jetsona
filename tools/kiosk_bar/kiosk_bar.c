@@ -48,6 +48,7 @@
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/statvfs.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -419,12 +420,18 @@ static int bluetooth_up(void)
         FILE *f;
         snprintf(path, sizeof(path), "/sys/class/rfkill/%s/type", e->d_name);
         if (!(f = fopen(path, "r"))) continue;
-        (void)fgets(type, sizeof(type), f);
+        if (!fgets(type, sizeof(type), f)) {
+            fclose(f);
+            continue;
+        }
         fclose(f);
         if (strncmp(type, "bluetooth", 9) != 0) continue;
         snprintf(path, sizeof(path), "/sys/class/rfkill/%s/state", e->d_name);
         if (!(f = fopen(path, "r"))) continue;
-        (void)fgets(state, sizeof(state), f);
+        if (!fgets(state, sizeof(state), f)) {
+            fclose(f);
+            continue;
+        }
         fclose(f);
         powered = state[0] == '1';
     }
@@ -444,13 +451,19 @@ static int wifi_radio_up(void)
         FILE *f;
         snprintf(path, sizeof(path), "/sys/class/rfkill/%s/type", e->d_name);
         if (!(f = fopen(path, "r"))) continue;
-        (void)fgets(type, sizeof(type), f);
+        if (!fgets(type, sizeof(type), f)) {
+            fclose(f);
+            continue;
+        }
         fclose(f);
         if (strncmp(type, "wlan", 4) != 0 && strncmp(type, "wifi", 4) != 0) continue;
         found = 1;
         snprintf(path, sizeof(path), "/sys/class/rfkill/%s/state", e->d_name);
         if (!(f = fopen(path, "r"))) continue;
-        (void)fgets(state, sizeof(state), f);
+        if (!fgets(state, sizeof(state), f)) {
+            fclose(f);
+            continue;
+        }
         fclose(f);
         if (state[0] == '1') { powered = 1; break; }
     }
@@ -529,10 +542,24 @@ static void shell_quote(const char *src, char *dst, size_t cap)
     dst[n < cap ? n : cap - 1] = 0;
 }
 
+static void run_command(const char *command)
+{
+    int status = system(command);
+    if (status == -1) {
+        fprintf(stderr, "kiosk_bar: unable to start shell command\n");
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr, "kiosk_bar: shell command terminated by signal %d\n",
+                WTERMSIG(status));
+    } else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "kiosk_bar: shell command exited with status %d\n",
+                WIFEXITED(status) ? WEXITSTATUS(status) : status);
+    }
+}
+
 static void *command_worker(void *arg)
 {
     char *command = (char *)arg;
-    if (command) { (void)system(command); free(command); }
+    if (command) { run_command(command); free(command); }
     return NULL;
 }
 
@@ -670,7 +697,7 @@ static void start_wifi_scan(void)
 static void *wifi_enable_scan_worker(void *unused)
 {
     (void)unused;
-    (void)system("nmcli radio wifi on >/dev/null 2>&1");
+    run_command("nmcli radio wifi on >/dev/null 2>&1");
     start_wifi_scan();
     return NULL;
 }
@@ -693,7 +720,7 @@ static int bt_item_cmp(const void *av, const void *bv)
 static void *bt_scan_worker(void *unused)
 {
     (void)unused;
-    (void)system("{ printf 'scan on\\n'; sleep 4; printf 'scan off\\n'; } | timeout 10s bluetoothctl >/dev/null 2>&1");
+    run_command("{ printf 'scan on\\n'; sleep 4; printf 'scan off\\n'; } | timeout 10s bluetoothctl >/dev/null 2>&1");
     struct QuickBtItem found[32];
     int count = 0;
     FILE *p = popen("printf 'devices\\n' | timeout 6s bluetoothctl 2>/dev/null", "r");
@@ -750,7 +777,7 @@ static void start_bt_scan(void)
 static void *bt_enable_scan_worker(void *unused)
 {
     (void)unused;
-    (void)system("printf 'power on\\n' | bluetoothctl >/dev/null 2>&1");
+    run_command("printf 'power on\\n' | bluetoothctl >/dev/null 2>&1");
     start_bt_scan();
     return NULL;
 }
