@@ -5,7 +5,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JETSON_DIR="$(dirname "$SCRIPT_DIR")"
-BUILD_DIR="$JETSON_DIR/build"
+BUILD_DIR="${JETSON_BUILD_DIR:-$JETSON_DIR/build}"
+case "$BUILD_DIR" in
+    /*) ;;
+    *) BUILD_DIR="$JETSON_DIR/$BUILD_DIR" ;;
+esac
 
 if [ ! -f "$BUILD_DIR/jetson_fw" ]; then
     echo "Build $BUILD_DIR/jetson_fw not found. Run cmake/make first." >&2
@@ -27,6 +31,7 @@ fi
 sudo systemctl stop jetson-fw 2>/dev/null || true
 
 echo "==> Installing to /opt/jetson-fw"
+echo "==> Binary: $BUILD_DIR/jetson_fw"
 sudo mkdir -p /opt/jetson-fw
 
 # Keep Chromium out of the root service account. Xorg/firmware still need root
