@@ -1,0 +1,659 @@
+[
+  {
+    "name": "Ada",
+    "filename": "ada.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#000000",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Assembly",
+    "filename": "assembly.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#654FF0",
+    "source": "Generated abbreviation badge"
+  },
+  {
+    "name": "AssemblyScript",
+    "filename": "assemblyscript.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#007ACC",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Bash",
+    "filename": "bash.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#4EAA25",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "C",
+    "filename": "c.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#A8B9CC",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "C++",
+    "filename": "cplusplus.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#00599C",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "C#",
+    "filename": "csharp.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#99CC00",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Clojure",
+    "filename": "clojure.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#5881D8",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "COBOL",
+    "filename": "cobol.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#005CA5",
+    "source": "Generated abbreviation badge"
+  },
+  {
+    "name": "CoffeeScript",
+    "filename": "coffeescript.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#2F2625",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Common Lisp",
+    "filename": "common-lisp.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#000000",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Crystal",
+    "filename": "crystal.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#000000",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "CSS",
+    "filename": "css.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#663399",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "D",
+    "filename": "d.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#B03931",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Dart",
+    "filename": "dart.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#0175C2",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Delphi",
+    "filename": "delphi.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#E62431",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Elixir",
+    "filename": "elixir.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#4B275F",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Elm",
+    "filename": "elm.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#1293D8",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Erlang",
+    "filename": "erlang.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#A90533",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "F#",
+    "filename": "fsharp.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#378BBA",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Fortran",
+    "filename": "fortran.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#734F96",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "GDScript",
+    "filename": "gdscript.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#478CBF",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Go",
+    "filename": "go.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#00ADD8",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "GraphQL",
+    "filename": "graphql.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#E10098",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Groovy",
+    "filename": "groovy.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#4298B8",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Haskell",
+    "filename": "haskell.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#5D4F85",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Haxe",
+    "filename": "haxe.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#EA8220",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "HTML5",
+    "filename": "html5.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#E34F26",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Java",
+    "filename": "java.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#000000",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "JavaScript",
+    "filename": "javascript.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#F7DF1E",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Julia",
+    "filename": "julia.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#9558B2",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Kotlin",
+    "filename": "kotlin.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#7F52FF",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "LabVIEW",
+    "filename": "labview.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#FFDB00",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "LaTeX",
+    "filename": "latex.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#008080",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Lua",
+    "filename": "lua.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#000080",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "MATLAB",
+    "filename": "matlab.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#E16737",
+    "source": "Generated abbreviation badge"
+  },
+  {
+    "name": "Nim",
+    "filename": "nim.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#FFE953",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Nix",
+    "filename": "nix.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#5277C3",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Objective-C",
+    "filename": "objective-c.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#000000",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "OCaml",
+    "filename": "ocaml.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#EC6813",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Pascal",
+    "filename": "pascal.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#E62431",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Perl",
+    "filename": "perl.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#0073A1",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "PHP",
+    "filename": "php.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#777BB4",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "PowerShell",
+    "filename": "powershell.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#5391FE",
+    "source": "Generated abbreviation badge"
+  },
+  {
+    "name": "Prolog",
+    "filename": "prolog.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#74283C",
+    "source": "Generated abbreviation badge"
+  },
+  {
+    "name": "Purescript",
+    "filename": "purescript.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#14161A",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Python",
+    "filename": "python.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#3776AB",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Q#",
+    "filename": "qsharp.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#512BD4",
+    "source": "Generated abbreviation badge"
+  },
+  {
+    "name": "R",
+    "filename": "r.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#276DC3",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Racket",
+    "filename": "racket.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#9F1D20",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Reason",
+    "filename": "reason.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#DD4B39",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Ruby",
+    "filename": "ruby.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#CC342D",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Rust",
+    "filename": "rust.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#000000",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Sass",
+    "filename": "sass.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#CC6699",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Scala",
+    "filename": "scala.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#DC322F",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Scheme",
+    "filename": "scheme.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#4EAA25",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Scratch",
+    "filename": "scratch.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#855CD6",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Shell",
+    "filename": "shell.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#4EAA25",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Solidity",
+    "filename": "solidity.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#363636",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "SQL",
+    "filename": "sql.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#336791",
+    "source": "Generated abbreviation badge"
+  },
+  {
+    "name": "Swift",
+    "filename": "swift.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#F05138",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Tcl",
+    "filename": "tcl.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#1E5A94",
+    "source": "Generated abbreviation badge"
+  },
+  {
+    "name": "TypeScript",
+    "filename": "typescript.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#3178C6",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "V",
+    "filename": "v.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#5D87BF",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Vala",
+    "filename": "vala.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#7239B3",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "VB.NET",
+    "filename": "vbdotnet.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#512BD4",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Verilog",
+    "filename": "verilog.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#B2B7F8",
+    "source": "Generated abbreviation badge"
+  },
+  {
+    "name": "VHDL",
+    "filename": "vhdl.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#543978",
+    "source": "Generated abbreviation badge"
+  },
+  {
+    "name": "WebAssembly",
+    "filename": "webassembly.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#654FF0",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Wolfram",
+    "filename": "wolfram.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#DD1100",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "XML",
+    "filename": "xml.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#005FAD",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "YAML",
+    "filename": "yaml.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#CB171E",
+    "source": "Simple Icons"
+  },
+  {
+    "name": "Zig",
+    "filename": "zig.png",
+    "width": 74,
+    "height": 74,
+    "background": "transparent",
+    "color": "#F7A41D",
+    "source": "Simple Icons"
+  }
+]
