@@ -285,8 +285,8 @@ trap 'exit 143' TERM HUP
 psrp_enable_clocks
 
 unset DBUS_SESSION_BUS_ADDRESS DBUS_SYSTEM_BUS_ADDRESS
-PSRP_CLIENT_PREFIX=()
 PSRP_CLIENT_ENV=()
+PSRP_CLIENT_CMD=()
 PSRP_ENV_BIN="$(command -v env 2>/dev/null || true)"
 [ -n "$PSRP_ENV_BIN" ] || PSRP_ENV_BIN="/usr/bin/env"
 [ -n "$PSRP_CHIAKI_APPDIR" ] && PSRP_CLIENT_ENV+=("APPDIR=$PSRP_CHIAKI_APPDIR")
@@ -298,15 +298,16 @@ PSRP_DBUS_RUN_SESSION="$(command -v dbus-run-session 2>/dev/null || true)"
 if [ -n "$PSRP_DBUS_RUN_SESSION" ]; then
     # xinit only treats absolute/relative paths as the client program; a bare
     # command name falls through to its default xterm client.
-    PSRP_CLIENT_PREFIX=("$PSRP_DBUS_RUN_SESSION")
+    PSRP_CLIENT_CMD=("$PSRP_DBUS_RUN_SESSION" "$PSRP_ENV_BIN")
 else
     echo "launch_ps_remote_play: dbus-run-session missing; PSN login webview may be unstable" >&2
+    PSRP_CLIENT_CMD=("$PSRP_ENV_BIN")
 fi
 
 X_ARGS=("$DISPLAY_NO" "$VT" -nolisten tcp -nocursor -s 0 -dpms)
 if command -v xinit >/dev/null 2>&1; then
-    xinit "$PSRP_ENV_BIN" "${PSRP_CLIENT_ENV[@]}" \
-        "${PSRP_CLIENT_PREFIX[@]}" "${PSRP_CHIAKI[@]}" \
+    xinit "${PSRP_CLIENT_CMD[@]}" "${PSRP_CLIENT_ENV[@]}" \
+        "${PSRP_CHIAKI[@]}" \
         "${CLIENT_ARGS[@]}" -- "${X_ARGS[@]}"
     client_rc=$?
     exit "$client_rc"
@@ -328,8 +329,8 @@ if ! kill -0 "$X_PID" 2>/dev/null; then
     exit 1
 fi
 
-"$PSRP_ENV_BIN" "${PSRP_CLIENT_ENV[@]}" \
-    "${PSRP_CLIENT_PREFIX[@]}" "${PSRP_CHIAKI[@]}" "${CLIENT_ARGS[@]}"
+"${PSRP_CLIENT_CMD[@]}" "${PSRP_CLIENT_ENV[@]}" \
+    "${PSRP_CHIAKI[@]}" "${CLIENT_ARGS[@]}"
 client_rc=$?
 kill "$X_PID" 2>/dev/null || true
 wait "$X_PID" 2>/dev/null || true

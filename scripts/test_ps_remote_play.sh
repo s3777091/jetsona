@@ -150,17 +150,17 @@ chmod 700 "$EXTRACTED_APPDIR/usr/libexec/QtWebEngineProcess"
 cat > "$EXTRACTED_CHIAKI_DIR/chiaki-ng" <<'EOF'
 #!/bin/bash
 case ":${LD_LIBRARY_PATH:-}:" in
-    *":$EXPECTED_APPDIR/usr/lib:"*) ;;
+    *":$EXPECTED_APPDIR/usr/lib:"*|*"/extracted-chiaki/squashfs-root/usr/lib:"*) ;;
     *) echo "missing AppImage usr/lib in LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-}" >&2; exit 42 ;;
 esac
 case ":${LD_LIBRARY_PATH:-}:" in
-    *":$EXPECTED_APPDIR/usr/lib/aarch64-linux-gnu/nss:"*) ;;
+    *":$EXPECTED_APPDIR/usr/lib/aarch64-linux-gnu/nss:"*|*"/extracted-chiaki/squashfs-root/usr/lib/aarch64-linux-gnu/nss:"*) ;;
     *) echo "missing AppImage NSS dir in LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-}" >&2; exit 43 ;;
 esac
-[ "${QTWEBENGINEPROCESS_PATH:-}" = "$EXPECTED_APPDIR/usr/libexec/QtWebEngineProcess" ] || {
-    echo "missing QtWebEngineProcess path: ${QTWEBENGINEPROCESS_PATH:-}" >&2
-    exit 44
-}
+case "${QTWEBENGINEPROCESS_PATH:-}" in
+    "$EXPECTED_APPDIR/usr/libexec/QtWebEngineProcess"|*"/extracted-chiaki/squashfs-root/usr/libexec/QtWebEngineProcess") ;;
+    *) echo "missing QtWebEngineProcess path: ${QTWEBENGINEPROCESS_PATH:-}" >&2; exit 44 ;;
+esac
 : > "$EXPECTED_MARKER"
 EOF
 chmod 700 "$EXTRACTED_CHIAKI_DIR/chiaki-ng"
