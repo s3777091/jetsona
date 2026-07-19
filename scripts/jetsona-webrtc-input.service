@@ -1,0 +1,15 @@
+[Unit]
+Description=Jetsona WebRTC keyboard and mouse bridge
+After=network.target
+Before=jetson-fw.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-/etc/jetsona-webrtc.env
+ExecStart=/usr/local/lib/jetsona/jetsona_webrtc_input.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

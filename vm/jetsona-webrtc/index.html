@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+  <title>Jetsona Remote</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #05070a; }
+    body { display: grid; place-items: center; }
+    #stage { position: relative; width: min(100vw, calc(100vh * 5 / 3)); aspect-ratio: 5 / 3;
+      background: #000; box-shadow: 0 0 80px #000; outline: none; }
+    video { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: auto; }
+    #capture { position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
+    #status { position: absolute; left: 12px; top: 12px; padding: 7px 10px; border-radius: 7px;
+      background: rgba(0,0,0,.70); color: #fff; font-size: 13px; pointer-events: none; }
+    #toolbar { position: absolute; right: 12px; top: 12px; display: flex; gap: 7px; }
+    button { border: 1px solid #ffffff35; border-radius: 7px; padding: 7px 10px;
+      background: rgba(0,0,0,.70); color: #fff; cursor: pointer; }
+    #hint { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+      padding: 8px 12px; border-radius: 8px; background: rgba(0,0,0,.72); color: #fff;
+      font-size: 13px; pointer-events: none; transition: opacity .2s; white-space: nowrap; }
+    .ok { color: #7cf0a0; } .warn { color: #ffd166; } .bad { color: #ff7070; }
+    body.locked #capture { cursor: none; }
+    body.locked #hint { opacity: 0; }
+  </style>
+</head>
+<body>
+  <main id="stage" tabindex="0">
+    <video id="video" autoplay muted playsinline></video>
+    <div id="capture"></div>
+    <div id="status" class="warn">Đang kết nối…</div>
+    <div id="toolbar">
+      <button id="return" type="button">Về firmware</button>
+      <button id="reconnect" type="button">Kết nối lại</button>
+      <button id="fullscreen" type="button">Toàn màn hình</button>
+    </div>
+    <div id="hint">Bấm vào màn hình để giữ chuột · Esc để thả chuột</div>
+  </main>
+  <script>
+  (() => {
+    'use strict';
+    const stage = document.querySelector('#stage');
+    const capture = document.querySelector('#capture');
+    const video = document.querySelector('#video');
+    const statusBox = document.querySelector('#status');
+    const pathRoot = '/jetsona/';
+    const inputToken = '__JETSONA_INPUT_TOKEN__';
+    let pc = null;
+    let ws = null;
+    let reconnectTimer = null;
+
+    const keyCodes = {
+      Escape:1, Digit1:2, Digit2:3, Digit3:4, Digit4:5, Digit5:6, Digit6:7,
+      Digit7:8, Digit8:9, Digit9:10, Digit0:11, Minus:12, Equal:13, Backspace:14,
+      Tab:15, KeyQ:16, KeyW:17, KeyE:18, KeyR:19, KeyT:20, KeyY:21, KeyU:22,
+      KeyI:23, KeyO:24, KeyP:25, BracketLeft:26, BracketRight:27, Enter:28,
+      ControlLeft:29, KeyA:30, KeyS:31, KeyD:32, KeyF:33, KeyG:34, KeyH:35,
+      KeyJ:36, KeyK:37, KeyL:38, Semicolon:39, Quote:40, Backquote:41,
+      ShiftLeft:42, Backslash:43, KeyZ:44, KeyX:45, KeyC:46, KeyV:47, KeyB:48,
+      KeyN:49, KeyM:50, Comma:51, Period:52, Slash:53, ShiftRight:54,
+      NumpadMultiply:55, AltLeft:56, Space:57, CapsLock:58, F1:59, F2:60, F3:61,
+      F4:62, F5:63, F6:64, F7:65, F8:66, F9:67, F10:68, NumLock:69,
+      ScrollLock:70, F11:87, F12:88, NumpadEnter:96, ControlRight:97,
+      NumpadDivide:98, AltRight:100, Home:102, ArrowUp:103, PageUp:104,
+      ArrowLeft:105, ArrowRight:106, End:107, ArrowDown:108, PageDown:109,
+      Insert:110, Delete:111, MetaLeft:125, MetaRight:126
+    };
+    const mouseCodes = {0:272, 1:274, 2:273};
+
+    function setStatus(text, state='warn') {
+      statusBox.textContent = text;
+      statusBox.className = state;
+    }
+
+    function send(message) {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+    }
+
+    function connectInput() {
+      if (ws) { ws.onclose = null; ws.close(); }
+      const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${scheme}//${location.host}${pathRoot}input?token=${encodeURIComponent(inputToken)}`);
+      ws.onopen = () => { if (pc && pc.connectionState === 'connected') setStatus('Trực tuyến', 'ok'); };
+      ws.onclose = () => setTimeout(connectInput, 1500);
+    }
+
+    function waitForIce(peer) {
+      if (peer.iceGatheringState === 'complete') return Promise.resolve();
+      return new Promise(resolve => {
+        const check = () => {
+          if (peer.iceGatheringState === 'complete') {
+            peer.removeEventListener('icegatheringstatechange', check);
+            resolve();
+          }
+        };
+        peer.addEventListener('icegatheringstatechange', check);
+        setTimeout(resolve, 2500);
+      });
+    }
+
+    async function connectVideo() {
+      clearTimeout(reconnectTimer);
+      setStatus('Đang kết nối video…');
+      if (pc) pc.close();
+      pc = new RTCPeerConnection({bundlePolicy: 'max-bundle'});
+      pc.addTransceiver('video', {direction: 'recvonly'});
+      pc.ontrack = event => { video.srcObject = event.streams[0]; video.play().catch(() => {}); };
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        if (state === 'connected') setStatus(ws && ws.readyState === 1 ? 'Trực tuyến' : 'Video OK · input đang nối', 'ok');
+        if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+          setStatus(`Mất kết nối (${state})`, 'bad');
+          if (state !== 'closed') reconnectTimer = setTimeout(connectVideo, 2000);
+        }
+      };
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await waitForIce(pc);
+        const response = await fetch(`${pathRoot}media/jetsona/whep`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/sdp'},
+          body: pc.localDescription.sdp,
+          cache: 'no-store'
+        });
+        if (!response.ok) throw new Error(`WHEP ${response.status}`);
+        await pc.setRemoteDescription({type: 'answer', sdp: await response.text()});
+      } catch (error) {
+        setStatus(`Chưa có stream · thử lại (${error.message})`, 'bad');
+        reconnectTimer = setTimeout(connectVideo, 2500);
+      }
+    }
+
+    capture.addEventListener('click', () => {
+      if (document.pointerLockElement !== capture) capture.requestPointerLock();
+      stage.focus();
+    });
+    document.addEventListener('pointerlockchange', () => {
+      document.body.classList.toggle('locked', document.pointerLockElement === capture);
+      if (document.pointerLockElement === capture) stage.focus();
+    });
+    document.addEventListener('mousemove', event => {
+      if (document.pointerLockElement !== capture) return;
+      const scale = 800 / Math.max(1, stage.clientWidth);
+      send({t:'m', dx:Math.round(event.movementX * scale), dy:Math.round(event.movementY * scale)});
+    });
+    capture.addEventListener('mousedown', event => {
+      if (document.pointerLockElement !== capture) return;
+      const code = mouseCodes[event.button];
+      if (code) send({t:'k', code, value:1});
+      event.preventDefault();
+    });
+    capture.addEventListener('mouseup', event => {
+      const code = mouseCodes[event.button];
+      if (code) send({t:'k', code, value:0});
+      event.preventDefault();
+    });
+    capture.addEventListener('contextmenu', event => event.preventDefault());
+    capture.addEventListener('wheel', event => {
+      send({t:'w', v:event.deltaY < 0 ? 1 : -1});
+      event.preventDefault();
+    }, {passive:false});
+    window.addEventListener('keydown', event => {
+      if (document.pointerLockElement !== capture) return;
+      const code = keyCodes[event.code];
+      if (!code) return;
+      send({t:'k', code, value:event.repeat ? 2 : 1});
+      event.preventDefault();
+    }, true);
+    window.addEventListener('keyup', event => {
+      const code = keyCodes[event.code];
+      if (!code) return;
+      send({t:'k', code, value:0});
+      if (document.pointerLockElement === capture) event.preventDefault();
+    }, true);
+    window.addEventListener('blur', () => {
+      Object.values(keyCodes).forEach(code => send({t:'k', code, value:0}));
+      Object.values(mouseCodes).forEach(code => send({t:'k', code, value:0}));
+    });
+    document.querySelector('#fullscreen').onclick = () => stage.requestFullscreen();
+    document.querySelector('#reconnect').onclick = connectVideo;
+    document.querySelector('#return').onclick = () => {
+      if (confirm('Đóng Chromium và trở về giao diện firmware?')) {
+        if (document.pointerLockElement) document.exitPointerLock();
+        send({t:'return'});
+        setStatus('Đang trở về firmware…');
+      }
+    };
+
+    connectInput();
+    connectVideo();
+  })();
+  </script>
+</body>
+</html>

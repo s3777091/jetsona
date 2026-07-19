@@ -1,0 +1,17 @@
+[Unit]
+Description=Jetsona hardware H.264 framebuffer publisher
+After=network-online.target jetson-rdp-tunnel.service jetson-fw.service
+Wants=network-online.target
+Requires=jetson-rdp-tunnel.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/jetsona-webrtc.env
+ExecStart=/usr/local/lib/jetsona/jetsona_webrtc_stream.sh
+Restart=always
+RestartSec=3
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
