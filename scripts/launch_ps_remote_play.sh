@@ -226,8 +226,11 @@ psrp_enable_clocks
 
 unset DBUS_SESSION_BUS_ADDRESS DBUS_SYSTEM_BUS_ADDRESS
 PSRP_CLIENT_PREFIX=()
-if command -v dbus-run-session >/dev/null 2>&1; then
-    PSRP_CLIENT_PREFIX=(dbus-run-session)
+PSRP_DBUS_RUN_SESSION="$(command -v dbus-run-session 2>/dev/null || true)"
+if [ -n "$PSRP_DBUS_RUN_SESSION" ]; then
+    # xinit only treats absolute/relative paths as the client program; a bare
+    # command name falls through to its default xterm client.
+    PSRP_CLIENT_PREFIX=("$PSRP_DBUS_RUN_SESSION")
 else
     echo "launch_ps_remote_play: dbus-run-session missing; PSN login webview may be unstable" >&2
 fi
