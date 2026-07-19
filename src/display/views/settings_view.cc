@@ -9,6 +9,8 @@
 #include "display/theme/ui_theme.h"
 #include "lvgl_runtime.h"
 #include "net/airplane_mode.h"
+#include "net/captive_portal.h"
+#include "net/ethernet_status.h"
 #include "net/vpn_manager.h"
 #include "platform/fan_control.h"
 #include "platform/shell_command.h"
@@ -47,6 +49,54 @@ using jetson::ui::Color;
 using LvLockGuard = jetson::ui::LvglLockGuard;
 
 namespace {
+constexpr int kPullRefreshTriggerPx = 56;
+
+// Long lists use LVGL's elastic top overscroll. Short/empty lists cannot
+// become a scroll target, so LV_EVENT_GESTURE is kept as a fallback. This
+// makes the same downward pull work regardless of how many radios were found.
+bool PullRefreshTriggered(lv_event_t *e, lv_obj_t *list, bool busy,
+                          bool *armed) {
+    if (!e || !list || !armed) return false;
+    const lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_active();
+
+    if (code == LV_EVENT_GESTURE) {
+        *armed = false;
+        return !busy && indev &&
+               lv_indev_get_gesture_dir(indev) == LV_DIR_BOTTOM &&
+               lv_obj_get_scroll_y(list) <= 0;
+    }
+    if (code == LV_EVENT_SCROLL_BEGIN) {
+        // The elastic snap-back starts a second scroll animation after the
+        // finger is released. Preserve an already-armed pull for that begin;
+        // only a new finger-driven scroll may reset the gesture state.
+        if (indev && lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED)
+            *armed = false;
+        return false;
+    }
+
+    const int32_t pull = -lv_obj_get_scroll_y(list);
+    const bool pressed =
+        indev && lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED;
+    if (code == LV_EVENT_SCROLL && pressed) {
+        // Latch once the threshold is crossed. Elastic snap-back can move
+        // above the threshold before RELEASED arrives; it must not cancel a
+        // pull the user already completed.
+        *armed = *armed || (!busy && pull >= kPullRefreshTriggerPx);
+        return false;
+    }
+
+    const bool terminal = code == LV_EVENT_SCROLL_END ||
+                          code == LV_EVENT_RELEASED ||
+                          code == LV_EVENT_PRESS_LOST ||
+                          (code == LV_EVENT_SCROLL && !pressed);
+    if (!terminal || pressed) return false;
+
+    const bool trigger = *armed && !busy;
+    *armed = false;
+    return trigger;
+}
+
 // Run `cmd` via /bin/sh, capture combined stdout+stderr (trimmed).
 std::string RunCapture(const std::string &cmd) {
     auto result = jetson::platform::RunShellCommand(cmd);
@@ -454,7 +504,7 @@ void SettingsView::ShowBluetoothPage() {
 void SettingsView::BuildShell() {
     const auto &p = jetson::UiTheme::Instance().Palette();
 
-    // The 800x480 panel is landscape, so retain a narrow category rail while
+    // The panel is landscape, so retain a narrow category rail while
     // making the detail pane behave like one iPhone Settings navigation stack.
     lv_obj_set_flex_flow(body_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(body_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
@@ -464,6 +514,7 @@ void SettingsView::BuildShell() {
     lv_obj_clear_flag(body_, LV_OBJ_FLAG_SCROLLABLE);
 
     int body_h = (height_ - kHeaderHeight) - 16;
+    UpdateSidebarRowHeights(body_h);
 
     // ---- Sidebar ----
     sidebar_ = lv_obj_create(body_);
@@ -493,6 +544,7 @@ void SettingsView::BuildShell() {
     AddVpnRow();
 
     const Entry categories[] = {
+        {Cat::Display, "screen", "Màn hình"},
         {Cat::Sound, "speaker", "Âm thanh"},
         {Cat::General, "settings", "Cài đặt chung"},
         {Cat::Applications, "app", "Ứng dụng"},
@@ -526,12 +578,28 @@ void SettingsView::BuildShell() {
     // after make_shared returns, which is the first safe point for it.
 }
 
+void SettingsView::UpdateSidebarRowHeights(int pane_height) {
+    // Eight visible settings rows should exactly occupy the rail at 1024x600
+    // while remaining compact enough to fit the original 800x480 panel.
+    constexpr int kItemCount = 8;
+    constexpr int kVerticalPadding = 12; // sidebar pad_top + pad_bottom
+    constexpr int kRowGaps = (kItemCount - 1) * 4;
+    const int available = pane_height - kVerticalPadding - kRowGaps;
+    sidebar_row_height_ = std::clamp(available / kItemCount, 44, 60);
+
+    if (!sidebar_) return;
+    const uint32_t count = lv_obj_get_child_count(sidebar_);
+    for (uint32_t i = 0; i < count; ++i)
+        lv_obj_set_height(lv_obj_get_child(sidebar_, static_cast<int32_t>(i)),
+                          sidebar_row_height_);
+}
+
 void SettingsView::AddAirplaneRow() {
     const auto &p = jetson::UiTheme::Instance().Palette();
     airplane_row_ = lv_obj_create(sidebar_);
     lv_obj_remove_style_all(airplane_row_);
     lv_obj_set_width(airplane_row_, lv_pct(100));
-    lv_obj_set_height(airplane_row_, 48);
+    lv_obj_set_height(airplane_row_, sidebar_row_height_);
     lv_obj_set_style_radius(airplane_row_, 10, 0);
     lv_obj_set_style_bg_color(airplane_row_, Color(p.row), 0);
     lv_obj_set_style_bg_opa(airplane_row_, LV_OPA_COVER, 0);
@@ -551,8 +619,8 @@ void SettingsView::AddAirplaneRow() {
     lv_obj_clear_flag(airplane_icon_bg_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // This is critical system state, so use the code-native glyph instead of
-    // relying on the runtime PNG decoder and deployed asset set.
+    // Shared helper uses the reviewed `airplans` artwork and retains a
+    // code-native fallback for devices with an older asset bundle.
     auto *plane =
         jetson::ui::CreateAirplaneIcon(airplane_icon_bg_, lv_color_white());
     lv_obj_center(plane);
@@ -563,7 +631,7 @@ void SettingsView::AddAirplaneRow() {
     lv_obj_set_style_text_font(label, &BUILTIN_SMALL_TEXT_FONT, 0);
     lv_obj_set_style_text_color(label, Color(p.text), 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-    lv_label_set_text(label, "Plan\nmode");
+    lv_label_set_text(label, "Máy bay");
 
     airplane_switch_ = MakeSwitch(airplane_row_, airplane_enabled_, OnAirplaneSwitch);
     lv_obj_set_size(airplane_switch_, 42, 24);
@@ -591,7 +659,7 @@ void SettingsView::AddVpnRow() {
     vpn_row_ = lv_obj_create(sidebar_);
     lv_obj_remove_style_all(vpn_row_);
     lv_obj_set_width(vpn_row_, lv_pct(100));
-    lv_obj_set_height(vpn_row_, 48);
+    lv_obj_set_height(vpn_row_, sidebar_row_height_);
     lv_obj_set_style_radius(vpn_row_, 10, 0);
     lv_obj_set_style_bg_color(vpn_row_, Color(p.row), 0);
     lv_obj_set_style_bg_opa(vpn_row_, LV_OPA_COVER, 0);
@@ -662,7 +730,7 @@ void SettingsView::AddSidebarRow(Cat cat, const char *icon, const char *label) {
     auto *row = lv_obj_create(sidebar_);
     lv_obj_remove_style_all(row);
     lv_obj_set_width(row, lv_pct(100));
-    lv_obj_set_height(row, 44);
+    lv_obj_set_height(row, sidebar_row_height_);
     lv_obj_set_style_radius(row, 10, 0);
     lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_left(row, 8, 0);
@@ -730,11 +798,11 @@ void SettingsView::ClearDetail() {
     lang_vi_btn_ = nullptr;
     lang_en_btn_ = nullptr;
     wifi_switch_ = nullptr;
-    wifi_reload_btn_ = nullptr;
     wifi_list_ = nullptr;
+    wifi_pull_armed_ = false;
     bt_switch_ = nullptr;
-    bt_reload_btn_ = nullptr;
     bt_list_ = nullptr;
+    bt_pull_armed_ = false;
     bright_slider_ = nullptr; // (declared via locals; reset modal refs below)
     bright_value_label_ = nullptr;
     text_size_slider_ = nullptr;
@@ -851,23 +919,6 @@ lv_obj_t *SettingsView::MakeButton(lv_obj_t *parent, const char *text, uint32_t 
     lv_label_set_text(l, text);
     lv_obj_center(l);
     return b;
-}
-
-lv_obj_t *SettingsView::MakeReloadButton(lv_obj_t *parent, lv_event_cb_t cb) {
-    const auto &p = jetson::UiTheme::Instance().Palette();
-    auto *button = lv_button_create(parent);
-    lv_obj_set_size(button, 34, 34);
-    lv_obj_set_style_bg_color(button, Color(p.button), 0);
-    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(button, 9, 0);
-    lv_obj_set_style_shadow_width(button, 0, 0);
-    lv_obj_set_style_pad_all(button, 0, 0);
-    lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, this);
-    auto *icon = jetson::ui::CreateAppIcon(button, "reload", 20);
-    lv_obj_set_style_image_recolor(icon, Color(p.accent), 0);
-    lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
-    lv_obj_center(icon);
-    return button;
 }
 
 lv_obj_t *SettingsView::DisplayCard() {
@@ -1444,10 +1495,10 @@ void SettingsView::BuildTerminalSettings() {
 }
 
 void SettingsView::BuildWifi() {
-    // One compact control row: title, reload (only while on), and power.
+    // One compact control row: title, pull-to-refresh hint, and power.
     // Merely opening the page probes radio state but never enables or scans it.
-    auto *top = MakeRow("WiFi", airplane_enabled_ ? "Đang tắt bởi Plan mode" : nullptr);
-    wifi_reload_btn_ = MakeReloadButton(top, OnWifiRescan);
+    auto *top = MakeRow("WiFi", airplane_enabled_ ? "Đang tắt bởi chế độ máy bay"
+                                                   : "Kéo danh sách xuống để làm mới");
     wifi_switch_ = MakeSwitch(top, false, OnWifiSwitch);
     WifiRefreshSwitch();
     AirplaneRefreshUi();
@@ -1462,8 +1513,18 @@ void SettingsView::BuildWifi() {
     lv_obj_set_style_pad_row(wifi_list_, 6, 0);
     lv_obj_set_flex_flow(wifi_list_, LV_FLEX_FLOW_COLUMN);
     lv_obj_add_flag(wifi_list_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(wifi_list_, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    // Stop default gesture bubbling here so an empty/short list receives the
+    // downward-swipe fallback itself instead of passing it to the screen.
+    lv_obj_clear_flag(wifi_list_, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_set_scroll_dir(wifi_list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(wifi_list_, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_add_event_cb(wifi_list_, OnWifiPull, LV_EVENT_SCROLL_BEGIN, this);
+    lv_obj_add_event_cb(wifi_list_, OnWifiPull, LV_EVENT_SCROLL, this);
+    lv_obj_add_event_cb(wifi_list_, OnWifiPull, LV_EVENT_SCROLL_END, this);
+    lv_obj_add_event_cb(wifi_list_, OnWifiPull, LV_EVENT_RELEASED, this);
+    lv_obj_add_event_cb(wifi_list_, OnWifiPull, LV_EVENT_PRESS_LOST, this);
+    lv_obj_add_event_cb(wifi_list_, OnWifiPull, LV_EVENT_GESTURE, this);
 
     if (airplane_enabled_) {
         wifi_enabled_ = false;
@@ -1477,8 +1538,8 @@ void SettingsView::BuildWifi() {
 
 void SettingsView::BuildBluetooth() {
     auto *top = MakeRow("Bluetooth",
-                        airplane_enabled_ ? "Đang tắt bởi Plan mode" : nullptr);
-    bt_reload_btn_ = MakeReloadButton(top, OnBtRescan);
+                        airplane_enabled_ ? "Đang tắt bởi chế độ máy bay"
+                                          : "Kéo danh sách xuống để làm mới");
     bt_switch_ = MakeSwitch(top, false, OnBtSwitch);
     BtRefreshSwitch();
     AirplaneRefreshUi();
@@ -1492,8 +1553,16 @@ void SettingsView::BuildBluetooth() {
     lv_obj_set_style_pad_row(bt_list_, 6, 0);
     lv_obj_set_flex_flow(bt_list_, LV_FLEX_FLOW_COLUMN);
     lv_obj_add_flag(bt_list_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(bt_list_, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_clear_flag(bt_list_, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_set_scroll_dir(bt_list_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(bt_list_, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_add_event_cb(bt_list_, OnBtPull, LV_EVENT_SCROLL_BEGIN, this);
+    lv_obj_add_event_cb(bt_list_, OnBtPull, LV_EVENT_SCROLL, this);
+    lv_obj_add_event_cb(bt_list_, OnBtPull, LV_EVENT_SCROLL_END, this);
+    lv_obj_add_event_cb(bt_list_, OnBtPull, LV_EVENT_RELEASED, this);
+    lv_obj_add_event_cb(bt_list_, OnBtPull, LV_EVENT_PRESS_LOST, this);
+    lv_obj_add_event_cb(bt_list_, OnBtPull, LV_EVENT_GESTURE, this);
 
     if (airplane_enabled_) {
         bt_powered_ = false;
@@ -2092,14 +2161,6 @@ void SettingsView::WifiRefreshSwitch() {
             lv_obj_add_state(wifi_switch_, LV_STATE_DISABLED);
         else lv_obj_clear_state(wifi_switch_, LV_STATE_DISABLED);
     }
-    if (wifi_reload_btn_) {
-        if (wifi_enabled_) lv_obj_clear_flag(wifi_reload_btn_, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_add_flag(wifi_reload_btn_, LV_OBJ_FLAG_HIDDEN);
-        if (wifi_busy_.load() || airplane_enabled_)
-            lv_obj_add_state(wifi_reload_btn_, LV_STATE_DISABLED);
-        else
-            lv_obj_clear_state(wifi_reload_btn_, LV_STATE_DISABLED);
-    }
 }
 
 void SettingsView::WifiLoadState() {
@@ -2122,13 +2183,15 @@ void SettingsView::WifiLoadState() {
 
 void SettingsView::WifiRescan() {
     if (!wifi_list_) return;
+    wifi_pull_armed_ = false;
+    lv_obj_scroll_to_y(wifi_list_, 0, LV_ANIM_OFF);
     if (airplane_enabled_ || jetson::IsAirplaneModeEnabled()) {
         wifi_enabled_ = false;
         wifi_scanned_ = true;
         wifi_nets_.clear();
         WifiRefreshSwitch();
         WifiRenderList();
-        SetStatus("WiFi bị tắt bởi Plan mode");
+        SetStatus("WiFi bị tắt bởi chế độ máy bay");
         return;
     }
     if (wifi_busy_.exchange(true)) return;
@@ -2193,12 +2256,12 @@ void SettingsView::WifiRenderList() {
         lv_obj_set_style_text_font(e, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(e, Color(p.sub_text), 0);
         lv_label_set_text(e, airplane_enabled_
-                                ? "Plan mode đang bật."
+                                ? "Chế độ máy bay đang bật."
                                 : (wifi_busy_.load() && wifi_enabled_)
                                       ? "Đang quét WiFi..."
                                       : !wifi_enabled_
                                             ? "WiFi đang tắt."
-                                            : "Không có mạng. Bấm biểu tượng tải lại để quét.");
+                                            : "Không có mạng. Kéo xuống để quét lại.");
         return;
     }
     for (const auto &n : wifi_nets_) WifiCreateRow(n);
@@ -2623,6 +2686,11 @@ void SettingsView::WifiDoConnect(const std::string &ssid, const std::string &pw,
             nets = self->wifi_.Scan();
             active = self->wifi_.ActiveSsid();
         }
+        jetson::CaptivePortalResult portal;
+        if (ok && self->captive_portal_action_ &&
+            !jetson::IsEthernetConnected()) {
+            portal = jetson::ProbeCaptivePortal();
+        }
         const std::string error = self->wifi_.LastError();
         LvLockGuard lock;
         self->wifi_busy_ = false;
@@ -2631,8 +2699,18 @@ void SettingsView::WifiDoConnect(const std::string &ssid, const std::string &pw,
             self->wifi_nets_ = std::move(nets);
             self->wifi_scanned_ = true;
             if (self->wifi_list_) self->WifiRenderList();
-            self->SetStatus(("Đã kết nối: " + (active.empty() ? ssid : active)).c_str());
+            const bool needs_login =
+                portal.state == jetson::InternetAccessState::CaptivePortal;
+            self->SetStatus(needs_login
+                ? "Wi-Fi cần đăng nhập để truy cập Internet"
+                : ("Đã kết nối: " + (active.empty() ? ssid : active)).c_str());
             ESP_LOGI(TAG, "WiFi connected: %s", ssid.c_str());
+            if (needs_login) {
+                self->Notify("Đang mở trang đăng nhập Wi-Fi...", 1800);
+                const std::string login_url = portal.login_url.empty()
+                    ? jetson::CaptivePortalProbeUrl() : portal.login_url;
+                self->captive_portal_action_(login_url);
+            }
         } else {
             self->SetStatus(("Lỗi: " + error).c_str());
             ESP_LOGE(TAG, "WiFi connection failed for %s: %s", ssid.c_str(), error.c_str());
@@ -2683,14 +2761,6 @@ void SettingsView::BtRefreshSwitch() {
             lv_obj_add_state(bt_switch_, LV_STATE_DISABLED);
         else lv_obj_clear_state(bt_switch_, LV_STATE_DISABLED);
     }
-    if (bt_reload_btn_) {
-        if (bt_powered_) lv_obj_clear_flag(bt_reload_btn_, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_add_flag(bt_reload_btn_, LV_OBJ_FLAG_HIDDEN);
-        if (bt_busy_.load() || airplane_enabled_)
-            lv_obj_add_state(bt_reload_btn_, LV_STATE_DISABLED);
-        else
-            lv_obj_clear_state(bt_reload_btn_, LV_STATE_DISABLED);
-    }
 }
 
 void SettingsView::BtLoadState() {
@@ -2713,13 +2783,15 @@ void SettingsView::BtLoadState() {
 
 void SettingsView::BtRescan() {
     if (!bt_list_) return;
+    bt_pull_armed_ = false;
+    lv_obj_scroll_to_y(bt_list_, 0, LV_ANIM_OFF);
     if (airplane_enabled_ || jetson::IsAirplaneModeEnabled()) {
         bt_powered_ = false;
         bt_scanned_ = true;
         bt_devs_.clear();
         BtRefreshSwitch();
         BtRenderList();
-        SetStatus("Bluetooth bị tắt bởi Plan mode");
+        SetStatus("Bluetooth bị tắt bởi chế độ máy bay");
         return;
     }
     if (bt_busy_.exchange(true)) {
@@ -2789,12 +2861,12 @@ void SettingsView::BtRenderList() {
         lv_obj_set_style_text_font(e, &BUILTIN_TEXT_FONT, 0);
         lv_obj_set_style_text_color(e, Color(p.sub_text), 0);
         lv_label_set_text(e, airplane_enabled_
-                                ? "Plan mode đang bật."
+                                ? "Chế độ máy bay đang bật."
                                 : (bt_busy_.load() && bt_powered_)
                                       ? "Đang tìm kiếm thiết bị Bluetooth..."
                                       : !bt_powered_
                                             ? "Bluetooth đang tắt."
-                                            : "Không có thiết bị. Bấm biểu tượng tải lại.");
+                                            : "Không có thiết bị. Kéo xuống để quét lại.");
         return;
     }
     for (const auto &d : bt_devs_) BtCreateRow(d);
@@ -3156,8 +3228,20 @@ void SettingsView::BtDoAction(const std::string &addr, bool connected) {
     if (bt_busy_.exchange(true)) return;
     SetStatus(connected ? "Đang ngắt..." : "Đang kết nối...");
     std::thread([self = Self(), addr, connected]() {
-        bool ok = connected ? self->bluetooth_.Disconnect(addr)
-                            : self->bluetooth_.PairAndConnect(addr);
+        bool ok = false;
+        if (connected) {
+            ok = self->bluetooth_.Disconnect(addr);
+        } else {
+            ok = self->bluetooth_.PairAndConnectWithPrompt(
+                addr, [self](const std::string &code) {
+                    DispatchToLvgl([self, code]() {
+                        const std::string message = "Nhập " + code +
+                            " trên bàn phím Bluetooth rồi nhấn Enter";
+                        self->SetStatus(message.c_str());
+                        self->Notify(message.c_str(), 20000);
+                    });
+                });
+        }
         std::vector<jetson::BtDevice> devs;
         if (ok) devs = self->bluetooth_.Scan(4);
         const std::string error = self->bluetooth_.LastError();
@@ -3356,6 +3440,7 @@ void SettingsView::OnResize(int /*w*/, int h) {
     const int pane_h = std::max(240, h - 16);
     if (sidebar_) lv_obj_set_height(sidebar_, pane_h);
     if (detail_) lv_obj_set_height(detail_, pane_h);
+    UpdateSidebarRowHeights(pane_h);
     ShowCategory(current_);
 }
 
@@ -3643,8 +3728,8 @@ void SettingsView::OnAirplaneSwitch(lv_event_t *e) {
     // while busy). The worker below reverts it if the transition fails.
     self->airplane_enabled_ = enabled;
     self->AirplaneRefreshUi();
-    self->SetStatus(enabled ? "Đang bật Plan mode..."
-                            : "Đang tắt Plan mode...");
+    self->SetStatus(enabled ? "Đang bật chế độ máy bay..."
+                            : "Đang tắt chế độ máy bay...");
     std::thread([self = self->Self(), enabled]() {
         auto result = jetson::SetAirplaneMode(enabled, self->wifi_, self->bluetooth_);
 
@@ -3664,13 +3749,13 @@ void SettingsView::OnAirplaneSwitch(lv_event_t *e) {
 
         std::string message;
         if (enabled && result.success) {
-            message = "Đã bật Plan mode — WiFi và Bluetooth đã tắt";
+            message = "Đã bật chế độ máy bay — WiFi và Bluetooth đã tắt";
         } else if (enabled) {
             message = "Không thể bật: một radio vẫn đang hoạt động";
         } else if (result.success) {
-            message = "Đã tắt Plan mode";
+            message = "Đã tắt chế độ máy bay";
         } else {
-            message = "Đã tắt Plan mode, nhưng chưa khôi phục đủ radio";
+            message = "Đã tắt chế độ máy bay, nhưng chưa khôi phục đủ radio";
         }
         self->SetStatus(result.error.empty()
                             ? message.c_str()
@@ -3689,7 +3774,7 @@ void SettingsView::OnVpnSwitch(lv_event_t *e) {
                     jetson::IsAirplaneModeEnabled())) {
         self->vpn_enabled_ = false;
         self->VpnRefreshUi();
-        const char *message = "Tắt Plan mode trước khi bật VPN";
+        const char *message = "Tắt chế độ máy bay trước khi bật VPN";
         self->SetStatus(message);
         self->Notify(message);
         return;
@@ -3737,7 +3822,7 @@ void SettingsView::OnWifiSwitch(lv_event_t *e) {
     if (self->airplane_enabled_ || self->airplane_busy_.load() ||
         jetson::IsAirplaneModeEnabled()) {
         self->WifiRefreshSwitch();
-        self->SetStatus("Tắt Plan mode trước khi bật WiFi");
+        self->SetStatus("Tắt chế độ máy bay trước khi bật WiFi");
         return;
     }
     bool on = lv_obj_has_state(self->wifi_switch_, LV_STATE_CHECKED);
@@ -3814,10 +3899,13 @@ void SettingsView::OnWifiSwitch(lv_event_t *e) {
     }).detach();
 }
 
-void SettingsView::OnWifiRescan(lv_event_t *e) {
+void SettingsView::OnWifiPull(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
-    self->WifiRescan();
+    if (!self || !self->wifi_list_) return;
+    if (PullRefreshTriggered(e, self->wifi_list_, self->wifi_busy_.load(),
+                             &self->wifi_pull_armed_))
+        self->WifiRescan();
 }
 
 void SettingsView::OnWifiRowClicked(lv_event_t *e) {
@@ -3848,7 +3936,7 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
     if (self->airplane_enabled_ || self->airplane_busy_.load() ||
         jetson::IsAirplaneModeEnabled()) {
         self->BtRefreshSwitch();
-        const char *message = "Tắt Plan mode trước khi bật Bluetooth";
+        const char *message = "Tắt chế độ máy bay trước khi bật Bluetooth";
         self->SetStatus(message);
         self->Notify(message);
         return;
@@ -3923,10 +4011,13 @@ void SettingsView::OnBtSwitch(lv_event_t *e) {
     }).detach();
 }
 
-void SettingsView::OnBtRescan(lv_event_t *e) {
+void SettingsView::OnBtPull(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
-    self->BtRescan();
+    if (!self || !self->bt_list_) return;
+    if (PullRefreshTriggered(e, self->bt_list_, self->bt_busy_.load(),
+                             &self->bt_pull_armed_))
+        self->BtRescan();
 }
 
 void SettingsView::OnBtRowClicked(lv_event_t *e) {

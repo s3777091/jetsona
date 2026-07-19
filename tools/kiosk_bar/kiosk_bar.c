@@ -107,6 +107,9 @@ static struct QuickWifiItem quick_wifi[QUICK_MAX_ITEMS];
 static int quick_wifi_n = 0;
 static volatile int quick_wifi_busy = 0;
 static int quick_wifi_on = 1;
+/* The connectivity slot is shared: when a cable has carrier, Ethernet wins
+ * over Wi-Fi in both the top glyph and the popup content. */
+static int quick_eth_connected = 0;
 struct QuickBtItem {
     char address[24], name[96];
     int connected, paired, rssi;
@@ -694,7 +697,6 @@ static void *bt_scan_worker(void *unused)
         while (count < 32 && fgets(line, sizeof(line), p)) {
             char address[24], name[96];
             if (sscanf(line, "Device %23s %95[^\n]", address, name) != 2) continue;
-            if (contains_ci(name, "keyboard") || contains_ci(name, "off-key")) continue;
             int duplicate = 0;
             for (int i = 0; i < count; i++)
                 if (strcmp(found[i].address, address) == 0) { duplicate = 1; break; }
@@ -1148,7 +1150,7 @@ static void quick_dimensions(int kind, int *w, int *h)
 {
     int n = 0;
     pthread_mutex_lock(&quick_lock);
-    if (kind == QUICK_WIFI) n = quick_wifi_n;
+    if (kind == QUICK_WIFI) n = quick_eth_connected ? 1 : quick_wifi_n;
     else if (kind == QUICK_BT) n = quick_bt_n;
     pthread_mutex_unlock(&quick_lock);
     if (kind == QUICK_CACHE) { *w = 260; *h = 94; }
@@ -1216,26 +1218,36 @@ static void draw_quick(void)
         draw_usage_bar(d, 59, "RAM", quick_mem_used_kb, quick_mem_total_kb, 0x0a84ff);
         pthread_mutex_unlock(&quick_lock);
     } else if (quick_kind == QUICK_WIFI) {
-        draw_string(d, font_big, 14, 25, "Wi-Fi");
-        draw_toggle(d, quick_w - 52, 10, quick_wifi_on);
-        pthread_mutex_lock(&quick_lock);
-        int n = quick_wifi_n;
-        for (int i = 0; i < (n ? n : 1); i++) {
-            int y = 50 + i * 34;
-            if (!n) {
-                draw_string(d, font_small, 16, y + 19,
-                            quick_wifi_busy ? "Scanning strongest networks..." : "No networks found");
-                break;
-            }
-            XSetForeground(dpy, gc, px(quick_wifi[i].active ? 0x0a84ff : 0x20242b));
-            draw_wifi(d, 25, y + 17, 1);
-            draw_string(d, font_small, 44, y + 20, quick_wifi[i].ssid);
-            char state[24];
-            snprintf(state, sizeof(state), "%s%d%%", quick_wifi[i].secured ? "L " : "", quick_wifi[i].signal);
+        if (quick_eth_connected) {
+            draw_string(d, font_big, 14, 25, "Ethernet");
+            XSetForeground(dpy, gc, px(0x0a84ff));
+            draw_ethernet(d, 25, 67, 1);
+            draw_string(d, font_small, 44, 70, "Using wired LAN");
+            const char *state = "Connected";
             int tw = XTextWidth(font_small, state, (int)strlen(state));
-            draw_string(d, font_small, quick_w - 14 - tw, y + 20, state);
+            draw_string(d, font_small, quick_w - 14 - tw, 70, state);
+        } else {
+            draw_string(d, font_big, 14, 25, "Wi-Fi");
+            draw_toggle(d, quick_w - 52, 10, quick_wifi_on);
+            pthread_mutex_lock(&quick_lock);
+            int n = quick_wifi_n;
+            for (int i = 0; i < (n ? n : 1); i++) {
+                int y = 50 + i * 34;
+                if (!n) {
+                    draw_string(d, font_small, 16, y + 19,
+                                quick_wifi_busy ? "Scanning strongest networks..." : "No networks found");
+                    break;
+                }
+                XSetForeground(dpy, gc, px(quick_wifi[i].active ? 0x0a84ff : 0x20242b));
+                draw_wifi(d, 25, y + 17, 1);
+                draw_string(d, font_small, 44, y + 20, quick_wifi[i].ssid);
+                char state[24];
+                snprintf(state, sizeof(state), "%s%d%%", quick_wifi[i].secured ? "L " : "", quick_wifi[i].signal);
+                int tw = XTextWidth(font_small, state, (int)strlen(state));
+                draw_string(d, font_small, quick_w - 14 - tw, y + 20, state);
+            }
+            pthread_mutex_unlock(&quick_lock);
         }
-        pthread_mutex_unlock(&quick_lock);
     } else if (quick_kind == QUICK_BT) {
         draw_string(d, font_big, 14, 25, "Bluetooth");
         draw_toggle(d, quick_w - 52, 10, quick_bt_on);
@@ -1305,8 +1317,9 @@ static void open_quick(int kind)
     if (menu_open) close_menu();
     if (kind == QUICK_CACHE) start_cache_clean();
     else if (kind == QUICK_WIFI) {
+        quick_eth_connected = ethernet_up();
         quick_wifi_on = wifi_radio_up();
-        if (quick_wifi_on) start_wifi_scan();
+        if (!quick_eth_connected && quick_wifi_on) start_wifi_scan();
     } else if (kind == QUICK_BT) {
         quick_bt_on = bluetooth_up();
         if (quick_bt_on) start_bt_scan();
@@ -1352,6 +1365,7 @@ static void open_quick(int kind)
 static void handle_quick_click(int x, int y)
 {
     if (quick_kind == QUICK_WIFI) {
+        if (quick_eth_connected) return;
         if (y < 45 && x > quick_w - 70) {
             quick_wifi_on = !quick_wifi_on;
             if (quick_wifi_on) enable_wifi_and_scan();
@@ -1471,13 +1485,14 @@ static void redraw(int bat_level, int bat_charging, int wifi, int eth)
     fill_round_rect(d, pillx, PILL_Y, PILL_W, PILL_H, PILL_H / 2, 0);
     draw_queue(d);
 
-    /* Exact firmware order: cache, Bluetooth, Wi-Fi, sound, display, power.
+    /* Exact firmware order: cache, Bluetooth, connectivity, sound, display, power.
      * Every glyph is a stable click target even when its service is off. */
-    (void)bat_level; (void)bat_charging; (void)eth;
+    (void)bat_level; (void)bat_charging;
     XSetForeground(dpy, gc, px(COL_TEXT));
     draw_cache_icon(d, quick_icon_center(QUICK_CACHE), 21);
     draw_bluetooth(d, quick_icon_center(QUICK_BT), 21, bluetooth_up());
-    draw_wifi(d, quick_icon_center(QUICK_WIFI), 25, wifi > 0);
+    if (eth) draw_ethernet(d, quick_icon_center(QUICK_WIFI), 21, 1);
+    else draw_wifi(d, quick_icon_center(QUICK_WIFI), 25, wifi > 0);
     draw_sound_icon(d, quick_icon_center(QUICK_SOUND), 21, quick_muted);
     draw_sun_icon(d, quick_icon_center(QUICK_DISPLAY), 21);
     draw_power_status_icon(d, quick_icon_center(QUICK_POWER), 21);
@@ -2278,6 +2293,7 @@ int main(void)
     battery_read(&bat_level, &bat_charging);
     wifi = wifi_signal();
     eth = ethernet_up();
+    quick_eth_connected = eth;
 
     long press_start = 0; /* monotonic ms of a pill ButtonPress, 0 = idle */
     int ticks = 0;
@@ -2474,7 +2490,16 @@ int main(void)
                 /* Wired link is a sysfs read, not a shell-out, so refresh it
                  * every second: plugging the cable shows up almost at once,
                  * matching the firmware bar. Battery/Wi-Fi stay on 5 s. */
-                eth = ethernet_up();
+                {
+                    int new_eth = ethernet_up();
+                    if (new_eth != eth) {
+                        eth = new_eth;
+                        quick_eth_connected = eth;
+                        if (quick_kind == QUICK_WIFI && !eth && quick_wifi_on)
+                            start_wifi_scan();
+                        __sync_fetch_and_add(&quick_revision, 1);
+                    }
+                }
                 if (++ticks % 5 == 0) {
                     battery_read(&bat_level, &bat_charging);
                     wifi = wifi_signal();

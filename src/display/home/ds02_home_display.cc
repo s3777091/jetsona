@@ -599,6 +599,8 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
     jetson::ui::PreloadAppIcons();
     status_bar_ = std::make_unique<StatusBar>(lv_layer_top());
     status_bar_->SetWifiAction([this]() { OpenWifiSettings(); });
+    status_bar_->SetCaptivePortalAction(
+        [this](const std::string &url) { OpenChromium(url); });
     status_bar_->SetBluetoothAction([this]() { OpenBluetoothSettings(); });
     status_bar_->SetVolumeAction([this](int volume, bool muted) {
         volume_muted_ = muted;
@@ -994,6 +996,8 @@ void Ds02HomeDisplay::OpenSettings() {
         [this](const char *message, int duration_ms) {
             ShowNotification(message, duration_ms);
         });
+    settings_view_->SetCaptivePortalAction(
+        [this](const std::string &url) { OpenChromium(url); });
     settings_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppSettings); });
     settings_view_->Start();
     NoteAppOpened(kAppSettings);

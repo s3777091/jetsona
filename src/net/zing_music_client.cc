@@ -851,10 +851,12 @@ std::string PreferSmallArtwork(const std::string &url) {
     return url.substr(0, digits) + "240" + url.substr(end);
 }
 
-bool HasImageMagic(const std::string &path) {
+enum class ArtworkFormat { Unknown, Jpeg, Png };
+
+ArtworkFormat DetectArtworkFormat(const std::string &path) {
     unsigned char magic[8] = {};
     FILE *file = std::fopen(path.c_str(), "rb");
-    if (!file) return false;
+    if (!file) return ArtworkFormat::Unknown;
     const size_t count = std::fread(magic, 1, sizeof(magic), file);
     std::fclose(file);
     const bool png = count >= 4 && magic[0] == 0x89 && magic[1] == 0x50 &&
@@ -862,7 +864,13 @@ bool HasImageMagic(const std::string &path) {
     const bool jpeg = count >= 2 && magic[0] == 0xff && magic[1] == 0xd8;
     // LV_USE_GIF is disabled in this firmware; accepting GIF here would cache
     // an image that LvglImageFromFile can identify but LVGL cannot decode.
-    return png || jpeg;
+    return png ? ArtworkFormat::Png
+               : jpeg ? ArtworkFormat::Jpeg : ArtworkFormat::Unknown;
+}
+
+const char *ArtworkExtension(ArtworkFormat format) {
+    return format == ArtworkFormat::Png ? ".png"
+         : format == ArtworkFormat::Jpeg ? ".jpg" : "";
 }
 
 bool IsRegularNonEmptyFile(const std::string &path) {
@@ -1296,14 +1304,37 @@ bool ZingMusicClient::DownloadArtwork(const std::string &url,
     }
     if (!EnsureDirectory(artwork_cache_dir_, err)) return false;
 
-    const std::string target = artwork_cache_dir_ + "/" + hash + ".img";
-    if (IsRegularNonEmptyFile(target) && HasImageMagic(target)) {
-        out_path = target;
-        err.clear();
-        return true;
+    const std::string cache_base = artwork_cache_dir_ + "/" + hash;
+    for (ArtworkFormat format : {ArtworkFormat::Jpeg, ArtworkFormat::Png}) {
+        const std::string cached = cache_base + ArtworkExtension(format);
+        if (IsRegularNonEmptyFile(cached) &&
+            DetectArtworkFormat(cached) == format) {
+            out_path = cached;
+            err.clear();
+            return true;
+        }
     }
 
-    const std::string temporary = target + ".part." + std::to_string(getpid()) +
+    // Firmware versions before pull-to-refresh stored every encoded cover as
+    // `.img`. LVGL's file decoders choose JPEG/PNG by extension, so give a
+    // valid legacy entry an extension-preserving hard-link. Keep the old name
+    // because user-created albums may still reference it in their JSON store.
+    const std::string legacy = cache_base + ".img";
+    if (IsRegularNonEmptyFile(legacy)) {
+        const ArtworkFormat legacy_format = DetectArtworkFormat(legacy);
+        if (legacy_format != ArtworkFormat::Unknown) {
+            const std::string migrated = cache_base + ArtworkExtension(legacy_format);
+            if (::link(legacy.c_str(), migrated.c_str()) == 0 ||
+                (IsRegularNonEmptyFile(migrated) &&
+                 DetectArtworkFormat(migrated) == legacy_format)) {
+                out_path = migrated;
+                err.clear();
+                return true;
+            }
+        }
+    }
+
+    const std::string temporary = cache_base + ".part." + std::to_string(getpid()) +
         "." + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
     FILE *file = std::fopen(temporary.c_str(), "wb");
     if (!file) {
@@ -1365,15 +1396,19 @@ bool ZingMusicClient::DownloadArtwork(const std::string &url,
         else err = "artwork HTTP " + std::to_string(status);
         return false;
     }
-    if (!HasImageMagic(temporary)) {
+    const ArtworkFormat downloaded_format = DetectArtworkFormat(temporary);
+    if (downloaded_format == ArtworkFormat::Unknown) {
         ::unlink(temporary.c_str());
         err = "artwork is not PNG/JPEG (enabled LVGL decoders)";
         return false;
     }
 
+    const std::string target = cache_base + ArtworkExtension(downloaded_format);
+
     if (::rename(temporary.c_str(), target.c_str()) != 0) {
         // A parallel request for the same URL may have won the race.
-        if (IsRegularNonEmptyFile(target) && HasImageMagic(target)) {
+        if (IsRegularNonEmptyFile(target) &&
+            DetectArtworkFormat(target) == downloaded_format) {
             ::unlink(temporary.c_str());
         } else {
             err = "cannot finalize artwork cache file: " +

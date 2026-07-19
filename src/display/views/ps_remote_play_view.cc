@@ -4,18 +4,16 @@
 #include "display/core/app_icons.h"
 #include "display/theme/ui_theme.h"
 #include "fonts.h"
+#include "input/gamepad_device.h"
 #include "lvgl_runtime.h"
 #include "settings.h"
 
 #include <arpa/inet.h>
-#include <glob.h>
-#include <limits.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
-#include <fstream>
 #include <string>
 
 namespace home {
@@ -23,10 +21,43 @@ namespace home {
 using jetson::ui::Color;
 using jetson::ui::LvglLockGuard;
 
+struct ControllerTestSession {
+    jetson::input::GamepadDevice device;
+    jetson::input::GamepadSnapshot state;
+
+    lv_obj_t *card = nullptr;
+    lv_obj_t *device_label = nullptr;
+    lv_obj_t *last_input_label = nullptr;
+
+    lv_obj_t *dpad_up = nullptr;
+    lv_obj_t *dpad_down = nullptr;
+    lv_obj_t *dpad_left = nullptr;
+    lv_obj_t *dpad_right = nullptr;
+    lv_obj_t *cross = nullptr;
+    lv_obj_t *circle = nullptr;
+    lv_obj_t *triangle = nullptr;
+    lv_obj_t *square = nullptr;
+    lv_obj_t *l1 = nullptr;
+    lv_obj_t *l2 = nullptr;
+    lv_obj_t *r1 = nullptr;
+    lv_obj_t *r2 = nullptr;
+    lv_obj_t *l2_fill = nullptr;
+    lv_obj_t *r2_fill = nullptr;
+    lv_obj_t *l3 = nullptr;
+    lv_obj_t *r3 = nullptr;
+    lv_obj_t *left_knob = nullptr;
+    lv_obj_t *right_knob = nullptr;
+    lv_obj_t *create = nullptr;
+    lv_obj_t *options = nullptr;
+    lv_obj_t *ps = nullptr;
+    lv_obj_t *touchpad = nullptr;
+};
+
 namespace {
 
 constexpr uint32_t kBlue = 0x1677ff;
 constexpr uint32_t kGreen = 0x30d158;
+constexpr uint32_t kOrange = 0xff9f0a;
 constexpr uint32_t kRed = 0xff453a;
 
 std::string Trim(std::string value) {
@@ -57,57 +88,66 @@ bool CanonicalIpv4(const std::string &input, std::string &canonical) {
     return true;
 }
 
-std::string ReadOneLine(const std::string &path) {
-    std::ifstream input(path);
-    std::string value;
-    std::getline(input, value);
-    return Trim(std::move(value));
-}
-
-struct ControllerState {
-    bool connected = false;
-    std::string name;
-};
-
-ControllerState ReadControllerState() {
-    const char *patterns[] = {
-        "/dev/input/js*",
-        "/dev/input/by-id/*-joystick",
-        "/dev/input/by-path/*-joystick",
-    };
-
-    std::string path;
-    for (const char *pattern : patterns) {
-        glob_t matches{};
-        const int result = glob(pattern, 0, nullptr, &matches);
-        if (result == 0 && matches.gl_pathc > 0 && matches.gl_pathv &&
-            matches.gl_pathv[0]) {
-            path = matches.gl_pathv[0];
-        }
-        globfree(&matches);
-        if (!path.empty()) break;
-    }
-
-    ControllerState state;
-    if (!path.empty()) {
-        state.connected = true;
-        char resolved[PATH_MAX]{};
-        if (realpath(path.c_str(), resolved)) path = resolved;
-        const size_t slash = path.find_last_of('/');
-        const std::string device = slash == std::string::npos
-                                       ? path
-                                       : path.substr(slash + 1);
-        if (device.rfind("js", 0) == 0) {
-            state.name = ReadOneLine("/sys/class/input/" + device + "/device/name");
-        }
-        if (state.name.empty()) state.name = "Tay cầm";
-    }
-    return state;
-}
-
 void RemoveInteraction(lv_obj_t *obj) {
     lv_obj_clear_flag(obj, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
                                            LV_OBJ_FLAG_CLICKABLE));
+}
+
+lv_obj_t *MakeLabel(lv_obj_t *parent, const char *text, const lv_font_t *font,
+                    uint32_t color);
+
+lv_obj_t *MakeTestControl(lv_obj_t *parent, const char *text,
+                          const lv_font_t *font, int x, int y, int width,
+                          int height, int radius, uint32_t idle,
+                          uint32_t accent) {
+    auto *control = lv_obj_create(parent);
+    lv_obj_remove_style_all(control);
+    lv_obj_set_pos(control, x, y);
+    lv_obj_set_size(control, width, height);
+    lv_obj_set_style_bg_color(control, Color(idle), 0);
+    lv_obj_set_style_bg_color(control, Color(accent), LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(control, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(control, Color(0x6f7482), 0);
+    lv_obj_set_style_border_color(control, Color(0xffffff), LV_STATE_CHECKED);
+    lv_obj_set_style_border_width(control, 1, 0);
+    lv_obj_set_style_border_width(control, 2, LV_STATE_CHECKED);
+    lv_obj_set_style_radius(control, radius, 0);
+    lv_obj_set_style_shadow_width(control, 0, 0);
+    RemoveInteraction(control);
+
+    if (text && text[0]) {
+        auto *label = MakeLabel(control, text, font, 0xffffff);
+        lv_obj_center(label);
+    }
+    return control;
+}
+
+void SetControlPressed(lv_obj_t *control, bool pressed) {
+    if (!control) return;
+    if (pressed) lv_obj_add_state(control, LV_STATE_CHECKED);
+    else lv_obj_remove_state(control, LV_STATE_CHECKED);
+}
+
+void SetTriggerLevel(lv_obj_t *trigger, lv_obj_t *fill, float level,
+                     bool digital) {
+    level = std::max(0.0f, std::min(1.0f, level));
+    SetControlPressed(trigger, digital || level > 0.08f);
+    if (!fill) return;
+    const int width = std::max(0, static_cast<int>(74.0f * level));
+    lv_obj_set_width(fill, width);
+    if (width > 0) lv_obj_clear_flag(fill, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(fill, LV_OBJ_FLAG_HIDDEN);
+}
+
+void SetStickPosition(lv_obj_t *ring, lv_obj_t *knob, float x, float y,
+                      bool pressed) {
+    x = std::max(-1.0f, std::min(1.0f, x));
+    y = std::max(-1.0f, std::min(1.0f, y));
+    const bool moved = std::fabs(x) > 0.10f || std::fabs(y) > 0.10f;
+    SetControlPressed(ring, pressed || moved);
+    if (!knob) return;
+    lv_obj_set_style_translate_x(knob, static_cast<int>(x * 13.0f), 0);
+    lv_obj_set_style_translate_y(knob, static_cast<int>(y * 13.0f), 0);
 }
 
 void StyleSurface(lv_obj_t *obj, uint32_t background, uint32_t border,
@@ -232,11 +272,37 @@ void AnimateSheetIn(lv_obj_t *card, int height) {
 void DrawController(lv_obj_t *root, bool connected) {
     if (!root) return;
     lv_obj_clean(root);
-    // Dedicated 72x72 state assets (assets/icons/app); the icon cache always
-    // returns a valid image object, so no drawn fallback is needed.
-    auto *icon = jetson::ui::CreateAppIcon(
-        root, connected ? "controller" : "no-controller", 72);
-    lv_obj_center(icon);
+    const uint32_t shell = connected ? 0xdce8ff : 0x686b74;
+    const uint32_t detail = connected ? kBlue : 0x9699a2;
+
+    // Small code-native controller glyph. Keeping this independent from the
+    // runtime asset bucket means controller discovery/test is still usable on
+    // a fresh install before optional images have been fetched from S3.
+    auto make_part = [&](int x, int y, int w, int h, int radius,
+                         uint32_t color) {
+        auto *part = lv_obj_create(root);
+        lv_obj_remove_style_all(part);
+        lv_obj_set_pos(part, x, y);
+        lv_obj_set_size(part, w, h);
+        lv_obj_set_style_bg_color(part, Color(color), 0);
+        lv_obj_set_style_bg_opa(part, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(part, radius, 0);
+        RemoveInteraction(part);
+        return part;
+    };
+    make_part(18, 18, 76, 42, 19, shell);
+    make_part(18, 40, 26, 28, 13, shell);
+    make_part(68, 40, 26, 28, 13, shell);
+    make_part(31, 31, 20, 6, 2, detail);
+    make_part(38, 24, 6, 20, 2, detail);
+    make_part(70, 27, 7, 7, LV_RADIUS_CIRCLE, detail);
+    make_part(80, 36, 7, 7, LV_RADIUS_CIRCLE, detail);
+    make_part(51, 48, 10, 6, 3, detail);
+    if (!connected) {
+        auto *slash = MakeLabel(root, "/", &lv_font_montserrat_28, kRed);
+        lv_obj_set_style_transform_rotation(slash, 250, 0);
+        lv_obj_center(slash);
+    }
 }
 
 } // namespace
@@ -252,6 +318,7 @@ PsRemotePlayView::PsRemotePlayView(lv_obj_t *parent, int width, int height,
 }
 
 PsRemotePlayView::~PsRemotePlayView() {
+    CloseControllerTest();
     if (controller_timer_) {
         lv_timer_del(controller_timer_);
         controller_timer_ = nullptr;
@@ -293,7 +360,10 @@ void PsRemotePlayView::BuildBody() {
     lv_obj_remove_style_all(controller_icon_);
     lv_obj_set_size(controller_icon_, 112, 76);
     lv_obj_align(controller_icon_, LV_ALIGN_TOP_MID, 0, 116);
-    RemoveInteraction(controller_icon_);
+    lv_obj_clear_flag(controller_icon_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(controller_icon_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(controller_icon_, LV_OPA_70, LV_STATE_PRESSED);
+    lv_obj_add_event_cb(controller_icon_, OnControllerIcon, LV_EVENT_CLICKED, this);
     DrawController(controller_icon_, false);
 
     controller_state_label_ = MakeLabel(
@@ -302,6 +372,14 @@ void PsRemotePlayView::BuildBody() {
     lv_obj_set_width(controller_state_label_, 360);
     lv_obj_set_style_text_align(controller_state_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(controller_state_label_, LV_ALIGN_TOP_MID, 0, 208);
+
+    controller_hint_label_ = MakeLabel(
+        body_, "Chạm biểu tượng để cập nhật và kiểm tra các nút",
+        jetson::BuiltinTextFaceAt(14), palette.sub_text);
+    lv_obj_set_width(controller_hint_label_, 460);
+    lv_obj_set_style_text_align(controller_hint_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_opa(controller_hint_label_, LV_OPA_70, 0);
+    lv_obj_align(controller_hint_label_, LV_ALIGN_TOP_MID, 0, 240);
 
     sign_in_btn_ = lv_button_create(body_);
     lv_obj_set_size(sign_in_btn_, 190, 48);
@@ -319,10 +397,15 @@ void PsRemotePlayView::BuildBody() {
 }
 
 void PsRemotePlayView::RefreshControllerState() {
-    const ControllerState state = ReadControllerState();
+    const jetson::input::GamepadDeviceInfo state = jetson::input::DetectGamepad();
     const bool changed = state.connected != controller_connected_ ||
+                         state.readable != controller_readable_ ||
+                         state.path != controller_path_ ||
                          state.name != controller_name_;
     controller_connected_ = state.connected;
+    controller_readable_ = state.readable;
+    controller_uses_evdev_ = state.backend == jetson::input::GamepadBackend::Evdev;
+    controller_path_ = state.path;
     controller_name_ = state.name;
     if (changed) UpdateWelcomeUi();
     UpdateSettingsUi();
@@ -333,20 +416,34 @@ void PsRemotePlayView::UpdateWelcomeUi() {
     DrawController(controller_icon_, controller_connected_);
     if (!controller_state_label_) return;
 
-    const std::string text = controller_connected_
-                                 ? "Đã kết nối · " + controller_name_
-                                 : "Chưa kết nối tay cầm";
+    std::string text = "Chưa kết nối tay cầm";
+    if (controller_connected_) {
+        text = "Đã kết nối · " + controller_name_;
+        if (!controller_readable_) text += " · không có quyền input";
+    }
     lv_label_set_text(controller_state_label_, text.c_str());
     lv_obj_set_style_text_color(
         controller_state_label_,
-        Color(controller_connected_ ? kGreen : palette.sub_text), 0);
+        Color(!controller_connected_ ? palette.sub_text
+                                     : controller_readable_ ? kGreen : kOrange),
+        0);
+
+    if (controller_hint_label_) {
+        lv_label_set_text(
+            controller_hint_label_,
+            controller_connected_
+                ? "Chạm biểu tượng để cập nhật và mở màn kiểm tra nút"
+                : "Kết nối Bluetooth, rồi chạm biểu tượng để dò lại");
+    }
 }
 
 void PsRemotePlayView::UpdateSettingsUi() {
     if (settings_controller_label_) {
-        const std::string state = controller_connected_
-                                      ? "Kết nối: " + controller_name_
-                                      : "Kết nối: Chưa kết nối";
+        std::string state = controller_connected_
+                                ? "Kết nối: " + controller_name_
+                                : "Kết nối: Chưa kết nối";
+        if (controller_connected_ && !controller_readable_)
+            state += " (thiếu quyền input)";
         lv_label_set_text(settings_controller_label_, state.c_str());
     }
     if (settings_ps5_name_label_) {
@@ -359,6 +456,233 @@ void PsRemotePlayView::UpdateSettingsUi() {
 
 void PsRemotePlayView::Notify(const char *message) {
     if (notify_cb_) notify_cb_(message ? message : "");
+}
+
+void PsRemotePlayView::OpenControllerTest() {
+    if (controller_test_modal_) return;
+    RefreshControllerState();
+    if (!controller_connected_) {
+        Notify("Chưa phát hiện tay cầm. Kết nối Bluetooth rồi chạm để thử lại");
+        return;
+    }
+
+    const auto &palette = jetson::UiTheme::Instance().Palette();
+    controller_test_ = std::make_unique<ControllerTestSession>();
+    ControllerTestSession &test = *controller_test_;
+
+    controller_test_modal_ = MakeModalBackdrop(
+        overlay_, width_, height_, palette.scrim, OnControllerTestDismiss, this);
+    test.card = lv_obj_create(controller_test_modal_);
+    StyleSurface(test.card, palette.panel, palette.border, 24);
+    lv_obj_set_size(test.card, 760, 414);
+    lv_obj_align(test.card, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(test.card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_shadow_color(test.card, lv_color_black(), 0);
+    lv_obj_set_style_shadow_opa(test.card, LV_OPA_30, 0);
+    lv_obj_set_style_shadow_width(test.card, 24, 0);
+
+    auto *title = MakeLabel(test.card, "Kiểm tra tay cầm PS5",
+                            jetson::BuiltinTextFaceAt(20), palette.text);
+    lv_obj_set_pos(title, 18, 8);
+    test.device_label = MakeLabel(test.card, controller_name_.c_str(),
+                                  jetson::BuiltinTextFaceAt(12), palette.sub_text);
+    lv_obj_set_pos(test.device_label, 18, 34);
+    lv_obj_set_width(test.device_label, 650);
+    lv_label_set_long_mode(test.device_label, LV_LABEL_LONG_DOT);
+    auto *close = MakeRoundButton(test.card, LV_SYMBOL_CLOSE, palette.button,
+                                  palette.text, OnControllerTestClose, this);
+    lv_obj_set_pos(close, 704, 8);
+
+    const uint32_t idle = palette.button;
+    const uint32_t accent = palette.accent;
+    const lv_font_t *compact = jetson::BuiltinTextFaceAt(13);
+    const lv_font_t *symbol = jetson::BuiltinTextFaceAt(20);
+
+    // Shoulder row. Analog trigger travel is shown by the white bar along the
+    // bottom edge; digital-only mappings still illuminate the whole control.
+    test.l2 = MakeTestControl(test.card, "L2", compact, 120, 54, 80, 32, 10,
+                              idle, accent);
+    test.l1 = MakeTestControl(test.card, "L1", compact, 212, 54, 80, 32, 10,
+                              idle, accent);
+    test.r1 = MakeTestControl(test.card, "R1", compact, 468, 54, 80, 32, 10,
+                              idle, accent);
+    test.r2 = MakeTestControl(test.card, "R2", compact, 560, 54, 80, 32, 10,
+                              idle, accent);
+    auto make_trigger_fill = [](lv_obj_t *trigger) {
+        auto *fill = lv_obj_create(trigger);
+        lv_obj_remove_style_all(fill);
+        lv_obj_set_size(fill, 0, 3);
+        lv_obj_align(fill, LV_ALIGN_BOTTOM_LEFT, 3, -3);
+        lv_obj_set_style_bg_color(fill, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(fill, LV_RADIUS_CIRCLE, 0);
+        lv_obj_add_flag(fill, LV_OBJ_FLAG_HIDDEN);
+        RemoveInteraction(fill);
+        return fill;
+    };
+    test.l2_fill = make_trigger_fill(test.l2);
+    test.r2_fill = make_trigger_fill(test.r2);
+
+    // A compact, original LVGL silhouette inspired by the DualSense control
+    // layout. It is assembled from primitives and contains no Sony artwork.
+    auto make_decor = [&](int x, int y, int width, int height, int radius,
+                          uint32_t color) {
+        auto *part = lv_obj_create(test.card);
+        lv_obj_remove_style_all(part);
+        lv_obj_set_pos(part, x, y);
+        lv_obj_set_size(part, width, height);
+        lv_obj_set_style_bg_color(part, Color(color), 0);
+        lv_obj_set_style_bg_opa(part, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(part, radius, 0);
+        RemoveInteraction(part);
+        return part;
+    };
+    make_decor(105, 226, 150, 126, 58, palette.row);
+    make_decor(505, 226, 150, 126, 58, palette.row);
+    auto *shell = make_decor(96, 88, 568, 248, 88, palette.row);
+    lv_obj_set_style_border_color(shell, Color(palette.border), 0);
+    lv_obj_set_style_border_width(shell, 2, 0);
+    make_decor(322, 91, 116, 4, 2, accent);
+
+    test.touchpad = MakeTestControl(test.card, "TOUCHPAD", compact,
+                                    292, 104, 176, 68, 12, 0x252a35, accent);
+    test.create = MakeTestControl(test.card, "Create",
+                                  jetson::BuiltinTextFaceAt(10), 230, 126,
+                                  54, 22, 11, idle, accent);
+    test.options = MakeTestControl(test.card, "Options",
+                                   jetson::BuiltinTextFaceAt(10), 476, 126,
+                                   54, 22, 11, idle, accent);
+
+    test.dpad_up = MakeTestControl(test.card, LV_SYMBOL_UP, &BUILTIN_ICON_FONT,
+                                   184, 160, 42, 42, 9, idle, accent);
+    test.dpad_down = MakeTestControl(test.card, LV_SYMBOL_DOWN, &BUILTIN_ICON_FONT,
+                                     184, 228, 42, 42, 9, idle, accent);
+    test.dpad_left = MakeTestControl(test.card, LV_SYMBOL_LEFT, &BUILTIN_ICON_FONT,
+                                     150, 194, 42, 42, 9, idle, accent);
+    test.dpad_right = MakeTestControl(test.card, LV_SYMBOL_RIGHT, &BUILTIN_ICON_FONT,
+                                      218, 194, 42, 42, 9, idle, accent);
+
+    test.triangle = MakeTestControl(test.card, "△", symbol, 548, 160, 42, 42,
+                                    LV_RADIUS_CIRCLE, idle, accent);
+    test.cross = MakeTestControl(test.card, "×", symbol, 548, 228, 42, 42,
+                                 LV_RADIUS_CIRCLE, idle, accent);
+    test.square = MakeTestControl(test.card, "□", symbol, 514, 194, 42, 42,
+                                  LV_RADIUS_CIRCLE, idle, accent);
+    test.circle = MakeTestControl(test.card, "○", symbol, 582, 194, 42, 42,
+                                  LV_RADIUS_CIRCLE, idle, accent);
+
+    auto make_stick = [&](int x, const char *label, lv_obj_t **knob) {
+        auto *ring = MakeTestControl(test.card, nullptr, compact, x, 252, 70, 70,
+                                     LV_RADIUS_CIRCLE, 0x20242d, accent);
+        *knob = make_decor(x + 19, 271, 32, 32, LV_RADIUS_CIRCLE, 0x747986);
+        auto *name = MakeLabel(*knob, label, jetson::BuiltinTextFaceAt(10),
+                               0xffffff);
+        lv_obj_center(name);
+        return ring;
+    };
+    test.l3 = make_stick(270, "L3", &test.left_knob);
+    test.r3 = make_stick(420, "R3", &test.right_knob);
+    test.ps = MakeTestControl(test.card, "PS", jetson::BuiltinTextFaceAt(10),
+                              365, 270, 30, 30, LV_RADIUS_CIRCLE, idle, accent);
+
+    test.last_input_label = MakeLabel(
+        test.card, "Nhấn hoặc di chuyển tay cầm để kiểm tra",
+        jetson::BuiltinTextFaceAt(13), palette.sub_text);
+    lv_obj_set_width(test.last_input_label, 700);
+    lv_obj_set_style_text_align(test.last_input_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(test.last_input_label, LV_ALIGN_BOTTOM_MID, 0, -10);
+
+    jetson::input::GamepadDeviceInfo info;
+    info.connected = controller_connected_;
+    info.readable = controller_readable_;
+    info.backend = controller_uses_evdev_
+                       ? jetson::input::GamepadBackend::Evdev
+                       : jetson::input::GamepadBackend::Joystick;
+    info.path = controller_path_;
+    info.name = controller_name_;
+    const bool opened = test.device.Open(info);
+    test.state.connected = opened;
+    if (!opened) {
+        const std::string message = test.device.LastError().empty()
+                                        ? "Không thể đọc input từ tay cầm"
+                                        : test.device.LastError();
+        lv_label_set_text(test.last_input_label, message.c_str());
+        lv_obj_set_style_text_color(test.last_input_label, Color(kRed), 0);
+    } else {
+        controller_input_timer_ = lv_timer_create(OnControllerInputPoll, 20, this);
+        PollControllerInput();
+    }
+
+    lv_obj_move_foreground(controller_test_modal_);
+}
+
+void PsRemotePlayView::CloseControllerTest() {
+    if (controller_input_timer_) {
+        lv_timer_del(controller_input_timer_);
+        controller_input_timer_ = nullptr;
+    }
+    controller_test_.reset();
+    if (controller_test_modal_) {
+        lv_obj_del(controller_test_modal_);
+        controller_test_modal_ = nullptr;
+    }
+}
+
+void PsRemotePlayView::PollControllerInput() {
+    if (!controller_test_) return;
+    const bool changed = controller_test_->device.Poll(controller_test_->state);
+    if (!changed) return;
+    UpdateControllerTestUi();
+    if (!controller_test_->state.connected) RefreshControllerState();
+}
+
+void PsRemotePlayView::UpdateControllerTestUi() {
+    if (!controller_test_) return;
+    ControllerTestSession &test = *controller_test_;
+    const auto &state = test.state;
+
+    SetControlPressed(test.dpad_up, state.dpad_up);
+    SetControlPressed(test.dpad_down, state.dpad_down);
+    SetControlPressed(test.dpad_left, state.dpad_left);
+    SetControlPressed(test.dpad_right, state.dpad_right);
+    SetControlPressed(test.cross, state.cross);
+    SetControlPressed(test.circle, state.circle);
+    SetControlPressed(test.triangle, state.triangle);
+    SetControlPressed(test.square, state.square);
+    SetControlPressed(test.l1, state.l1);
+    SetControlPressed(test.r1, state.r1);
+    SetTriggerLevel(test.l2, test.l2_fill,
+                    state.has_l2_axis ? state.l2
+                                      : state.l2_button ? 1.0f : 0.0f,
+                    state.l2_button);
+    SetTriggerLevel(test.r2, test.r2_fill,
+                    state.has_r2_axis ? state.r2
+                                      : state.r2_button ? 1.0f : 0.0f,
+                    state.r2_button);
+    SetStickPosition(test.l3, test.left_knob, state.left_x, state.left_y,
+                     state.l3);
+    SetStickPosition(test.r3, test.right_knob, state.right_x, state.right_y,
+                     state.r3);
+    SetControlPressed(test.create, state.create);
+    SetControlPressed(test.options, state.options);
+    SetControlPressed(test.ps, state.ps);
+    SetControlPressed(test.touchpad, state.touchpad);
+
+    if (!test.last_input_label) return;
+    if (!state.connected) {
+        const std::string message = test.device.LastError().empty()
+                                        ? "Tay cầm đã ngắt kết nối"
+                                        : test.device.LastError();
+        lv_label_set_text(test.last_input_label, message.c_str());
+        lv_obj_set_style_text_color(test.last_input_label, Color(kRed), 0);
+    } else {
+        lv_label_set_text(test.last_input_label,
+                          state.last_input.empty()
+                              ? "Nhấn hoặc di chuyển tay cầm để kiểm tra"
+                              : state.last_input.c_str());
+        const auto &palette = jetson::UiTheme::Instance().Palette();
+        lv_obj_set_style_text_color(test.last_input_label, Color(palette.sub_text), 0);
+    }
 }
 
 void PsRemotePlayView::OpenPinModal() {
@@ -641,6 +965,7 @@ void PsRemotePlayView::OpenSettingsModal() {
     UpdatePresetCards();
     if (auto *group = jetson::LvglRuntime::Instance().keypad_group()) {
         lv_group_add_obj(group, settings_ip_input_);
+        lv_group_focus_obj(settings_ip_input_);
     }
     lv_obj_move_foreground(settings_modal_);
     AnimateSheetIn(settings_card_, kSheetHeight);
@@ -746,6 +1071,22 @@ void PsRemotePlayView::OnSettingsSave(lv_event_t *e) {
     static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->SaveSettingsModal();
 }
 
+void PsRemotePlayView::OnControllerIcon(lv_event_t *e) {
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->OpenControllerTest();
+}
+
+void PsRemotePlayView::OnControllerTestDismiss(lv_event_t *e) {
+    if (lv_event_get_target(e) != lv_event_get_current_target(e)) return;
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->CloseControllerTest();
+}
+
+void PsRemotePlayView::OnControllerTestClose(lv_event_t *e) {
+    LvglLockGuard lock;
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->CloseControllerTest();
+}
+
 void PsRemotePlayView::OnConnectController(lv_event_t *e) {
     LvglLockGuard lock;
     static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->OpenBluetoothSettings();
@@ -770,6 +1111,11 @@ void PsRemotePlayView::OnQuality(lv_event_t *e) {
 void PsRemotePlayView::OnControllerPoll(lv_timer_t *timer) {
     auto *self = static_cast<PsRemotePlayView *>(lv_timer_get_user_data(timer));
     if (self) self->RefreshControllerState();
+}
+
+void PsRemotePlayView::OnControllerInputPoll(lv_timer_t *timer) {
+    auto *self = static_cast<PsRemotePlayView *>(lv_timer_get_user_data(timer));
+    if (self) self->PollControllerInput();
 }
 
 } // namespace home

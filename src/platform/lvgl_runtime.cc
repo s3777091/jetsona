@@ -1,5 +1,6 @@
 #include "lvgl_runtime.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -34,6 +35,10 @@ namespace {
  * its group. */
 struct KeyboardState {
     int fd = -1;
+    std::string forced_device;
+    std::string device_path;
+    std::chrono::steady_clock::time_point next_probe{};
+    bool missing_logged = false;
     bool shift = false;
     bool caps = false;
     bool left_ctrl = false;
@@ -132,15 +137,139 @@ static int linux_key_to_lv(uint16_t code, bool shift, bool caps)
     }
 }
 
+static std::string input_device_path(const std::string &device)
+{
+    if (device.empty() || device.find('/') != std::string::npos) return device;
+    return std::string("/dev/input/") + device;
+}
+
+static bool key_bit_is_set(const unsigned long *bits, int code)
+{
+    constexpr int kBitsPerWord = static_cast<int>(sizeof(unsigned long) * 8);
+    return (bits[code / kBitsPerWord] &
+            (1UL << (code % kBitsPerWord))) != 0;
+}
+
+/* Open a keyboard node and return its fd. USB HID receivers commonly expose
+ * several event nodes (keyboard, consumer controls, mouse), and on Jetson the
+ * keyboard node can easily be event16 or later. Query EV_KEY through ioctl
+ * instead of assuming a fixed event0..event15 range or parsing a word-sized
+ * slice of sysfs. */
+static int find_and_open_keyboard(KeyboardState *st, std::string *opened_path)
+{
+    if (!st || !opened_path) return -1;
+    if (!st->forced_device.empty()) {
+        const std::string path = input_device_path(st->forced_device);
+        const int fd = open(path.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
+        if (fd >= 0) *opened_path = path;
+        return fd;
+    }
+
+    DIR *dir = opendir("/dev/input");
+    if (!dir) return -1;
+    std::vector<int> events;
+    while (dirent *entry = readdir(dir)) {
+        if (std::strncmp(entry->d_name, "event", 5) != 0) continue;
+        char *end = nullptr;
+        const long index = std::strtol(entry->d_name + 5, &end, 10);
+        if (!end || *end != '\0' || index < 0 || index > 100000) continue;
+        events.push_back(static_cast<int>(index));
+    }
+    closedir(dir);
+    std::sort(events.begin(), events.end());
+
+    constexpr int kBitsPerWord = static_cast<int>(sizeof(unsigned long) * 8);
+    constexpr size_t kKeyWords = (KEY_MAX + kBitsPerWord) / kBitsPerWord;
+    for (int index : events) {
+        char path[64];
+        std::snprintf(path, sizeof(path), "/dev/input/event%d", index);
+        const int fd = open(path, O_RDONLY | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
+        if (fd < 0) continue;
+
+        unsigned long keys[kKeyWords]{};
+        if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys) < 0 ||
+            !key_bit_is_set(keys, KEY_Q) ||
+            !key_bit_is_set(keys, KEY_ENTER) ||
+            !key_bit_is_set(keys, KEY_SPACE)) {
+            close(fd);
+            continue;
+        }
+
+        char name[128] = {};
+        if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0)
+            std::snprintf(name, sizeof(name), "unknown HID keyboard");
+        *opened_path = path;
+        ESP_LOGI(TAG, "keyboard candidate: %s (%s)", path, name);
+        return fd;
+    }
+    return -1;
+}
+
+static bool ensure_keyboard_open(KeyboardState *st)
+{
+    if (!st || st->fd >= 0) return st && st->fd >= 0;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < st->next_probe) return false;
+    st->next_probe = now + std::chrono::seconds(1);
+
+    std::string path;
+    const int fd = find_and_open_keyboard(st, &path);
+    if (fd < 0) {
+        if (!st->missing_logged) {
+            if (st->forced_device.empty())
+                ESP_LOGW(TAG, "no evdev keyboard found; waiting for USB receiver");
+            else
+                ESP_LOGW(TAG, "keyboard: waiting for forced device %s",
+                         input_device_path(st->forced_device).c_str());
+            st->missing_logged = true;
+        }
+        return false;
+    }
+
+    st->fd = fd;
+    st->device_path = std::move(path);
+    st->missing_logged = false;
+    st->shift = false;
+    st->left_ctrl = false;
+    st->right_ctrl = false;
+    st->state = LV_INDEV_STATE_RELEASED;
+    if (st->ctrl_out) st->ctrl_out->store(false);
+    ESP_LOGI(TAG, "keyboard connected: %s", st->device_path.c_str());
+    return true;
+}
+
+static void disconnect_keyboard(KeyboardState *st, const char *reason)
+{
+    if (!st || st->fd < 0) return;
+    if (reason)
+        ESP_LOGW(TAG, "keyboard disconnected: %s (%s); retrying automatically",
+                 st->device_path.c_str(), reason);
+    else
+        ESP_LOGW(TAG, "keyboard disconnected: %s; retrying automatically",
+                 st->device_path.c_str());
+    close(st->fd);
+    st->fd = -1;
+    st->device_path.clear();
+    st->shift = false;
+    st->left_ctrl = false;
+    st->right_ctrl = false;
+    st->key = 0;
+    st->state = LV_INDEV_STATE_RELEASED;
+    st->next_probe = std::chrono::steady_clock::now();
+    if (st->ctrl_out) st->ctrl_out->store(false);
+}
+
 static void keyboard_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     auto *st = static_cast<KeyboardState *>(lv_indev_get_driver_data(indev));
-    if (!st || st->fd < 0) {
+    if (!st || !ensure_keyboard_open(st)) {
         data->state = LV_INDEV_STATE_RELEASED;
         return;
     }
     struct input_event ev;
-    while (read(st->fd, &ev, sizeof(ev)) > 0) {
+    ssize_t bytes = -1;
+    while ((bytes = read(st->fd, &ev, sizeof(ev))) ==
+           static_cast<ssize_t>(sizeof(ev))) {
         if (ev.type != EV_KEY) continue;
         if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT) {
             st->shift = (ev.value != 0);
@@ -165,6 +294,11 @@ static void keyboard_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
          * LVGL, so text fields never receive LV_EVENT_KEY. The unread event
          * remains in the non-blocking fd for the next read callback. */
         break;
+    }
+    if (bytes == 0 ||
+        (bytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+        const int saved_errno = errno;
+        disconnect_keyboard(st, bytes == 0 ? "device closed" : strerror(saved_errno));
     }
     data->key = st->key;
     data->state = st->state;
@@ -565,38 +699,9 @@ void LvglRuntime::openKeyboard() {
      * callback that maps Linux keycodes to ASCII (with Shift/CapsLock). Keys
      * are delivered to the focused textarea through keypad_group_, which the
      * views add their textareas to. */
-    std::string devpath;
-    const char *forced = std::getenv("JETSON_KEYBOARD_DEVICE");
-    if (forced && forced[0]) {
-        std::string f(forced);
-        devpath = (f.find('/') == std::string::npos) ? std::string("/dev/input/") + f : f;
-    } else {
-        for (int i = 0; i < 16; ++i) {
-            char sysp[96];
-            std::snprintf(sysp, sizeof(sysp),
-                          "/sys/class/input/event%d/device/capabilities/key", i);
-            unsigned long key = readSysLowHexWord(sysp);
-            if (((key >> 16) & 0x1UL) == 0) continue; /* KEY_Q => real keyboard */
-            char path[32];
-            std::snprintf(path, sizeof(path), "/dev/input/event%d", i);
-            devpath = path;
-            break;
-        }
-    }
-    if (devpath.empty()) {
-        ESP_LOGW(TAG, "no evdev keyboard found");
-        return;
-    }
-
-    int fd = open(devpath.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC);
-    if (fd < 0) {
-        ESP_LOGW(TAG, "keyboard: open %s failed: %s", devpath.c_str(), strerror(errno));
-        return;
-    }
-    fcntl(fd, F_SETFL, O_NONBLOCK);
-
     auto *st = new KeyboardState();
-    st->fd = fd;
+    const char *forced = std::getenv("JETSON_KEYBOARD_DEVICE");
+    if (forced && forced[0]) st->forced_device = forced;
     st->ctrl_out = &keyboard_ctrl_pressed_;
     keyboard_ctrl_pressed_.store(false);
     keyboard_ = lv_indev_create();
@@ -608,8 +713,7 @@ void LvglRuntime::openKeyboard() {
      * shared group and let the chat/terminal/wifi views add their textareas. */
     if (!keypad_group_) keypad_group_ = lv_group_create();
     lv_indev_set_group(keyboard_, keypad_group_);
-
-    ESP_LOGI(TAG, "keyboard: %s", devpath.c_str());
+    (void)ensure_keyboard_open(st);
 }
 
 void LvglRuntime::openMouse() {

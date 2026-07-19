@@ -13,10 +13,13 @@
 #include <lvgl.h>
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 
 namespace home {
+
+struct ControllerTestSession;
 
 class PsRemotePlayView : public OverlayView {
 public:
@@ -44,7 +47,14 @@ private:
     // Minimal welcome content.
     lv_obj_t *controller_icon_ = nullptr;
     lv_obj_t *controller_state_label_ = nullptr;
+    lv_obj_t *controller_hint_label_ = nullptr;
     lv_obj_t *sign_in_btn_ = nullptr;
+
+    // Live gamepad test overlay. The session owns the non-blocking Linux
+    // input fd(s), the current input snapshot and its LVGL control objects.
+    lv_obj_t *controller_test_modal_ = nullptr;
+    lv_timer_t *controller_input_timer_ = nullptr;
+    std::unique_ptr<ControllerTestSession> controller_test_;
 
     // PIN bottom sheet.
     lv_obj_t *pin_modal_ = nullptr;
@@ -73,7 +83,10 @@ private:
     std::string host_;
     std::string ps5_name_;
     std::string controller_name_;
+    std::string controller_path_;
     bool controller_connected_ = false;
+    bool controller_readable_ = false;
+    bool controller_uses_evdev_ = true;
 
     void BuildBody();
     void LoadState();
@@ -82,6 +95,11 @@ private:
     void UpdateSettingsUi();
     void UpdatePresetCards();
     void Notify(const char *message);
+
+    void OpenControllerTest();
+    void CloseControllerTest();
+    void PollControllerInput();
+    void UpdateControllerTestUi();
 
     void OpenPinModal();
     void ClosePinModal();
@@ -99,10 +117,14 @@ private:
     static void OnSettingsDismiss(lv_event_t *e);
     static void OnSettingsCancel(lv_event_t *e);
     static void OnSettingsSave(lv_event_t *e);
+    static void OnControllerIcon(lv_event_t *e);
+    static void OnControllerTestDismiss(lv_event_t *e);
+    static void OnControllerTestClose(lv_event_t *e);
     static void OnConnectController(lv_event_t *e);
     static void OnPerformance(lv_event_t *e);
     static void OnQuality(lv_event_t *e);
     static void OnControllerPoll(lv_timer_t *timer);
+    static void OnControllerInputPoll(lv_timer_t *timer);
 };
 
 } // namespace home

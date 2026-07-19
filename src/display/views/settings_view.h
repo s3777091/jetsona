@@ -16,9 +16,9 @@ namespace home {
 
 /* Firmware settings hub: a compact category rail + an iPhone-inspired detail
  * pane that rebuilds on selection. The visible rail is ordered WiFi, Bluetooth,
- * Plan mode, VPN, Sound, General, then Applications. General owns the Keyboard,
- * Language & Region, Date & Time, Fonts, Power & Lock, and About sub-pages
- * instead of exposing those as unrelated top-level categories.
+ * Airplane mode, VPN, Display, Sound, General, then Applications. General owns
+ * Keyboard, Language & Region, Date & Time, Fonts, Power & Lock, and About
+ * sub-pages instead of exposing those as unrelated top-level categories.
  *
  * Connectivity actions depend on IWifiManager/IBluetoothManager rather than
  * concrete singletons, while common LVGL locking and signal indicators are
@@ -39,6 +39,9 @@ public:
     void SetLockRequest(std::function<void()> cb) { lock_cb_ = std::move(cb); }
     void SetNotificationApplier(std::function<void(const char *, int)> cb) {
         notification_cb_ = std::move(cb);
+    }
+    void SetCaptivePortalAction(std::function<void(const std::string &)> cb) {
+        captive_portal_action_ = std::move(cb);
     }
 
     // Status-bar connectivity shortcuts reuse the Settings window instead of
@@ -97,13 +100,14 @@ private:
     // Layout.
     lv_obj_t *sidebar_ = nullptr;
     lv_obj_t *detail_ = nullptr;
+    int sidebar_row_height_ = 44;
     Cat current_ = Cat::Wifi;
     DisplayPage display_page_ = DisplayPage::Main;
     ApplicationPage application_page_ = ApplicationPage::Main;
     GeneralPage general_page_ = GeneralPage::Main;
     std::vector<lv_obj_t *> side_rows_;
 
-    // Plan mode/VPN switch rows embedded in the connectivity section.
+    // Airplane-mode/VPN switch rows embedded in the connectivity section.
     lv_obj_t *airplane_row_ = nullptr;
     lv_obj_t *airplane_icon_bg_ = nullptr;
     lv_obj_t *airplane_switch_ = nullptr;
@@ -117,8 +121,8 @@ private:
 
     // WiFi pane.
     lv_obj_t *wifi_switch_ = nullptr;
-    lv_obj_t *wifi_reload_btn_ = nullptr;
     lv_obj_t *wifi_list_ = nullptr;
+    bool wifi_pull_armed_ = false;
     std::vector<jetson::WifiNetwork> wifi_nets_;
     bool wifi_scanned_ = false;
     bool wifi_enabled_ = false;
@@ -126,8 +130,8 @@ private:
 
     // Bluetooth pane.
     lv_obj_t *bt_switch_ = nullptr;
-    lv_obj_t *bt_reload_btn_ = nullptr;
     lv_obj_t *bt_list_ = nullptr;
+    bool bt_pull_armed_ = false;
     std::vector<jetson::BtDevice> bt_devs_;
     bool bt_scanned_ = false;
     bool bt_powered_ = false;
@@ -181,12 +185,14 @@ private:
     std::function<void(int, bool)> volume_cb_;  // (volume, muted)
     std::function<void()> lock_cb_;
     std::function<void(const char *, int)> notification_cb_;
+    std::function<void(const std::string &)> captive_portal_action_;
     void Notify(const char *message, int duration_ms = 2800) {
         if (notification_cb_) notification_cb_(message, duration_ms);
     }
 
     // ---- layout / panes ----
     void BuildShell();
+    void UpdateSidebarRowHeights(int pane_height);
     void AddAirplaneRow();
     void AirplaneRefreshUi();
     void AddVpnRow();
@@ -201,7 +207,6 @@ private:
     lv_obj_t *MakeSwitch(lv_obj_t *parent, bool on, lv_event_cb_t cb);
     lv_obj_t *MakeSlider(lv_obj_t *parent, int minv, int maxv, int val, lv_event_cb_t cb);
     lv_obj_t *MakeButton(lv_obj_t *parent, const char *text, uint32_t bg, lv_event_cb_t cb);
-    lv_obj_t *MakeReloadButton(lv_obj_t *parent, lv_event_cb_t cb);
     lv_obj_t *DisplayCard();
     lv_obj_t *DisplayRow(lv_obj_t *card, const char *title, const char *sub = nullptr,
                          int height = 48);
@@ -325,11 +330,11 @@ private:
     static void OnVpnSwitch(lv_event_t *e);
 
     static void OnWifiSwitch(lv_event_t *e);
-    static void OnWifiRescan(lv_event_t *e);
+    static void OnWifiPull(lv_event_t *e);
     static void OnWifiRowClicked(lv_event_t *e);
     static void OnWifiInfoClicked(lv_event_t *e);
     static void OnBtSwitch(lv_event_t *e);
-    static void OnBtRescan(lv_event_t *e);
+    static void OnBtPull(lv_event_t *e);
     static void OnBtRowClicked(lv_event_t *e);
     static void OnBtInfoClicked(lv_event_t *e);
 

@@ -216,6 +216,7 @@ void ChatView::OnInputReady(lv_event_t *e) {
 void ChatView::OnInputFocused(lv_event_t *e) {
     auto *self = static_cast<ChatView *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
+    if (self->input_) lv_group_focus_obj(self->input_);
     if (self->keyboard_) lv_obj_clear_flag(self->keyboard_, LV_OBJ_FLAG_HIDDEN);
 }
 

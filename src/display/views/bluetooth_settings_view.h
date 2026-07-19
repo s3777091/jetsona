@@ -2,8 +2,8 @@
 
 /* On-screen Bluetooth settings view for the Jetson DS-02 UI.
  *
- * Full-screen overlay: header (back + "Bluetooth" + scan), a status line, and a
- * scrollable list of scanned devices (kind icon + name + RSSI bars + state tag).
+ * Full-screen overlay: header (back + "Bluetooth"), a status line, and a
+ * pull-to-refresh list of scanned devices (kind icon + name + RSSI bars + state tag).
  * Tapping a connected device disconnects it; tapping any other device pairs +
  * connects it. Pairing is driven by bluetoothctl's default-agent (no on-screen
  * password entry needed).
@@ -53,7 +53,7 @@ private:
     void SetStatus(const char *text);
 
     static void OnBack(lv_event_t *e);
-    static void OnRescan(lv_event_t *e);
+    static void OnListPull(lv_event_t *e);
     static void OnRowClicked(lv_event_t *e);
     static void OnCloseTimer(lv_timer_t *t);
 
@@ -61,7 +61,6 @@ private:
     lv_obj_t *overlay_ = nullptr;
     lv_obj_t *back_btn_ = nullptr;
     lv_obj_t *title_label_ = nullptr;
-    lv_obj_t *rescan_btn_ = nullptr;
     lv_obj_t *status_label_ = nullptr;
     lv_obj_t *list_ = nullptr;
 
@@ -70,6 +69,7 @@ private:
     ClosedCb on_closed_;
     NotifyCb notify_cb_;
 
+    bool pull_armed_ = false;
     std::atomic<bool> scanning_{false};
     std::atomic<bool> closed_{false};
 };

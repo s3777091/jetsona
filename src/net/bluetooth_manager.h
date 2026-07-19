@@ -11,15 +11,20 @@
  * stops discovery as soon as the requesting client exits), so callers should
  * run Scan()/PairAndConnect() off the LVGL thread.
  *
- * No password entry is needed from the UI: bluetoothctl's default-agent handles
- * PIN/Just-Works pairing automatically. */
+ * Just-Works devices need no password. Bluetooth keyboards receive a passkey
+ * callback so the UI can tell the user what to type on the remote keyboard. */
 
 #include <chrono>
+#include <functional>
 #include <string>
 #include <mutex>
 #include <vector>
 
 namespace jetson {
+
+// Called while pairing a keyboard when BlueZ asks the user to type a six-digit
+// passkey on that keyboard and press Enter.
+using BtPairingPromptCb = std::function<void(const std::string &passkey)>;
 
 // Coarse device category derived from BlueZ's `Icon` hint (`bluetoothctl
 // info` prints e.g. "Icon: input-gaming" for gamepads, "Icon: audio-headset"
@@ -62,6 +67,13 @@ public:
     virtual std::vector<BtDevice> Scan(int duration_s = 8) = 0;
     virtual BtDeviceKind ConnectedDeviceKind() const = 0;
     virtual bool PairAndConnect(const std::string &address) = 0;
+    // Pair with an optional interactive passkey prompt. Existing test/fake
+    // managers only implementing PairAndConnect remain source-compatible.
+    virtual bool PairAndConnectWithPrompt(const std::string &address,
+                                          BtPairingPromptCb prompt_cb) {
+        (void)prompt_cb;
+        return PairAndConnect(address);
+    }
     virtual bool Disconnect(const std::string &address) = 0;
     virtual bool Remove(const std::string &address) = 0;
     virtual std::string LastError() const = 0;
@@ -91,6 +103,8 @@ public:
 
     // Pair + trust + connect to a device by address. Returns true if connected.
     bool PairAndConnect(const std::string &address) override;
+    bool PairAndConnectWithPrompt(const std::string &address,
+                                  BtPairingPromptCb prompt_cb) override;
 
     bool Disconnect(const std::string &address) override;
     bool Remove(const std::string &address) override;

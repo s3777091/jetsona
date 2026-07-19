@@ -580,11 +580,56 @@ psrp_network_type()
     fi
 }
 
+psrp_capability_has_bit()
+{
+    local file="$1" bit="$2" long_bits word_from_right word_index
+    local offset nibble_from_right nibble_index nibble
+    local -a words=()
+
+    read -r -a words < "$file" || return 1
+    [ "${#words[@]}" -gt 0 ] || return 1
+    long_bits="$(getconf LONG_BIT 2>/dev/null || true)"
+    case "$long_bits" in
+        32|64) ;;
+        *) long_bits=64 ;; # Jetson userspace is normally aarch64.
+    esac
+
+    # sysfs prints native unsigned-long capability words high-to-low. Avoid
+    # converting the whole word through signed shell arithmetic: inspect only
+    # the hexadecimal nibble containing the requested bit.
+    word_from_right=$((bit / long_bits))
+    word_index=$((${#words[@]} - 1 - word_from_right))
+    [ "$word_index" -ge 0 ] || return 1
+    words[$word_index]="${words[$word_index]#0x}"
+    [[ "${words[$word_index]}" =~ ^[[:xdigit:]]+$ ]] || return 1
+
+    offset=$((bit % long_bits))
+    nibble_from_right=$((offset / 4))
+    nibble_index=$((${#words[$word_index]} - 1 - nibble_from_right))
+    [ "$nibble_index" -ge 0 ] || return 1
+    nibble="${words[$word_index]:$nibble_index:1}"
+    (( (16#$nibble & (1 << (offset % 4))) != 0 ))
+}
+
 psrp_controller_present()
 {
-    local device
-    for device in /dev/input/js* /dev/input/by-id/*-joystick /dev/input/by-path/*-joystick; do
+    local input_root="${PS_REMOTE_PLAY_INPUT_ROOT:-/dev/input}"
+    local sys_input_root="${PS_REMOTE_PLAY_SYS_INPUT_ROOT:-/sys/class/input}"
+    local device capability node
+
+    # joydev is optional. Keep its aliases for older adapters, then detect
+    # modern evdev-only gamepads by the kernel BTN_GAMEPAD capability (0x130).
+    for device in "$input_root"/js* \
+                  "$input_root"/by-id/*-joystick \
+                  "$input_root"/by-path/*-joystick; do
         [ -e "$device" ] && return 0
+    done
+    for capability in "$sys_input_root"/event*/device/capabilities/key; do
+        [ -r "$capability" ] || continue
+        node="${capability#"$sys_input_root"/}"
+        node="${node%%/*}"
+        [ -e "$input_root/$node" ] || continue
+        psrp_capability_has_bit "$capability" 304 && return 0
     done
     return 1
 }

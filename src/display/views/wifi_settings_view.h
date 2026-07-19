@@ -3,7 +3,7 @@
 /* On-screen WiFi provisioning view for the Jetson DS-02 UI.
  *
  * Full-screen overlay (drawn above the standby/launcher/dock): a header with a
- * back button + rescan, a scrollable list of scanned networks (SSID + signal
+ * back button, a pull-to-refresh list of scanned networks (SSID + signal
  * bars + lock marker + "Connected" tag), and an LVGL keyboard for entering the
  * password when a secured network is tapped. Open networks connect directly.
  *
@@ -60,7 +60,7 @@ private:
     void SetStatus(const char *text);
 
     static void OnBack(lv_event_t *e);
-    static void OnRescan(lv_event_t *e);
+    static void OnListPull(lv_event_t *e);
     static void OnRowClicked(lv_event_t *e);
     static void OnConnect(lv_event_t *e);
     static void OnCancel(lv_event_t *e);
@@ -70,7 +70,6 @@ private:
     lv_obj_t *overlay_ = nullptr;
     lv_obj_t *back_btn_ = nullptr;
     lv_obj_t *title_label_ = nullptr;
-    lv_obj_t *rescan_btn_ = nullptr;
     lv_obj_t *status_label_ = nullptr;
     lv_obj_t *list_ = nullptr;
     lv_obj_t *kb_panel_ = nullptr;
@@ -87,6 +86,7 @@ private:
 
     std::vector<jetson::WifiNetwork> last_networks_;
     std::string pending_ssid_;          // network awaiting password entry
+    bool pull_armed_ = false;
     std::atomic<bool> scanning_{false};
     std::atomic<bool> closed_{false};
 };

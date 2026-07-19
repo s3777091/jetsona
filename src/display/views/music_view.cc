@@ -14,6 +14,7 @@
 #include <lvgl.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -55,6 +56,15 @@ bool HasAnyRail(const jetson::music::DiscoverData &d) {
     return !d.personalized.empty() || !d.new_releases.empty() ||
            !d.chill.empty() || !d.top100.empty() || !d.artists.empty() ||
            !d.radio.empty();
+}
+
+bool HasArtworkFileExtension(const std::string &path) {
+    const size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) return false;
+    std::string extension = path.substr(dot + 1);
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extension == "jpg" || extension == "jpeg" || extension == "png";
 }
 
 void RemoveInteraction(lv_obj_t *obj) {
@@ -159,6 +169,11 @@ MusicView::MusicView(lv_obj_t *parent, int width, int height, ClosedCb on_closed
 MusicView::~MusicView() {
     request_generation_.fetch_add(1);
     LvglLockGuard lock;
+    for (auto *indev : pull_inputs_) {
+        if (indev)
+            lv_indev_remove_event_cb_with_user_data(indev, OnPullInput, this);
+    }
+    pull_inputs_.clear();
     if (player_timer_) { lv_timer_del(player_timer_); player_timer_ = nullptr; }
     ClearArtwork();
 }
@@ -186,7 +201,6 @@ void MusicView::BuildBody() {
     lv_obj_set_scroll_dir(page_, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(page_, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_add_event_cb(page_, OnPageScroll, LV_EVENT_SCROLL, this);
-    lv_obj_add_event_cb(page_, OnPageScroll, LV_EVENT_SCROLL_END, this);
 
     // Pull-to-refresh badge. Lives on body_ (not page_) so it neither scrolls
     // away nor gets wiped by ClearPage; OnPageScroll drives its visibility.
@@ -206,11 +220,17 @@ void MusicView::BuildBody() {
     pull_icon_ = lv_label_create(pull_indicator_);
     lv_obj_set_style_text_font(pull_icon_, &BUILTIN_ICON_FONT, 0);
     lv_obj_set_style_text_color(pull_icon_, Color(p.text), 0);
-    lv_obj_set_style_transform_pivot_x(pull_icon_, lv_pct(50), 0);
-    lv_obj_set_style_transform_pivot_y(pull_icon_, lv_pct(50), 0);
-    lv_label_set_text(pull_icon_, LV_SYMBOL_REFRESH);
+    lv_label_set_text(pull_icon_, LV_SYMBOL_DOWN);
     lv_obj_center(pull_icon_);
     RemoveInteraction(pull_icon_);
+
+    // Object RELEASED events do not bubble through clickable album cards.
+    // Listen at the pointer device instead so a pull that starts on artwork,
+    // a row, or an empty page always gets a matching release notification.
+    for (lv_indev_t *indev = lv_indev_get_next(nullptr); indev;
+         indev = lv_indev_get_next(indev)) {
+        RegisterPullInput(indev);
+    }
 
     // The Dynamic Island in the status bar now owns the transport controls and
     // now-playing display, so there is no in-app bottom player bar. This timer
@@ -257,22 +277,46 @@ lv_obj_t *MusicView::CreateArtwork(lv_obj_t *parent, const std::string &path,
     RemoveInteraction(fallback);
 
     if (path.empty()) return host;
-    LvglImage *image = nullptr;
-    auto cached = artwork_by_path_.find(path);
-    if (cached != artwork_by_path_.end()) {
-        image = cached->second;
-    } else {
-        auto owner = LvglImageFromFile(path);
-        if (!owner) return host;
-        image = owner.get();
-        artwork_by_path_.emplace(path, image);
-        artwork_.push_back(std::move(owner));
-    }
+
     auto *obj = lv_image_create(host);
-    const auto *dsc = image->image_dsc();
-    int w, h;
-    ImageDimensions(dsc, w, h);
-    lv_image_set_src(obj, dsc);
+    int w = 0;
+    int h = 0;
+
+    /* New artwork cache entries keep their real .jpg/.png extension. Let
+     * LVGL open those files directly: TJPGD then parses the JPEG header itself
+     * and does not depend on the stricter in-memory JFIF detector. Keep the
+     * descriptor path below for old .img cache entries and user albums saved
+     * by an earlier firmware. */
+    if (HasArtworkFileExtension(path)) {
+        lv_image_header_t header {};
+        if (lv_image_decoder_get_info(path.c_str(), &header) != LV_RESULT_OK ||
+            header.w == 0 || header.h == 0) {
+            lv_obj_delete(obj);
+            return host;
+        }
+        w = static_cast<int>(header.w);
+        h = static_cast<int>(header.h);
+        lv_image_set_src(obj, path.c_str());
+    } else {
+        LvglImage *image = nullptr;
+        auto cached = artwork_by_path_.find(path);
+        if (cached != artwork_by_path_.end()) {
+            image = cached->second;
+        } else {
+            auto owner = LvglImageFromFile(path);
+            if (!owner) {
+                lv_obj_delete(obj);
+                return host;
+            }
+            image = owner.get();
+            artwork_by_path_.emplace(path, image);
+            artwork_.push_back(std::move(owner));
+        }
+        const auto *dsc = image->image_dsc();
+        ImageDimensions(dsc, w, h);
+        lv_image_set_src(obj, dsc);
+    }
+
     lv_obj_set_size(obj, w, h);
     const int shorter = std::max(1, std::min(w, h));
     lv_image_set_scale(obj, static_cast<uint32_t>(size * 256 / shorter));
@@ -431,10 +475,7 @@ void MusicView::LoadDiscovery() {
                 lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
                 const std::string text = "zing api đang lỗi";
                 lv_label_set_text(message, text.c_str());
-                auto *retry = MakeIconButton(self->page_, LV_SYMBOL_REFRESH, 46,
-                                             OnRetry, self.get());
-                lv_obj_set_style_align(retry, LV_ALIGN_CENTER, 0);
-                self->AddPullHint("Kéo xuống hoặc bấm nút để thử lại", true);
+                self->AddPullHint("Kéo xuống để thử lại", true);
                 self->Notify(text);
                 return;
             }
@@ -770,11 +811,7 @@ void MusicView::LoadAlbum(const CatalogItem &item) {
                     lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
                     constexpr char kZingApiError[] = "zing api đang lỗi";
                     lv_label_set_text(message, kZingApiError);
-                    auto *retry = MakeIconButton(self->page_, LV_SYMBOL_REFRESH,
-                                                 46, OnRetry, self.get());
-                    lv_obj_set_style_align(retry, LV_ALIGN_CENTER, 0);
-                    self->AddPullHint(
-                        "Kéo xuống hoặc bấm nút để thử lại", true);
+                    self->AddPullHint("Kéo xuống để thử lại", true);
                     self->Notify(kZingApiError);
                     return;
                 }
@@ -1014,56 +1051,119 @@ void MusicView::PullRefresh() {
     if (loading_) return;
     lv_obj_scroll_to_y(page_, 0, LV_ANIM_OFF);
     if (album_mode_ && pending_item_.kind == CatalogKind::UserAlbum) {
+        Notify("Đang tải lại album…");
         OpenUserAlbum(pending_item_.id);
         return;
     }
     if (album_mode_ && !pending_item_.id.empty()) {
+        Notify("Đang tải lại album…");
         LoadAlbum(pending_item_);
         return;
     }
+    Notify("Đang làm mới danh sách nhạc…");
     LoadDiscovery();
+}
+
+void MusicView::RegisterPullInput(lv_indev_t *indev) {
+    if (!indev || lv_indev_get_type(indev) != LV_INDEV_TYPE_POINTER) return;
+    if (std::find(pull_inputs_.begin(), pull_inputs_.end(), indev) !=
+        pull_inputs_.end()) return;
+    lv_indev_add_event_cb(indev, OnPullInput, LV_EVENT_PRESSED, this);
+    lv_indev_add_event_cb(indev, OnPullInput, LV_EVENT_RELEASED, this);
+    pull_inputs_.push_back(indev);
 }
 
 void MusicView::OnPageScroll(lv_event_t *e) {
     auto *self = static_cast<MusicView *>(lv_event_get_user_data(e));
     if (!self || !self->page_ || !self->pull_indicator_) return;
-    // Elastic overscroll above the top edge reads as a negative scroll-y.
-    const int32_t pull = -lv_obj_get_scroll_y(self->page_);
-    lv_indev_t *indev = lv_indev_active();
-    const bool pressed =
-        indev && lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED;
+    self->RegisterPullInput(lv_indev_active());
 
-    if (pressed) {
-        self->pull_armed_ = pull >= kPullTriggerPx && !self->loading_;
-        if (pull > kPullShowPx && !self->loading_) {
-            const auto &p = jetson::UiTheme::Instance().Palette();
-            const int32_t capped = std::min<int32_t>(pull, 2 * kPullTriggerPx);
-            lv_obj_clear_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_style_translate_y(self->pull_indicator_,
-                                         std::min<int32_t>(capped / 2, 40), 0);
-            lv_obj_set_style_opa(self->pull_indicator_,
-                static_cast<lv_opa_t>(
-                    std::min<int32_t>(LV_OPA_COVER,
-                                      capped * LV_OPA_COVER / kPullTriggerPx)),
-                0);
-            // Spin the arrow with the drag; the accent fill signals "release
-            // now to refresh".
-            lv_obj_set_style_transform_rotation(self->pull_icon_, capped * 45, 0);
-            lv_obj_set_style_bg_color(self->pull_indicator_,
-                Color(self->pull_armed_ ? p.accent : p.button), 0);
-        } else {
-            lv_obj_add_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
-        }
+    // Elastic overscroll above the top edge reads as a negative scroll-y.
+    const int32_t pull = std::max<int32_t>(0, -lv_obj_get_scroll_y(self->page_));
+    if (!self->pull_tracking_ || self->loading_) {
+        lv_obj_add_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
         return;
     }
 
-    // Released: the elastic snap-back keeps emitting scroll events, so the
-    // first not-pressed event both hides the badge and fires the reload once.
-    lv_obj_add_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
-    if (self->pull_armed_) {
-        self->pull_armed_ = false;
-        self->PullRefresh();
+    // Once the threshold was crossed keep it armed until the finger is lifted;
+    // a small bounce back must not silently cancel the refresh.
+    self->pull_armed_ = self->pull_armed_ || pull >= kPullTriggerPx;
+    if (pull > kPullShowPx || self->pull_armed_) {
+        const auto &p = jetson::UiTheme::Instance().Palette();
+        const int32_t capped = std::min<int32_t>(pull, 2 * kPullTriggerPx);
+        lv_obj_clear_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_translate_y(self->pull_indicator_,
+                                     std::min<int32_t>(capped / 2, 40), 0);
+        lv_obj_set_style_opa(self->pull_indicator_,
+            static_cast<lv_opa_t>(std::min<int32_t>(
+                LV_OPA_COVER, capped * LV_OPA_COVER / kPullTriggerPx)), 0);
+        lv_obj_set_style_bg_color(self->pull_indicator_,
+            Color(self->pull_armed_ ? p.accent : p.button), 0);
+        lv_label_set_text(self->pull_icon_,
+                          self->pull_armed_ ? LV_SYMBOL_OK : LV_SYMBOL_DOWN);
+    } else {
+        lv_obj_add_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+void MusicView::OnPullInput(lv_event_t *e) {
+    auto *self = static_cast<MusicView *>(lv_event_get_user_data(e));
+    if (!self || !self->page_ || !self->pull_indicator_) return;
+    auto *indev = static_cast<lv_indev_t *>(lv_event_get_current_target(e));
+    auto *target = static_cast<lv_obj_t *>(lv_event_get_param(e));
+
+    bool inside_page = false;
+    for (lv_obj_t *obj = target; obj; obj = lv_obj_get_parent(obj)) {
+        if (obj == self->page_) { inside_page = true; break; }
+    }
+
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        self->pull_tracking_ = inside_page && !self->loading_ &&
+                               lv_obj_get_scroll_y(self->page_) <= 0;
+        self->pull_armed_ = false;
+        self->pull_press_point_ = {};
+        if (indev) lv_indev_get_point(indev, &self->pull_press_point_);
+        lv_label_set_text(self->pull_icon_, LV_SYMBOL_DOWN);
+        lv_obj_add_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    /* Short album/error pages sometimes have no vertical overflow, so LVGL
+     * never emits SCROLL and the overscroll latch above cannot arm. Fall back
+     * to the raw pointer displacement, while requiring a clearly downward,
+     * predominantly vertical gesture that started inside the page at its top.
+     * This keeps horizontal album-rail swipes and ordinary taps from
+     * triggering a network reload. */
+    lv_point_t release_point = self->pull_press_point_;
+    if (indev) lv_indev_get_point(indev, &release_point);
+    const int32_t delta_x = release_point.x - self->pull_press_point_.x;
+    const int32_t delta_y = release_point.y - self->pull_press_point_.y;
+    const int32_t abs_delta_x = delta_x < 0 ? -delta_x : delta_x;
+    self->pull_armed_ = self->pull_armed_ ||
+        (self->pull_tracking_ && delta_y >= kPullTriggerPx &&
+         delta_y > abs_delta_x);
+
+    const bool refresh = self->pull_tracking_ && self->pull_armed_ &&
+                         !self->loading_;
+    self->pull_tracking_ = false;
+    self->pull_armed_ = false;
+    lv_obj_add_flag(self->pull_indicator_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_translate_y(self->pull_indicator_, 0, 0);
+
+    if (!refresh || self->pull_refresh_scheduled_) return;
+    self->pull_refresh_scheduled_ = true;
+    std::weak_ptr<MusicView> weak =
+        std::static_pointer_cast<MusicView>(self->shared_from_this());
+    // Defer page replacement until LVGL finishes dispatching RELEASED to the
+    // card/row that was under the finger; otherwise ClearPage can delete the
+    // active event target in the middle of input processing.
+    Application::GetInstance().Schedule([weak]() {
+        auto view = weak.lock();
+        if (!view) return;
+        LvglLockGuard lock;
+        view->pull_refresh_scheduled_ = false;
+        view->PullRefresh();
+    });
 }
 
 void MusicView::PlayTrack(size_t index) {
@@ -1152,13 +1252,6 @@ void MusicView::OnTrackDeleted(lv_event_t *e) {
 void MusicView::OnBack(lv_event_t *e) {
     LvglLockGuard lock;
     static_cast<MusicView *>(lv_event_get_user_data(e))->ShowDiscovery();
-}
-
-void MusicView::OnRetry(lv_event_t *e) {
-    LvglLockGuard lock;
-    auto *self = static_cast<MusicView *>(lv_event_get_user_data(e));
-    if (self->album_mode_) self->LoadAlbum(self->pending_item_);
-    else self->LoadDiscovery();
 }
 
 void MusicView::OnPlayAll(lv_event_t *e) {

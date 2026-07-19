@@ -80,19 +80,20 @@ private:
                             int size, bool circular);
     lv_obj_t *CreateSkeletonCard(lv_obj_t *rail, bool circular);
     /* Pull-to-refresh: dragging the page below its top edge (LVGL's elastic
-     * overscroll) reveals a spinning refresh badge; releasing past the
-     * threshold reloads whatever the page currently shows. */
+     * overscroll) reveals a down-arrow badge; releasing past the threshold
+     * reloads whatever the page currently shows. */
     void AddPullHint(const char *text, bool with_spacer);
     void PullRefresh();
+    void RegisterPullInput(lv_indev_t *indev);
     void PlayTrack(size_t index);
     void PlayAll();
     void RefreshTrackRows();
 
     static void OnPageScroll(lv_event_t *e);
+    static void OnPullInput(lv_event_t *e);
     static void OnCardEvent(lv_event_t *e);
     static void OnCardDeleted(lv_event_t *e);
     static void OnBack(lv_event_t *e);
-    static void OnRetry(lv_event_t *e);
     static void OnPlayAll(lv_event_t *e);
     static void OnTrackEvent(lv_event_t *e);
     static void OnTrackDeleted(lv_event_t *e);
@@ -109,7 +110,11 @@ private:
     lv_obj_t *add_modal_ = nullptr;
     lv_obj_t *pull_indicator_ = nullptr;
     lv_obj_t *pull_icon_ = nullptr;
+    bool pull_tracking_ = false;
     bool pull_armed_ = false;
+    lv_point_t pull_press_point_ {};
+    bool pull_refresh_scheduled_ = false;
+    std::vector<lv_indev_t *> pull_inputs_;
     lv_timer_t *player_timer_ = nullptr;
     jetson::music::Track pending_add_track_;
 

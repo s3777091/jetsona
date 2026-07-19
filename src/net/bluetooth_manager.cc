@@ -13,6 +13,8 @@
 #include <thread>
 #include <unordered_set>
 
+#include <sys/wait.h>
+
 #define TAG "Bt"
 
 namespace jetson {
@@ -93,6 +95,57 @@ BtDeviceKind KindFromInfo(const std::string &info) {
         contains(icon, "headphone"))
         return BtDeviceKind::Headphones;
     return BtDeviceKind::Unknown;
+}
+
+bool IsKeyboardInfo(const std::string &info) {
+    std::string identity = field(info, "Icon") + " " + field(info, "Name") +
+                           " " + field(info, "Alias");
+    std::transform(identity.begin(), identity.end(), identity.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return contains(identity, "keyboard") || contains(identity, "off-key");
+}
+
+std::string PairingCodeFromLine(const std::string &line) {
+    size_t marker = line.find("Passkey:");
+    if (marker == std::string::npos) marker = line.find("PIN code:");
+    if (marker == std::string::npos) return "";
+    for (size_t i = marker; i + 6 <= line.size(); ++i) {
+        bool digits = true;
+        for (size_t j = 0; j < 6; ++j) {
+            if (!std::isdigit(static_cast<unsigned char>(line[i + j]))) {
+                digits = false;
+                break;
+            }
+        }
+        if (digits) return line.substr(i, 6);
+    }
+    return "";
+}
+
+/* Pairing a keyboard is interactive in one important direction: BlueZ prints
+ * a six-digit code which the user must type on the remote keyboard. Read
+ * bluetoothctl output as it arrives and surface that code through the UI
+ * callback instead of discovering it only after the pairing timeout. */
+int RunPairingCommand(const std::string &command, std::string &out,
+                      const BtPairingPromptCb &prompt_cb) {
+    FILE *process = popen((command + " 2>&1").c_str(), "r");
+    if (!process) return -1;
+    char buffer[1024];
+    std::string last_code;
+    while (fgets(buffer, sizeof(buffer), process)) {
+        out += buffer;
+        const std::string code = PairingCodeFromLine(buffer);
+        if (!code.empty() && code != last_code) {
+            last_code = code;
+            ESP_LOGI(TAG, "Bluetooth keyboard pairing passkey: %s", code.c_str());
+            if (prompt_cb) prompt_cb(code);
+        }
+    }
+    const int raw = pclose(process);
+    if (raw == -1) return -1;
+    if (WIFEXITED(raw)) return WEXITSTATUS(raw);
+    if (WIFSIGNALED(raw)) return 128 + WTERMSIG(raw);
+    return raw;
 }
 
 // Parse "Device AA:BB:CC:DD:EE:FF Name" lines into unique addresses. Older
@@ -380,6 +433,11 @@ BtDeviceKind BluetoothManager::ConnectedDeviceKind() const {
 }
 
 bool BluetoothManager::PairAndConnect(const std::string &address) {
+    return PairAndConnectWithPrompt(address, {});
+}
+
+bool BluetoothManager::PairAndConnectWithPrompt(const std::string &address,
+                                                BtPairingPromptCb prompt_cb) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!Available()) return false;
     if (!PowerOn()) return false;
@@ -387,6 +445,7 @@ bool BluetoothManager::PairAndConnect(const std::string &address) {
     std::string info;
     runBt("info " + address + "\n", info, 6);
     if (fieldBool(info, "Connected")) { last_error_.clear(); return true; }
+    const bool keyboard = IsKeyboardInfo(info);
 
     // All bluetoothctl sessions below are held open with shell sleeps:
     // pair/connect complete asynchronously and an instant stdin EOF would quit
@@ -404,17 +463,21 @@ bool BluetoothManager::PairAndConnect(const std::string &address) {
         //    pairing (all these devices — gamepads, headsets — are pin-less).
         std::string setup =
             "agent off\n"
-            "agent NoInputNoOutput\n"
+            "agent " + std::string(keyboard ? "KeyboardDisplay" : "NoInputNoOutput") + "\n"
             "default-agent\n"
             "pairable on\n"
             "scan on\n";
+        const int pair_wait_s = keyboard ? 30 : 15;
+        const int command_timeout_s = keyboard ? 50 : 35;
         std::string cmd =
             "{ printf '%s' " + QuoteShellArgument(setup) + "; sleep 4; "
             "printf '%s' " + QuoteShellArgument("pair " + address + "\n") +
-            "; sleep 15; "
+            "; sleep " + std::to_string(pair_wait_s) + "; "
             "printf '%s' " + QuoteShellArgument("scan off\n") +
-            "; sleep 2; } | timeout --signal=TERM 35s bluetoothctl";
-        RunShellCommand(cmd, out);
+            "; sleep 2; } | timeout --signal=TERM " +
+            std::to_string(command_timeout_s) + "s bluetoothctl";
+        if (keyboard) RunPairingCommand(cmd, out, prompt_cb);
+        else RunShellCommand(cmd, out);
 
         runBt("info " + address + "\n", info, 6);
         if (!fieldBool(info, "Paired")) {

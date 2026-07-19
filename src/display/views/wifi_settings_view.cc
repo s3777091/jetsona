@@ -1,7 +1,6 @@
 #include "display/views/wifi_settings_view.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/signal_bars.h"
-#include "display/core/app_icons.h"
 #include "fonts.h"
 #include "esp_log.h"
 #include "lvgl_runtime.h"
@@ -19,6 +18,44 @@ using jetson::ui::Color;
 using LvLockGuard = jetson::ui::LvglLockGuard;
 
 namespace {
+constexpr int kPullRefreshTriggerPx = 56;
+
+bool PullRefreshTriggered(lv_event_t *e, lv_obj_t *list, bool busy,
+                          bool *armed) {
+    if (!e || !list || !armed) return false;
+    const lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_active();
+    if (code == LV_EVENT_GESTURE) {
+        *armed = false;
+        return !busy && indev &&
+               lv_indev_get_gesture_dir(indev) == LV_DIR_BOTTOM &&
+               lv_obj_get_scroll_y(list) <= 0;
+    }
+    if (code == LV_EVENT_SCROLL_BEGIN) {
+        // Elastic snap-back emits another begin after release. Do not clear
+        // the threshold latched by the finger-driven scroll in that case.
+        if (indev && lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED)
+            *armed = false;
+        return false;
+    }
+
+    const bool pressed = indev &&
+        lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED;
+    if (code == LV_EVENT_SCROLL && pressed) {
+        *armed = *armed ||
+                 (!busy && -lv_obj_get_scroll_y(list) >= kPullRefreshTriggerPx);
+        return false;
+    }
+    const bool terminal = code == LV_EVENT_SCROLL_END ||
+                          code == LV_EVENT_RELEASED ||
+                          code == LV_EVENT_PRESS_LOST ||
+                          (code == LV_EVENT_SCROLL && !pressed);
+    if (!terminal || pressed) return false;
+    const bool trigger = *armed && !busy;
+    *armed = false;
+    return trigger;
+}
+
 struct RowCtx {
     WifiSettingsView *self;
     std::string ssid;
@@ -90,26 +127,13 @@ void WifiSettingsView::BuildUi() {
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
     lv_obj_center(back_lbl);
 
-    rescan_btn_ = lv_button_create(header);
-    lv_obj_set_size(rescan_btn_, 40, 40);
-    // Sit next to the back button on the left so the top-right corner is free
-    // for the global status bar (which lives on lv_layer_top and would overlap
-    // a right-aligned button here).
-    lv_obj_align_to(rescan_btn_, back_btn_, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
-    lv_obj_set_style_bg_color(rescan_btn_, Color(0x2a2d33), 0);
-    lv_obj_add_event_cb(rescan_btn_, OnRescan, LV_EVENT_CLICKED, this);
-    auto *res_ic = jetson::ui::CreateAppIcon(rescan_btn_, "reload", 22);
-    lv_obj_set_style_image_recolor(res_ic, lv_color_white(), 0);
-    lv_obj_set_style_image_recolor_opa(res_ic, LV_OPA_COVER, 0);
-    lv_obj_center(res_ic);
-
     title_label_ = lv_label_create(header);
     lv_obj_set_style_text_font(title_label_, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(title_label_, lv_color_white(), 0);
     lv_label_set_text(title_label_, "WiFi");
-    // Title sits on the left (after the back + rescan buttons) so it does not
+    // Title sits on the left (after the back button) so it does not
     // sit under the centered Dynamic-Island bar at the top.
-    lv_obj_align_to(title_label_, rescan_btn_, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
+    lv_obj_align_to(title_label_, back_btn_, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
 
     // ---- Status (24px) ----
     status_label_ = lv_label_create(overlay_);
@@ -132,6 +156,14 @@ void WifiSettingsView::BuildUi() {
     lv_obj_set_scrollbar_mode(list_, LV_SCROLLBAR_MODE_ACTIVE);
     lv_obj_set_scroll_dir(list_, LV_DIR_VER);
     lv_obj_add_flag(list_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(list_, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_clear_flag(list_, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_SCROLL_BEGIN, this);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_SCROLL, this);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_SCROLL_END, this);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_RELEASED, this);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_PRESS_LOST, this);
+    lv_obj_add_event_cb(list_, OnListPull, LV_EVENT_GESTURE, this);
 
     // ---- Keyboard panel (hidden until a secured network is tapped) ----
     kb_panel_ = lv_obj_create(overlay_);
@@ -259,11 +291,13 @@ lv_obj_t *WifiSettingsView::CreateRow(const jetson::WifiNetwork &net, int index)
 void WifiSettingsView::RenderList(const std::vector<jetson::WifiNetwork> &nets) {
     ClearRows();
     for (size_t i = 0; i < nets.size(); ++i) CreateRow(nets[i], (int)i);
-    if (nets.empty()) SetStatus("Không tìm thấy mạng WiFi. Bấm quay lại thử lại.");
+    if (nets.empty()) SetStatus("Không tìm thấy mạng WiFi. Kéo xuống để quét lại.");
 }
 
 void WifiSettingsView::StartScan() {
     if (scanning_.exchange(true)) return;
+    pull_armed_ = false;
+    if (list_) lv_obj_scroll_to_y(list_, 0, LV_ANIM_OFF);
     SetStatus("Đang quét WiFi...");
     ESP_LOGI(TAG, "scan requested");
     std::thread([self = shared_from_this()]() {
@@ -309,6 +343,7 @@ void WifiSettingsView::ShowKeyboardFor(const std::string &ssid) {
     if (kb_textarea_) lv_textarea_set_text(kb_textarea_, "");
     if (kb_panel_) lv_obj_clear_flag(kb_panel_, LV_OBJ_FLAG_HIDDEN);
     if (kb_keyboard_) lv_keyboard_set_textarea(kb_keyboard_, kb_textarea_);
+    if (kb_textarea_) lv_group_focus_obj(kb_textarea_);
 }
 
 void WifiSettingsView::HideKeyboard() {
@@ -368,10 +403,13 @@ void WifiSettingsView::OnBack(lv_event_t *e) {
     self->RequestClose();
 }
 
-void WifiSettingsView::OnRescan(lv_event_t *e) {
+void WifiSettingsView::OnListPull(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<WifiSettingsView *>(lv_event_get_user_data(e));
-    self->StartScan();
+    if (!self || !self->list_) return;
+    if (PullRefreshTriggered(e, self->list_, self->scanning_.load(),
+                             &self->pull_armed_))
+        self->StartScan();
 }
 
 void WifiSettingsView::OnRowClicked(lv_event_t *e) {

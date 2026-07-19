@@ -53,6 +53,9 @@ export PS_REMOTE_PLAY_STATE_FILE="$TMP_ROOT/ps-remote-play.conf"
 export PS_REMOTE_PLAY_DRY_RUN=1
 export PS_REMOTE_PLAY_RENDER_BACKEND=vulkan
 export PS_REMOTE_PLAY_HW_DECODER=software
+export PS_REMOTE_PLAY_INPUT_ROOT="$TMP_ROOT/dev-input"
+export PS_REMOTE_PLAY_SYS_INPUT_ROOT="$TMP_ROOT/sys-input"
+mkdir -p "$PS_REMOTE_PLAY_INPUT_ROOT" "$PS_REMOTE_PLAY_SYS_INPUT_ROOT"
 # Do not let the offline test import the developer machine's real config.
 JETSON_CONFIG_FILE="$TMP_ROOT/config.yaml"
 : > "$JETSON_CONFIG_FILE"
@@ -94,6 +97,22 @@ grep -Fqx 'installed=1' <<< "$status_output" || fail "Chiaki not detected"
 grep -Fqx 'registered=1' <<< "$status_output" || fail "registration not detected"
 grep -Fqx 'nickname=PS5 Living Room' <<< "$status_output" || \
     fail "registered nickname was not normalized"
+grep -Fqx 'controller=0' <<< "$status_output" || fail "empty input tree reported a controller"
+
+# Modern Bluetooth gamepads can expose only eventN (no optional /dev/input/jsN).
+# BTN_GAMEPAD is bit 0x130. Kernel sysfs prints native-long words high-to-low.
+mkdir -p "$PS_REMOTE_PLAY_SYS_INPUT_ROOT/event7/device/capabilities"
+: > "$PS_REMOTE_PLAY_INPUT_ROOT/event7"
+if [ "$(getconf LONG_BIT 2>/dev/null || echo 64)" = 32 ]; then
+    printf '10000 0 0 0 0 0 0 0 0 0\n' > \
+        "$PS_REMOTE_PLAY_SYS_INPUT_ROOT/event7/device/capabilities/key"
+else
+    printf '1000000000000 0 0 0 0\n' > \
+        "$PS_REMOTE_PLAY_SYS_INPUT_ROOT/event7/device/capabilities/key"
+fi
+status_output="$("$CTL" status)"
+grep -Fqx 'controller=1' <<< "$status_output" || \
+    fail "evdev-only BTN_GAMEPAD controller was not detected"
 
 stream_output="$("$LAUNCHER" stream)"
 [[ "$stream_output" == *"--profile Deck"* ]] || fail "active profile not passed to CLI"

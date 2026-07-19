@@ -42,6 +42,9 @@ public:
     ~StatusBar();
 
     void SetWifiAction(Action cb) { wifi_action_ = std::move(cb); }
+    void SetCaptivePortalAction(std::function<void(const std::string &)> cb) {
+        captive_portal_action_ = std::move(cb);
+    }
     void SetBluetoothAction(Action cb) { bt_action_ = std::move(cb); }
     void SetVolumeAction(std::function<void(int, bool)> cb) {
         volume_action_ = std::move(cb);
@@ -199,9 +202,16 @@ private:
      * 1 Hz LVGL timer only reads the atomics and swaps icon sources.
      * wifi signal: -2 not read yet, -1 radio off/disconnected, 0..100 in use. */
     std::thread conn_poll_thread_;
+    std::thread captive_portal_thread_;
     std::atomic<bool> conn_poll_stop_{false};
     std::atomic<int> polled_wifi_signal_{-2};
     std::atomic<int> polled_wifi_enabled_{-1};
+    // jetson::InternetAccessState as an int. Probed only while Wi-Fi is the
+    // active uplink; the login URL is guarded separately because it is a
+    // string published by the same worker thread.
+    std::atomic<int> polled_internet_state_{-1};
+    std::mutex captive_portal_mutex_;
+    std::string captive_portal_url_;
     // -1 unknown, 0 no cable/link, 1 LAN cable link up. Unlike the radios this
     // is a cheap sysfs read, so the worker refreshes it on every 500 ms tick
     // and the ethernet icon reacts to a plug/unplug almost immediately.
@@ -211,11 +221,13 @@ private:
     std::atomic<int> polled_bt_device_{-1};
     int cached_wifi_signal_ = -3;            // last value applied to the UI
     int cached_wifi_enabled_ = -2;
+    int cached_internet_state_ = -2;
     int cached_eth_connected_ = -2;
     int cached_bt_powered_ = -2;
     int cached_bt_device_ = -2;
 
     Action wifi_action_, bt_action_, sleep_action_, lock_action_, reboot_action_, shutdown_action_;
+    std::function<void(const std::string &)> captive_portal_action_;
     std::function<void(int, bool)> volume_action_;
     std::function<void(int)> brightness_action_;
     Action island_action_;
@@ -267,6 +279,7 @@ private:
     static void OnWifiToggle(lv_event_t *e);
     static void OnBluetoothToggle(lv_event_t *e);
     static void OnWifiRow(lv_event_t *e);
+    static void OnCaptivePortal(lv_event_t *e);
     static void OnBluetoothRow(lv_event_t *e);
     static void OnWifiSettings(lv_event_t *e);
     static void OnBluetoothSettings(lv_event_t *e);

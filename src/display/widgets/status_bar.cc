@@ -7,6 +7,7 @@
 #include "media/player_controller.h"
 #include "net/airplane_mode.h"
 #include "net/bluetooth_manager.h"
+#include "net/captive_portal.h"
 #include "net/ethernet_status.h"
 #include "net/vpn_manager.h"
 #include "net/wifi_manager.h"
@@ -51,6 +52,7 @@ constexpr int kStatusIconPx = 20;
 // thread, so this only bounds how stale the wifi/bt icons can be.
 constexpr auto kConnPollInterval = std::chrono::seconds(10);
 constexpr auto kConnPollTick = std::chrono::milliseconds(500);
+constexpr auto kCaptivePortalPollInterval = std::chrono::seconds(20);
 
 void RemoveInteraction(lv_obj_t *obj) {
     if (!obj) return;
@@ -297,9 +299,11 @@ StatusBar::StatusBar(lv_obj_t *parent) {
         while (!conn_poll_stop_.load()) {
             // Wired link is a sysfs read, not a shell-out: refresh it every
             // tick so plugging/unplugging the LAN cable shows within ~1 s.
-            polled_eth_connected_.store(jetson::IsEthernetConnected() ? 1 : 0);
-            if (std::chrono::steady_clock::now() >= next_poll) {
-                next_poll = std::chrono::steady_clock::now() + kConnPollInterval;
+            const bool ethernet = jetson::IsEthernetConnected();
+            polled_eth_connected_.store(ethernet ? 1 : 0);
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_poll) {
+                next_poll = now + kConnPollInterval;
                 if (jetson::IsAirplaneModeEnabled()) {
                     polled_wifi_signal_.store(-1);
                     polled_wifi_enabled_.store(0);
@@ -308,8 +312,10 @@ StatusBar::StatusBar(lv_obj_t *parent) {
                         static_cast<int>(jetson::BtDeviceKind::None));
                 } else {
                     auto &wifi = jetson::WifiManager::Instance();
-                    polled_wifi_enabled_.store(wifi.IsEnabled() ? 1 : 0);
-                    polled_wifi_signal_.store(wifi.ActiveSignal());
+                    const bool wifi_enabled = wifi.IsEnabled();
+                    const int wifi_signal = wifi.ActiveSignal();
+                    polled_wifi_enabled_.store(wifi_enabled ? 1 : 0);
+                    polled_wifi_signal_.store(wifi_signal);
                     auto &bt = jetson::BluetoothManager::Instance();
                     const bool bt_on = bt.IsPowered();
                     polled_bt_powered_.store(bt_on ? 1 : 0);
@@ -317,6 +323,59 @@ StatusBar::StatusBar(lv_obj_t *parent) {
                     polled_bt_device_.store(static_cast<int>(
                         bt_on ? bt.ConnectedDeviceKind()
                               : jetson::BtDeviceKind::None));
+                }
+            }
+            std::this_thread::sleep_for(kConnPollTick);
+        }
+    });
+
+    // Keep HTTP probing off the radio/link poller. A portal that drops packets
+    // may consume the full five-second timeout; Ethernet hot-plug and
+    // Bluetooth state must continue to refresh while that happens.
+    captive_portal_thread_ = std::thread([this]() {
+        auto next_probe = std::chrono::steady_clock::now();
+        const auto clear_state = [this]() {
+            {
+                std::lock_guard<std::mutex> lock(captive_portal_mutex_);
+                captive_portal_url_.clear();
+            }
+            polled_internet_state_.store(
+                static_cast<int>(jetson::InternetAccessState::Unknown));
+        };
+        while (!conn_poll_stop_.load()) {
+            const bool wifi_is_uplink =
+                !jetson::IsAirplaneModeEnabled() &&
+                !jetson::IsEthernetConnected() &&
+                polled_wifi_enabled_.load() == 1 &&
+                polled_wifi_signal_.load() >= 0;
+            const auto now = std::chrono::steady_clock::now();
+            if (!wifi_is_uplink) {
+                if (polled_internet_state_.load() !=
+                    static_cast<int>(jetson::InternetAccessState::Unknown)) {
+                    clear_state();
+                }
+                // The first probe after a link appears should run immediately.
+                next_probe = now;
+            } else if (now >= next_probe) {
+                const auto portal = jetson::ProbeCaptivePortal();
+                if (conn_poll_stop_.load()) break;
+                // Re-check the route after the blocking request: the user may
+                // have plugged in LAN or disabled Wi-Fi while it was in flight.
+                if (jetson::IsAirplaneModeEnabled() ||
+                    jetson::IsEthernetConnected() ||
+                    polled_wifi_enabled_.load() != 1 ||
+                    polled_wifi_signal_.load() < 0) {
+                    clear_state();
+                    next_probe = std::chrono::steady_clock::now();
+                } else {
+                    {
+                        std::lock_guard<std::mutex> lock(captive_portal_mutex_);
+                        captive_portal_url_ = portal.login_url;
+                    }
+                    polled_internet_state_.store(
+                        static_cast<int>(portal.state));
+                    next_probe = std::chrono::steady_clock::now() +
+                                 kCaptivePortalPollInterval;
                 }
             }
             std::this_thread::sleep_for(kConnPollTick);
@@ -607,6 +666,12 @@ void StatusBar::RebuildWifiMenu() {
     if (!wifi_menu_) return;
     lv_obj_clean(wifi_menu_);
     wifi_row_ctx_.clear();
+    wifi_switch_ = nullptr;
+    const bool ethernet = polled_eth_connected_.load() == 1;
+    const auto internet_state = static_cast<jetson::InternetAccessState>(
+        polled_internet_state_.load());
+    const bool captive_portal = !ethernet &&
+        internet_state == jetson::InternetAccessState::CaptivePortal;
 
     auto *header = lv_obj_create(wifi_menu_);
     lv_obj_remove_style_all(header);
@@ -614,14 +679,16 @@ void StatusBar::RebuildWifiMenu() {
     auto *title = lv_label_create(header);
     lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
-    lv_label_set_text(title, "Wi-Fi");
+    lv_label_set_text(title, ethernet ? "Ethernet" : "Wi-Fi");
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 2, 0);
-    wifi_switch_ = lv_switch_create(header);
-    lv_obj_set_size(wifi_switch_, 42, 24);
-    lv_obj_align(wifi_switch_, LV_ALIGN_RIGHT_MID, -2, 0);
-    if (polled_wifi_enabled_.load() == 1)
-        lv_obj_add_state(wifi_switch_, LV_STATE_CHECKED);
-    lv_obj_add_event_cb(wifi_switch_, OnWifiToggle, LV_EVENT_VALUE_CHANGED, this);
+    if (!ethernet) {
+        wifi_switch_ = lv_switch_create(header);
+        lv_obj_set_size(wifi_switch_, 42, 24);
+        lv_obj_align(wifi_switch_, LV_ALIGN_RIGHT_MID, -2, 0);
+        if (polled_wifi_enabled_.load() == 1)
+            lv_obj_add_state(wifi_switch_, LV_STATE_CHECKED);
+        lv_obj_add_event_cb(wifi_switch_, OnWifiToggle, LV_EVENT_VALUE_CHANGED, this);
+    }
 
     std::vector<jetson::WifiNetwork> networks;
     {
@@ -654,33 +721,59 @@ void StatusBar::RebuildWifiMenu() {
         return row;
     };
 
-    if (networks.empty()) {
-        add_text_row(wifi_scan_busy_.load() ? "Đang quét mạng…" : "Không tìm thấy mạng",
-                     false, nullptr, nullptr);
+    if (ethernet) {
+        auto *row = add_text_row("Đang sử dụng mạng LAN", false, nullptr, nullptr);
+        auto *state = lv_label_create(row);
+        lv_obj_set_style_text_font(state, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(state, Color(0x56b4ff), 0);
+        lv_label_set_text(state, "Đã kết nối");
+        lv_obj_align(state, LV_ALIGN_RIGHT_MID, -4, 0);
     } else {
-        for (const auto &network : networks) {
-            auto ctx = std::make_unique<QuickRowContext>();
-            ctx->self = this;
-            ctx->id = network.ssid;
-            ctx->active = network.in_use;
-            ctx->secured = network.secured;
-            ctx->known = network.known;
-            QuickRowContext *raw = ctx.get();
-            wifi_row_ctx_.push_back(std::move(ctx));
-            auto *row = add_text_row(network.ssid.c_str(), true, OnWifiRow, raw);
-            auto *right = lv_label_create(row);
-            lv_obj_set_style_text_font(right, &BUILTIN_SMALL_TEXT_FONT, 0);
-            lv_obj_set_style_text_color(right,
-                Color(network.in_use ? 0x56b4ff : 0x9ca3af), 0);
-            char state[32];
-            if (network.in_use) {
-                std::snprintf(state, sizeof(state), "Nối %d%%", network.signal);
-            } else {
-                std::snprintf(state, sizeof(state), "%s%d%%",
-                              network.secured ? "Khóa " : "", network.signal);
+        if (captive_portal) {
+            auto *portal = add_text_row("Trang đăng nhập Wi-Fi", true,
+                                        OnCaptivePortal, this);
+            lv_obj_set_style_bg_color(portal, Color(0x4b2d0d), 0);
+            lv_obj_set_style_border_width(portal, 1, 0);
+            lv_obj_set_style_border_color(portal, Color(0xff9f0a), 0);
+            auto *open = lv_label_create(portal);
+            lv_obj_set_style_text_font(open, &BUILTIN_SMALL_TEXT_FONT, 0);
+            lv_obj_set_style_text_color(open, Color(0xffb340), 0);
+            lv_label_set_text(open, "Mở");
+            lv_obj_align(open, LV_ALIGN_RIGHT_MID, -4, 0);
+        }
+        if (networks.empty()) {
+            add_text_row(wifi_scan_busy_.load() ? "Đang quét mạng…" : "Không tìm thấy mạng",
+                         false, nullptr, nullptr);
+        } else {
+            for (const auto &network : networks) {
+                auto ctx = std::make_unique<QuickRowContext>();
+                ctx->self = this;
+                ctx->id = network.ssid;
+                ctx->active = network.in_use;
+                ctx->secured = network.secured;
+                ctx->known = network.known;
+                QuickRowContext *raw = ctx.get();
+                wifi_row_ctx_.push_back(std::move(ctx));
+                auto *row = add_text_row(network.ssid.c_str(), true, OnWifiRow, raw);
+                auto *right = lv_label_create(row);
+                lv_obj_set_style_text_font(right, &BUILTIN_SMALL_TEXT_FONT, 0);
+                lv_obj_set_style_text_color(right,
+                    Color(network.in_use ? 0x56b4ff : 0x9ca3af), 0);
+                char state[48];
+                if (network.in_use && captive_portal) {
+                    std::snprintf(state, sizeof(state), "Cần đăng nhập");
+                } else if (network.in_use &&
+                           internet_state == jetson::InternetAccessState::Offline) {
+                    std::snprintf(state, sizeof(state), "Không Internet");
+                } else if (network.in_use) {
+                    std::snprintf(state, sizeof(state), "Nối %d%%", network.signal);
+                } else {
+                    std::snprintf(state, sizeof(state), "%s%d%%",
+                                  network.secured ? "Khóa " : "", network.signal);
+                }
+                lv_label_set_text(right, state);
+                lv_obj_align(right, LV_ALIGN_RIGHT_MID, -4, 0);
             }
-            lv_label_set_text(right, state);
-            lv_obj_align(right, LV_ALIGN_RIGHT_MID, -4, 0);
         }
     }
     auto *settings = add_text_row("Cài đặt Wi-Fi…", true, OnWifiSettings, this);
@@ -719,15 +812,6 @@ void StatusBar::RebuildBluetoothMenu() {
         std::lock_guard<std::mutex> lock(quick_scan_mutex_);
         devices = quick_bt_devices_;
     }
-    // Keyboards are intentionally absent from this compact device menu; they
-    // remain available in the full Bluetooth settings screen.
-    devices.erase(std::remove_if(devices.begin(), devices.end(), [](const auto &d) {
-        std::string name = d.name;
-        std::transform(name.begin(), name.end(), name.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return name.find("keyboard") != std::string::npos ||
-               name.find("off-key") != std::string::npos;
-    }), devices.end());
     if (devices.size() > 4) devices.resize(4);
 
     auto add_row = [&](const char *text, bool clickable, lv_event_cb_t cb, void *data) {
@@ -1041,9 +1125,10 @@ void StatusBar::BuildPowerMenu() {
 StatusBar::~StatusBar() {
     // Stop the poller before touching LVGL state. The worker never takes the
     // LVGL lock, so joining here (worst case one in-flight nmcli/bluetoothctl
-    // call) cannot deadlock.
+    // or bounded portal request) cannot deadlock.
     conn_poll_stop_.store(true);
     if (conn_poll_thread_.joinable()) conn_poll_thread_.join();
+    if (captive_portal_thread_.joinable()) captive_portal_thread_.join();
     if (wifi_scan_thread_.joinable()) wifi_scan_thread_.join();
     if (bt_scan_thread_.joinable()) bt_scan_thread_.join();
     // OptimizeWidget joins its cache worker before taking the LVGL lock. Do
@@ -1121,13 +1206,17 @@ void StatusBar::RefreshConnectivity() {
     const bool vpn = jetson::VpnManager::Instance().CachedEnabled();
     const int wifi_signal = polled_wifi_signal_.load();
     const int wifi_enabled = polled_wifi_enabled_.load();
+    const int internet_state = polled_internet_state_.load();
     const int eth_connected = polled_eth_connected_.load();
     const int bt_powered = polled_bt_powered_.load();
     const int bt_device_polled = polled_bt_device_.load();
+    const bool eth_changed = eth_connected != cached_eth_connected_;
+    const bool internet_changed = internet_state != cached_internet_state_;
     if (airplane_state_read_ && airplane == cached_airplane_mode_ &&
         vpn_state_read_ && vpn == cached_vpn_enabled_ &&
         wifi_signal == cached_wifi_signal_ &&
         wifi_enabled == cached_wifi_enabled_ &&
+        internet_state == cached_internet_state_ &&
         eth_connected == cached_eth_connected_ &&
         bt_powered == cached_bt_powered_ &&
         bt_device_polled == cached_bt_device_)
@@ -1138,6 +1227,7 @@ void StatusBar::RefreshConnectivity() {
     cached_vpn_enabled_ = vpn;
     cached_wifi_signal_ = wifi_signal;
     cached_wifi_enabled_ = wifi_enabled;
+    cached_internet_state_ = internet_state;
     cached_eth_connected_ = eth_connected;
     cached_bt_powered_ = bt_powered;
     cached_bt_device_ = bt_device_polled;
@@ -1145,9 +1235,18 @@ void StatusBar::RefreshConnectivity() {
     // The six quick settings never disappear or reorder. Radio-off state is
     // represented by the crossed-out asset, so the click target remains where
     // the user expects it.
-    jetson::ui::SetAppIcon(wifi_icon_,
-        (airplane || wifi_enabled == 0 || wifi_signal == -1) ? "no-wifi" : "wifi",
+    const bool ethernet = eth_connected == 1;
+    jetson::ui::SetAppIcon(
+        wifi_icon_, ethernet ? "ethernet" :
+        ((airplane || wifi_enabled == 0 || wifi_signal == -1) ? "no-wifi" : "wifi"),
         kStatusIconPx);
+    if (wifi_icon_) {
+        const bool portal = !ethernet &&
+            internet_state == static_cast<int>(
+                jetson::InternetAccessState::CaptivePortal);
+        lv_obj_set_style_image_recolor(
+            wifi_icon_, portal ? Color(0xff9f0a) : lv_color_white(), 0);
+    }
     const int bt_device = airplane
         ? static_cast<int>(jetson::BtDeviceKind::None) : cached_bt_device_;
     {
@@ -1180,6 +1279,13 @@ void StatusBar::RefreshConnectivity() {
     if (island_ring_)
         lv_obj_set_style_border_color(
             island_ring_, Color(bt_device > 0 ? 0x30d158 : 0x3a3a3c), 0);
+    if ((eth_changed || internet_changed) && wifi_menu_) RebuildWifiMenu();
+    if (internet_changed && !ethernet &&
+        internet_state == static_cast<int>(
+            jetson::InternetAccessState::CaptivePortal)) {
+        ShowNotification(
+            "Wi-Fi cần đăng nhập — chạm biểu tượng Wi-Fi để tiếp tục", 6500);
+    }
 }
 
 void StatusBar::RefreshClock() {
@@ -1473,7 +1579,7 @@ void StatusBar::OnPowerMenuDeleted(lv_event_t *e) {
 void StatusBar::OnWifiClick(lv_event_t *e) {
     auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
     LvglLockGuard lock;
-    self->StartWifiScan();
+    if (self->polled_eth_connected_.load() != 1) self->StartWifiScan();
     self->RebuildWifiMenu();
     self->ShowQuickMenu(self->wifi_menu_, self->wifi_icon_);
 }
@@ -1567,14 +1673,34 @@ void StatusBar::OnBluetoothRow(lv_event_t *e) {
     LvglLockGuard lock;
     auto *ctx = static_cast<QuickRowContext *>(lv_event_get_user_data(e));
     if (!ctx || !ctx->self) return;
+    auto *self = ctx->self;
     const std::string address = ctx->id;
     const bool connected = ctx->active;
-    ctx->self->HideQuickMenus();
-    std::thread([address, connected]() {
+    self->HideQuickMenus();
+    std::thread([address, connected, self]() {
         auto &bt = jetson::BluetoothManager::Instance();
         if (connected) (void)bt.Disconnect(address);
-        else (void)bt.PairAndConnect(address);
+        else (void)bt.PairAndConnectWithPrompt(address, [self](const std::string &code) {
+            LvglLockGuard prompt_lock;
+            const std::string message = "Nhập " + code +
+                " trên bàn phím Bluetooth rồi nhấn Enter";
+            self->ShowNotification(message.c_str(), 20000);
+        });
     }).detach();
+}
+
+void StatusBar::OnCaptivePortal(lv_event_t *e) {
+    LvglLockGuard lock;
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    if (!self) return;
+    std::string url;
+    {
+        std::lock_guard<std::mutex> portal_lock(self->captive_portal_mutex_);
+        url = self->captive_portal_url_;
+    }
+    if (url.empty()) url = jetson::CaptivePortalProbeUrl();
+    self->HideQuickMenus();
+    if (self->captive_portal_action_) self->captive_portal_action_(url);
 }
 
 void StatusBar::OnWifiSettings(lv_event_t *e) {
