@@ -5,6 +5,7 @@
 #include "display/core/app_icons.h"
 #include "display/theme/terminal_theme.h"
 #include "display/views/terminal_view.h"
+#include "display/widgets/assistant_orbit.h"
 #include "fonts.h"
 #include "display/theme/ui_theme.h"
 #include "lvgl_runtime.h"
@@ -1291,50 +1292,155 @@ void SettingsView::BuildSound() {
 }
 
 void SettingsView::BuildApplications() {
-    if (application_page_ == ApplicationPage::Terminal) {
-        BuildTerminalSettings();
-    } else {
-        BuildApplicationsMain();
+    switch (application_page_) {
+        case ApplicationPage::Main: BuildApplicationsMain(); break;
+        case ApplicationPage::Terminal: BuildTerminalSettings(); break;
+        case ApplicationPage::WebView: BuildWebViewSettings(); break;
+        case ApplicationPage::EkkoBot: BuildEkkoBotSettings(); break;
     }
 }
 
 void SettingsView::BuildApplicationsMain() {
     DisplayPageHeader("Ứng dụng", false);
     auto *card = DisplayCard();
-    auto *row = DisplayRow(card, "", nullptr, 72);
-    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(row, 4);
-    lv_obj_add_event_cb(row, OnOpenTerminalSettings, LV_EVENT_CLICKED, this);
-
-    auto *icon = jetson::ui::CreateAppIcon(row, "terminal", 36);
-    lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
-
     const auto &p = jetson::UiTheme::Instance().Palette();
-    auto *labels = lv_obj_create(row);
-    lv_obj_remove_style_all(labels);
-    lv_obj_set_width(labels, 1);
-    lv_obj_set_flex_grow(labels, 1);
-    lv_obj_set_height(labels, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(labels, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(labels, 2, 0);
-    lv_obj_clear_flag(labels, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
-                                               LV_OBJ_FLAG_CLICKABLE));
 
-    auto *title = lv_label_create(labels);
-    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(title, Color(p.text), 0);
-    lv_label_set_text(title, "Terminal");
+    // app_icon names a PNG in assets/icons/app; nullptr falls back to the
+    // Chromium drawer artwork (Chromium has no app-icon asset).
+    auto add_app_row = [&](const char *title_text, const char *subtitle_text,
+                           const char *app_icon, lv_event_cb_t callback) {
+        auto *row = DisplayRow(card, "", nullptr, 72);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(row, 4);
+        lv_obj_add_event_cb(row, callback, LV_EVENT_CLICKED, this);
 
-    auto *subtitle = lv_label_create(labels);
-    lv_obj_set_style_text_font(subtitle, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(subtitle, Color(p.sub_text), 0);
-    lv_label_set_text(subtitle, "Cài đặt theme");
+        lv_obj_t *icon = nullptr;
+        if (!app_icon) {
+            if (!chromium_settings_icon_)
+                chromium_settings_icon_ =
+                    LvglImageFromFileFit("assets/icons/drawer/chromium.png", 36);
+            icon = lv_image_create(row);
+            lv_obj_set_size(icon, 36, 36);
+            if (chromium_settings_icon_)
+                lv_image_set_src(icon, chromium_settings_icon_->image_dsc());
+        } else {
+            icon = jetson::ui::CreateAppIcon(row, app_icon, 36);
+        }
+        lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
 
-    auto *chevron = lv_label_create(row);
-    lv_obj_set_style_text_font(chevron, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(chevron, Color(p.sub_text), 0);
-    lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
-    lv_obj_clear_flag(chevron, LV_OBJ_FLAG_CLICKABLE);
+        auto *labels = lv_obj_create(row);
+        lv_obj_remove_style_all(labels);
+        lv_obj_set_width(labels, 1);
+        lv_obj_set_flex_grow(labels, 1);
+        lv_obj_set_height(labels, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(labels, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(labels, 2, 0);
+        lv_obj_clear_flag(labels, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
+                                                   LV_OBJ_FLAG_CLICKABLE));
+
+        auto *title = lv_label_create(labels);
+        lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(title, Color(p.text), 0);
+        lv_label_set_text(title, title_text);
+
+        auto *subtitle = lv_label_create(labels);
+        lv_obj_set_style_text_font(subtitle, &BUILTIN_SMALL_TEXT_FONT, 0);
+        lv_obj_set_style_text_color(subtitle, Color(p.sub_text), 0);
+        lv_label_set_text(subtitle, subtitle_text);
+
+        auto *chevron = lv_label_create(row);
+        lv_obj_set_style_text_font(chevron, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(chevron, Color(p.sub_text), 0);
+        lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
+        lv_obj_clear_flag(chevron, LV_OBJ_FLAG_CLICKABLE);
+    };
+
+    add_app_row("Terminal", "Cài đặt theme", "terminal", OnOpenTerminalSettings);
+    DisplayDivider(card);
+    add_app_row("Web View", "Dynamic Island và các phiên tab", nullptr,
+                OnOpenWebViewSettings);
+    DisplayDivider(card);
+    add_app_row("Ekko Bot", "Màu orbit trong Dynamic Island", "ekko-bot",
+                OnOpenEkkoBotSettings);
+}
+
+void SettingsView::BuildEkkoBotSettings() {
+    ApplicationsPageHeader("Ekko Bot");
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    const std::string selected = SelectedOrbitId();
+    auto *card = DisplayCard();
+
+    size_t count = 0;
+    const OrbitPalette *palettes = OrbitPalettes(&count);
+    for (size_t i = 0; i < count; ++i) {
+        const OrbitPalette &palette = palettes[i];
+        if (i) DisplayDivider(card);
+        const bool active = selected == palette.id;
+        auto *row = DisplayRow(card, palette.name, palette.subtitle, 62);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(row, 4);
+        if (active) {
+            lv_obj_set_style_bg_color(row, Color(p.accent), 0);
+            lv_obj_set_style_bg_opa(row, LV_OPA_10, 0);
+        }
+
+        // Static mini orb in front of the name previews the palette; the
+        // animated version only ever runs inside the Dynamic Island.
+        auto *orb = CreateOrbitOrb(row, palette, 34);
+        lv_obj_move_to_index(orb, 0);
+
+        auto *check = lv_label_create(row);
+        lv_obj_set_width(check, 26);
+        lv_obj_set_style_text_align(check, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(check, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(check, Color(p.accent), 0);
+        lv_label_set_text(check, active ? LV_SYMBOL_OK : "");
+        lv_obj_clear_flag(check, LV_OBJ_FLAG_CLICKABLE);
+
+        auto *ctx = new OptCtx{this, palette.id};
+        lv_obj_add_event_cb(row, OnOrbitColorSelected, LV_EVENT_CLICKED, ctx);
+        lv_obj_add_event_cb(row, OnOptDeleted, LV_EVENT_DELETE, ctx);
+    }
+    DisplayCaption("Orbit hiện trong Dynamic Island khi bạn bấm biểu tượng "
+                   "Ekko trên Dock. Bấm ra ngoài hoặc bấm lại biểu tượng để "
+                   "thu gọn.");
+}
+
+void SettingsView::BuildWebViewSettings() {
+    ApplicationsPageHeader("Web View");
+    const auto &p = jetson::UiTheme::Instance().Palette();
+    std::string selected =
+        Settings("chromium", false).GetString("web_view_mode", "basic");
+    if (selected != "advanced") selected = "basic";
+    auto *card = DisplayCard();
+
+    auto add_mode = [&](const char *title, const char *subtitle,
+                        const char *value) {
+        const bool active = selected == value;
+        auto *row = DisplayRow(card, title, subtitle, 64);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(row, 4);
+        if (active) {
+            lv_obj_set_style_bg_color(row, Color(p.accent), 0);
+            lv_obj_set_style_bg_opa(row, LV_OPA_10, 0);
+        }
+        auto *check = lv_label_create(row);
+        lv_obj_set_width(check, 26);
+        lv_obj_set_style_text_align(check, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(check, &BUILTIN_ICON_FONT, 0);
+        lv_obj_set_style_text_color(check, Color(p.accent), 0);
+        lv_label_set_text(check, active ? LV_SYMBOL_OK : "");
+        lv_obj_clear_flag(check, LV_OBJ_FLAG_CLICKABLE);
+
+        auto *ctx = new OptCtx{this, value};
+        lv_obj_add_event_cb(row, OnWebViewModeSelected, LV_EVENT_CLICKED, ctx);
+        lv_obj_add_event_cb(row, OnOptDeleted, LV_EVENT_DELETE, ctx);
+    };
+
+    add_mode("Cơ bản", "Island gọn, chỉ hiển thị các phiên tab", "basic");
+    DisplayDivider(card);
+    add_mode("Nâng cao", "Island rộng hơn, hiển thị thêm giờ và pin", "advanced");
+    DisplayCaption("Thay đổi sẽ được áp dụng trong lần mở Chromium tiếp theo.");
 }
 
 void SettingsView::ApplicationsPageHeader(const char *title) {
@@ -3686,11 +3792,56 @@ void SettingsView::OnOpenTerminalSettings(lv_event_t *e) {
     self->ShowCategory(Cat::Applications);
 }
 
+void SettingsView::OnOpenWebViewSettings(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->application_page_ = ApplicationPage::WebView;
+    self->ShowCategory(Cat::Applications);
+}
+
+void SettingsView::OnOpenEkkoBotSettings(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    if (!self) return;
+    self->application_page_ = ApplicationPage::EkkoBot;
+    self->ShowCategory(Cat::Applications);
+}
+
 void SettingsView::OnApplicationsBack(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
     if (!self) return;
     self->application_page_ = ApplicationPage::Main;
+    self->ShowCategory(Cat::Applications);
+}
+
+void SettingsView::OnWebViewModeSelected(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *ctx = static_cast<OptCtx *>(lv_event_get_user_data(e));
+    if (!ctx || !ctx->self) return;
+    auto *self = ctx->self;
+    const std::string mode = ctx->value;
+    Settings("chromium", true).SetString("web_view_mode", mode);
+    self->SetStatus(mode == "advanced" ? "Web View: Nâng cao"
+                                         : "Web View: Cơ bản");
+    /* Rebuilding the page deletes the row and its OptCtx. Keep no references
+     * to ctx beyond this point. */
+    self->ShowCategory(Cat::Applications);
+}
+
+void SettingsView::OnOrbitColorSelected(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *ctx = static_cast<OptCtx *>(lv_event_get_user_data(e));
+    if (!ctx || !ctx->self) return;
+    auto *self = ctx->self;
+    const std::string id = ctx->value;
+    Settings("assistant", true).SetString("orbit_color", id);
+    /* The status bar re-reads the palette on every orbit open, so the change
+     * applies to the next bloom without any cross-widget wiring. Rebuilding
+     * the page deletes the row and its OptCtx -- no references past here. */
+    const std::string status = std::string("Orbit: ") + OrbitPaletteById(id).name;
+    self->SetStatus(status.c_str());
     self->ShowCategory(Cat::Applications);
 }
 

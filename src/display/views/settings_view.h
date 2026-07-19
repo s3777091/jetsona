@@ -1,6 +1,7 @@
 #pragma once
 
 #include "display/views/overlay_view.h"
+#include "display/core/lvgl_image.h"
 #include "display/theme/terminal_theme.h"
 #include "display/widgets/telex_ime.h"
 #include "net/bluetooth_manager.h"
@@ -64,7 +65,7 @@ private:
     enum class Cat { Display, Sound, Wifi, Bluetooth, General, Applications };
 
     enum class DisplayPage { Main, TextSize, NightShift, AutoLock, AlwaysOn };
-    enum class ApplicationPage { Main, Terminal };
+    enum class ApplicationPage { Main, Terminal, WebView, EkkoBot };
     enum class GeneralPage {
         Main,
         Keyboard,
@@ -146,6 +147,7 @@ private:
     lv_obj_t *text_size_slider_ = nullptr;
     lv_obj_t *text_size_value_label_ = nullptr;
     lv_obj_t *terminal_size_value_label_ = nullptr;
+    std::unique_ptr<LvglImage> chromium_settings_icon_;
     lv_obj_t *night_warmth_slider_ = nullptr;
     lv_obj_t *vol_slider_ = nullptr;
     lv_obj_t *mute_switch_ = nullptr;
@@ -234,6 +236,8 @@ private:
     void BuildApplications();
     void BuildApplicationsMain();
     void BuildTerminalSettings();
+    void BuildWebViewSettings();
+    void BuildEkkoBotSettings();
     void ApplicationsPageHeader(const char *title);
     lv_obj_t *CreateTerminalThemePreview(lv_obj_t *parent,
                                          const jetson::TerminalTheme &theme);
@@ -327,7 +331,11 @@ private:
     static void OnVolChanged(lv_event_t *e);
     static void OnMuteToggle(lv_event_t *e);
     static void OnOpenTerminalSettings(lv_event_t *e);
+    static void OnOpenWebViewSettings(lv_event_t *e);
+    static void OnOpenEkkoBotSettings(lv_event_t *e);
     static void OnApplicationsBack(lv_event_t *e);
+    static void OnWebViewModeSelected(lv_event_t *e);
+    static void OnOrbitColorSelected(lv_event_t *e);
     static void OnTerminalTextSmaller(lv_event_t *e);
     static void OnTerminalTextLarger(lv_event_t *e);
     static void OnTerminalThemeSelected(lv_event_t *e);

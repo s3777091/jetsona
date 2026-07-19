@@ -861,12 +861,14 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     BounceDockButton(target);
 
     // Dock icons (in file order): finder, calendar, folder, music, reminders,
-    // settings, siri, terminal, separator, trash. The finder icon toggles the app drawer
-    // open/closed (no touch swipe on this panel); the folder icon opens the
-    // Documents file browser. Music opens the native Zing browser/player while
-    // Reminders keeps its own persistent task list; Bluetooth remains available
-    // from the status bar and Settings. The wallpaper
-    // gallery lives in the drawer's "Ảnh" tile.
+    // settings, siri (Ekko Bot), terminal, separator, trash. The finder icon
+    // toggles the app drawer open/closed (no touch swipe on this panel); the
+    // folder icon opens the Documents file browser. Music opens the native
+    // Zing browser/player while Reminders keeps its own persistent task list;
+    // Bluetooth remains available from the status bar and Settings. The
+    // wallpaper gallery lives in the drawer's "Ảnh" tile. The siri icon
+    // toggles the Ekko Bot orbit inside the Dynamic Island instead of opening
+    // a full-screen app.
     switch (focused) {
     case 0: // finder -> toggle app drawer
         self->standby_state_ = (self->standby_state_ == StandbyState::Launcher)
@@ -879,7 +881,12 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     case 3: self->OpenMusic(); break;
     case 4: self->OpenReminders(); break;
     case 5: self->OpenSettings(); break;
-    case 6: self->OpenChat(); break;
+    case 6:
+        if (self->status_bar_) {
+            DisplayLockGuard lock(self);
+            self->status_bar_->ToggleAssistantOrbit();
+        }
+        break;
     case 7: self->OpenTerminal(); break;
     case 8: self->OpenTrash(); break;
     default: self->AdvanceStandbyButtonState(); break;

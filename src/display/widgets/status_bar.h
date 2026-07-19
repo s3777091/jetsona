@@ -76,6 +76,13 @@ public:
     void ShowNotification(const char *text, int duration_ms = 3000);
     void ShowWelcome(int duration_ms = 3800);
 
+    /* Ekko Bot orbit: blooms the island into the animated assistant orb
+     * (palette from Settings assistant/orbit_color). Toggles -- a second call
+     * collapses it, as does tapping the island or pressing anywhere outside
+     * it. Call on the LVGL handler thread under the LVGL lock, like the other
+     * island entry points. */
+    void ToggleAssistantOrbit();
+
 private:
     lv_obj_t *status_strip_ = nullptr;
     lv_obj_t *pill_ = nullptr;
@@ -158,6 +165,13 @@ private:
     // clips/fades them while the island grows instead of drawing detached
     // popovers below the status bar.
     lv_obj_t *quick_host_ = nullptr;
+    // Ekko Bot orbit surface (assistant_orbit.cc). Lives with the quick menus
+    // inside quick_host_ and shares their bloom/collapse lifecycle, but has no
+    // auto-close timer: it stays until dismissed.
+    lv_obj_t *orbit_menu_ = nullptr;
+    lv_obj_t *orbit_orb_ = nullptr;
+    lv_obj_t *orbit_label_ = nullptr;
+    uint32_t orbit_accent_ = 0xffb24d;
     lv_obj_t *active_quick_menu_ = nullptr;
     bool quick_island_open_ = false;
     bool quick_island_closing_ = false;
@@ -256,6 +270,8 @@ private:
     void RefreshConnectivity();
     void BuildPowerMenu();
     void BuildQuickMenus();
+    void BuildOrbitMenu();
+    void StopOrbitAnimation();
     lv_obj_t *CreateQuickMenu(int width);
     void RebuildWifiMenu();
     void RebuildBluetoothMenu();
@@ -313,6 +329,10 @@ private:
     static void OnBrightnessChanged(lv_event_t *e);
     static void OnIslandClick(lv_event_t *e);
     static void OnIslandLongPress(lv_event_t *e);
+    // Pointer-indev press hook: closes the orbit on any press outside the
+    // island (the safe replacement for a full-screen backdrop, which would
+    // swallow every click on lv_layer_top()).
+    static void OnGlobalPointerPress(lv_event_t *e);
     static void OnMediaPrevious(lv_event_t *e);
     static void OnMediaToggle(lv_event_t *e);
     static void OnMediaNext(lv_event_t *e);

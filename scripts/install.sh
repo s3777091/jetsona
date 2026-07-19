@@ -58,7 +58,7 @@ sudo install -d -m 700 -o "$chromium_uid" -g "$chromium_gid" \
     /var/lib/jetson-fw/chromium-profile
 
 sudo cp "$BUILD_DIR/jetson_fw" /opt/jetson-fw/
-# Chromium kiosk status bar (Dynamic Island strip + keyboard-focus micro-WM).
+# Chromium kiosk Dynamic Island + keyboard-focus micro-WM.
 # Optional: only built when libx11-dev was present at cmake time.
 if [ -f "$BUILD_DIR/jetson_kiosk_bar" ]; then
     sudo cp "$BUILD_DIR/jetson_kiosk_bar" /opt/jetson-fw/

@@ -1,5 +1,6 @@
 #include "display/widgets/status_bar.h"
 #include "display/common/airplane_icon.h"
+#include "display/widgets/assistant_orbit.h"
 #include "display/common/lvgl_utils.h"
 #include "display/core/app_icons.h"
 #include "display/core/lvgl_image.h"
@@ -341,6 +342,18 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     // Build every quick surface only after the shared island host exists.
     BuildQuickMenus();
     BuildPowerMenu();
+    BuildOrbitMenu();
+
+    // The orbit closes on any press outside the island. A clickable
+    // full-screen backdrop on lv_layer_top() would swallow every pointer
+    // event, so observe presses at the indev instead -- the hook only reads
+    // and never stops event processing.
+    for (lv_indev_t *indev = lv_indev_get_next(nullptr); indev;
+         indev = lv_indev_get_next(indev)) {
+        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER)
+            lv_indev_add_event_cb(indev, OnGlobalPointerPress,
+                                  LV_EVENT_PRESSED, this);
+    }
 
     lv_obj_add_event_cb(pill_, OnDeleted, LV_EVENT_DELETE, this);
     timer_ = lv_timer_create(OnTimer, 1000, this);
@@ -1168,8 +1181,10 @@ void StatusBar::HideQuickMenus(lv_obj_t *except) {
         CloseQuickIsland(true);
         return;
     }
-    for (auto *menu : {wifi_menu_, bt_menu_, sound_menu_, brightness_menu_, power_menu_})
+    for (auto *menu : {wifi_menu_, bt_menu_, sound_menu_, brightness_menu_,
+                       power_menu_, orbit_menu_})
         if (menu && menu != except) lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
+    if (orbit_menu_ != except) StopOrbitAnimation();
     if (optimize_widget_ && optimize_widget_->Content() != except)
         optimize_widget_->HidePopup();
 }
@@ -1207,6 +1222,7 @@ void StatusBar::ShowQuickMenu(lv_obj_t *menu, lv_obj_t *anchor) {
     uint32_t accent = 0x0a84ff;
     if (menu == brightness_menu_) accent = 0xff9f0a;
     else if (menu == power_menu_) accent = 0xff5364;
+    else if (menu == orbit_menu_) accent = orbit_accent_;
     else if (optimize_widget_ && menu == optimize_widget_->Content()) accent = 0x00c3d7;
     lv_obj_set_style_border_color(pill_, Color(accent), 0);
     lv_obj_set_style_border_opa(pill_, LV_OPA_50, 0);
@@ -1241,8 +1257,10 @@ void StatusBar::CloseQuickIsland(bool animated) {
     if (!animated) {
         quick_island_open_ = false;
         quick_island_closing_ = false;
-        for (auto *menu : {wifi_menu_, bt_menu_, sound_menu_, brightness_menu_, power_menu_})
+        for (auto *menu : {wifi_menu_, bt_menu_, sound_menu_, brightness_menu_,
+                           power_menu_, orbit_menu_})
             if (menu) lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
+        StopOrbitAnimation();
         if (optimize_widget_) optimize_widget_->HidePopup();
         lv_obj_set_style_opa(quick_host_, LV_OPA_0, 0);
         lv_obj_add_flag(quick_host_, LV_OBJ_FLAG_HIDDEN);
@@ -1302,6 +1320,62 @@ void StatusBar::BuildPowerMenu() {
     add_item("Tắt máy", OnPowerShutdown, true);
 }
 
+void StatusBar::BuildOrbitMenu() {
+    orbit_menu_ = CreateQuickMenu(150);
+    lv_obj_set_flex_align(orbit_menu_, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(orbit_menu_, 8, 0);
+
+    const auto &palette = OrbitPaletteById(SelectedOrbitId());
+    orbit_accent_ = palette.accent;
+    orbit_orb_ = CreateOrbitOrb(orbit_menu_, palette, 112);
+
+    orbit_label_ = lv_label_create(orbit_menu_);
+    lv_obj_set_style_text_font(orbit_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(orbit_label_, lv_color_white(), 0);
+    lv_obj_set_style_text_opa(orbit_label_, LV_OPA_70, 0);
+    lv_label_set_text(orbit_label_, palette.name);
+}
+
+void StatusBar::StopOrbitAnimation() {
+    if (orbit_orb_) SetOrbitAnimated(orbit_orb_, false);
+}
+
+void StatusBar::ToggleAssistantOrbit() {
+    if (!orbit_menu_ || !pill_ || locked_ || !visible_) return;
+    if (quick_island_open_ && active_quick_menu_ == orbit_menu_) {
+        // An outside press may already be collapsing the island; restarting
+        // the close animation from here would make the dock icon feel broken.
+        if (!quick_island_closing_) CloseQuickIsland(true);
+        return;
+    }
+
+    // Re-read the palette on every open so a change made in Settings applies
+    // without restarting the firmware.
+    const auto &palette = OrbitPaletteById(SelectedOrbitId());
+    orbit_accent_ = palette.accent;
+    if (orbit_orb_) SetOrbitPalette(orbit_orb_, palette);
+    if (orbit_label_) lv_label_set_text(orbit_label_, palette.name);
+
+    ShowQuickMenu(orbit_menu_, nullptr);
+    if (orbit_orb_) SetOrbitAnimated(orbit_orb_, true);
+    // Unlike the quick menus the orbit has no auto-close: it stays until the
+    // island is tapped, the dock icon toggles it, or a press lands outside.
+    if (quick_menu_timer_) { lv_timer_del(quick_menu_timer_); quick_menu_timer_ = nullptr; }
+}
+
+void StatusBar::OnGlobalPointerPress(lv_event_t *e) {
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    LvglLockGuard lock;
+    if (!self->quick_island_open_ || self->quick_island_closing_) return;
+    if (self->active_quick_menu_ != self->orbit_menu_) return;
+    // Presses on the island itself are handled by OnIslandClick.
+    auto *target = static_cast<lv_obj_t *>(lv_event_get_param(e));
+    for (lv_obj_t *obj = target; obj; obj = lv_obj_get_parent(obj))
+        if (obj == self->pill_) return;
+    self->CloseQuickIsland(true);
+}
+
 StatusBar::~StatusBar() {
     // Stop the poller before touching LVGL state. The worker never takes the
     // LVGL lock, so joining here (worst case one in-flight nmcli/bluetoothctl
@@ -1317,14 +1391,20 @@ StatusBar::~StatusBar() {
     optimize_widget_.reset();
 
     LvglLockGuard lock;
+    for (lv_indev_t *indev = lv_indev_get_next(nullptr); indev;
+         indev = lv_indev_get_next(indev)) {
+        lv_indev_remove_event_cb_with_user_data(indev, OnGlobalPointerPress,
+                                                this);
+    }
     if (timer_) { lv_timer_del(timer_); timer_ = nullptr; }
     if (notif_timer_) { lv_timer_del(notif_timer_); notif_timer_ = nullptr; }
     if (power_menu_timer_) { lv_timer_del(power_menu_timer_); power_menu_timer_ = nullptr; }
     if (quick_menu_timer_) { lv_timer_del(quick_menu_timer_); quick_menu_timer_ = nullptr; }
+    StopOrbitAnimation();
     // Remove quick-menu children explicitly so their row contexts/callbacks
     // disappear before the shared island host is destroyed.
     for (lv_obj_t **menu : {&wifi_menu_, &bt_menu_, &sound_menu_,
-                            &brightness_menu_, &power_menu_}) {
+                            &brightness_menu_, &power_menu_, &orbit_menu_}) {
         if (*menu) { lv_obj_del(*menu); *menu = nullptr; }
     }
     if (pill_) { lv_obj_del(pill_); pill_ = nullptr; }
@@ -2123,9 +2203,11 @@ void StatusBar::OnIslandCollapsed(lv_anim_t *a) {
         lv_obj_add_flag(self->island_content_, LV_OBJ_FLAG_HIDDEN);
     }
     for (auto *menu : {self->wifi_menu_, self->bt_menu_, self->sound_menu_,
-                       self->brightness_menu_, self->power_menu_}) {
+                       self->brightness_menu_, self->power_menu_,
+                       self->orbit_menu_}) {
         if (menu) lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
     }
+    self->StopOrbitAnimation();
     if (self->optimize_widget_) self->optimize_widget_->HidePopup();
     if (self->quick_host_) {
         lv_obj_set_style_opa(self->quick_host_, LV_OPA_0, 0);

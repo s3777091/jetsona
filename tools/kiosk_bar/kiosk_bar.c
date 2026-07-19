@@ -1,4 +1,4 @@
-/* kiosk_bar: Dynamic Island status bar + micro window manager for the
+/* kiosk_bar: Dynamic Island + micro window manager for the
  * Chromium kiosk hand-off (scripts/launch_chromium.sh).
  *
  * The DS-02 firmware owns /dev/fb0 and exits with code 42 when the user opens
@@ -6,23 +6,22 @@
  * window manager). This program runs alongside Chromium inside that session
  * and provides the two things a WM-less kiosk is missing:
  *
- *  1. The top bar. A 42px strip that mirrors the firmware's StatusBar
- *     (src/display/widgets/status_bar.cc): clock + date on the left, six real
- *     quick settings on the right, and the black island pill in the center.
- *     Holding the pill drops the app rail; its last slot is a red power
- *     button that exits this process. launch_chromium.sh treats the exit as
- *     "leave the browser" and tears the session down, which returns the
- *     panel to the firmware. (The old double-click-to-exit gesture was too
- *     easy to trigger while cycling windows, so it is gone.)
+ *  1. A compact black Dynamic Island centered over the web page. Its width
+ *     follows the number of Chromium session windows. The optional advanced
+ *     mode adds the current time and battery percentage inside the island;
+ *     there is deliberately no full-width status strip or quick-setting row.
+ *     Holding the island drops the app rail; its last slot is a red power
+ *     button that exits this process and returns the panel to the firmware.
  *
  *  2. Micro-WM duties. Without a window manager Chromium never receives X
  *     input focus, so the mouse works but every keystroke is ignored. On each
  *     MapNotify of a normal (non-override-redirect) window we assign it input
- *     focus, push any bar-overlapping full-screen window down below the strip,
- *     and re-raise the bar.
+ *     focus, keep full-screen web windows at panel size, and re-raise the
+ *     island.
  *
  * Only libX11 is required (core protocol, core fonts); the Jetson already
- * ships it as an Xorg dependency. Build needs libx11-dev.
+ * ships it as an Xorg dependency. Build needs libx11-dev; libxext-dev gives
+ * the floating windows their rounded shape.
  */
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
@@ -47,22 +46,17 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
-#include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "kiosk_icons.h" /* generated 48x48 RGBA minis of the drawer icons */
 
-#define BAR_H       42
 #define OSK_H       205
-#define PILL_W      172
 #define PILL_H      36
 #define PILL_Y      3
-#define PILL_HIT    8     /* extra click slack around the pill, like the
-                           * firmware's lv_obj_set_ext_click_area(pill_, 6) */
 
-/* Palette lifted from the firmware status bar. */
+/* Palette lifted from the firmware Dynamic Island. */
 #define COL_BAR_BG    0x000000
 #define COL_PILL_BG   0x000000
 #define COL_PILL_EDGE 0x253142
@@ -79,47 +73,14 @@ static Pixmap bar_buffer = None;
 static int sw, sh;
 static XFontStruct *font_big, *font_small;
 static Atom atom_net_wm_name, atom_utf8;
+/* The bar window itself is only this wide, so the web page remains visible
+ * (and receives input) everywhere around the island. */
+static int island_w = PILL_H;
+static int island_advanced = 0;
 
-/* Status quick settings. Keep these numeric values in display order so the
- * same helper maps them to fixed icon centres: cache, Bluetooth, Wi-Fi,
- * sound, brightness, power. */
-enum QuickKind {
-    QUICK_NONE = 0, QUICK_CACHE, QUICK_BT, QUICK_WIFI,
-    QUICK_SOUND, QUICK_DISPLAY, QUICK_POWER
-};
-#define QUICK_MAX_ITEMS 4
-#define QUICK_STEP 32
-#define QUICK_POP_MAX_W 300
-#define QUICK_POP_MAX_H 250
-static Window quick_popup = None;
-static Pixmap quick_buffer = None;
-static int quick_kind = QUICK_NONE, quick_w = 0, quick_h = 0;
-static long quick_until = 0;
-static int quick_volume = 50, quick_muted = 0, quick_brightness = 100;
-static unsigned long long quick_disk_total_kb = 0, quick_disk_used_kb = 0;
-static unsigned long long quick_mem_total_kb = 0, quick_mem_used_kb = 0;
-static volatile int quick_cache_busy = 0;
-static volatile unsigned quick_revision = 0, quick_applied_revision = 0;
-static pthread_mutex_t quick_lock = PTHREAD_MUTEX_INITIALIZER;
-struct QuickWifiItem {
-    char ssid[96];
-    int signal, active, secured;
-};
-static struct QuickWifiItem quick_wifi[QUICK_MAX_ITEMS];
-static int quick_wifi_n = 0;
-static volatile int quick_wifi_busy = 0;
-static int quick_wifi_on = 1;
-/* The connectivity slot is shared: when a cable has carrier, Ethernet wins
- * over Wi-Fi in both the top glyph and the popup content. */
-static int quick_eth_connected = 0;
-struct QuickBtItem {
-    char address[24], name[96];
-    int connected, paired, rssi;
-};
-static struct QuickBtItem quick_bt[QUICK_MAX_ITEMS];
-static int quick_bt_n = 0;
-static volatile int quick_bt_busy = 0;
-static int quick_bt_on = 0;
+/* Settings applied once when the bare-X session starts. They have no controls
+ * in Chromium; the firmware Settings app remains their single owner. */
+static int session_volume = 50, session_muted = 0, session_brightness = 100;
 
 /* Switcher list: browser-sized top-level windows. A single click on the
  * island pill cycles through them (the firmware island opens its app switcher
@@ -198,6 +159,7 @@ static long transition_ready = 0;    /* ms Chromium first mapped a window */
 static Window toast = None, toast_target = None;
 static Pixmap toast_buffer = None;
 static int toast_app = -1;
+static int toast_base_w = PILL_H;
 static long toast_start = 0, toast_until = 0;
 static char toast_message[96];
 #define TRANS_MS 460  /* island zoom: close over 0..0.5, open over 0.5..1 */
@@ -212,15 +174,13 @@ static char toast_message[96];
 #define TOAST_MAX_H 68
 
 static void fetch_window_title(Window w, char *out, size_t cap);
-static void redraw(int bat_level, int bat_charging, int wifi_signal, int eth);
+static void redraw(int bat_level, int bat_charging);
 static long now_ms(void);
 static void start_switch(Window target);
 static void inspect_notification_window(Window w);
-static void draw_quick(void);
-static void open_quick(int kind);
-static void close_quick(void);
 static void close_menu(void);
 static int contains_ci(const char *haystack, const char *needle);
+static void sync_island_geometry(void);
 
 static int ignore_xerror(Display *d, XErrorEvent *e)
 {
@@ -340,139 +300,8 @@ static int battery_read(int *level, int *charging)
     return found ? 1 : ina_battery_read(level, charging);
 }
 
-/* Return 0 when disconnected, otherwise a 1..100 signal value. Linux exposes
- * the link quality in /proc/net/wireless without requiring NetworkManager or
- * spawning a helper process on every status refresh. */
-static int wifi_signal(void)
-{
-    FILE *wf = fopen("/proc/net/wireless", "r");
-    if (wf) {
-        char line[256];
-        while (fgets(line, sizeof(line), wf)) {
-            char *colon = strchr(line, ':');
-            float quality = 0.0f;
-            if (colon && sscanf(colon + 1, " %*x %f", &quality) == 1) {
-                int signal = (int)(quality * 100.0f / 70.0f + 0.5f);
-                fclose(wf);
-                if (signal < 1) signal = 1;
-                if (signal > 100) signal = 100;
-                return signal;
-            }
-        }
-        fclose(wf);
-    }
-
-    /* Drivers that omit /proc/net/wireless still expose operstate. */
-    DIR *d = opendir("/sys/class/net");
-    if (!d) return 0;
-    struct dirent *e;
-    int up = 0;
-    while (!up && (e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') continue;
-        char path[512], buf[32];
-        snprintf(path, sizeof(path), "/sys/class/net/%s/wireless", e->d_name);
-        if (access(path, F_OK) != 0) continue;
-        snprintf(path, sizeof(path), "/sys/class/net/%s/operstate", e->d_name);
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        buf[0] = 0;
-        if (fgets(buf, sizeof(buf), f) && strncmp(buf, "up", 2) == 0) up = 1;
-        fclose(f);
-    }
-    closedir(d);
-    return up ? 70 : 0;
-}
-
-/* Wired link, using the same sysfs carrier check as the firmware status bar
- * (src/net/ethernet_status.cc) so both bars agree on what "connected" means.
- * Covers the onboard eth0 and USB adapters, which enumerate as eth1/enx<mac>.
- * A few microseconds per call, so the 1 Hz status refresh can just poll it. */
-static int ethernet_up(void)
-{
-    DIR *d = opendir("/sys/class/net");
-    if (!d) return 0;
-    struct dirent *e;
-    int up = 0;
-    while (!up && (e = readdir(d)) != NULL) {
-        if (strncmp(e->d_name, "eth", 3) != 0 &&
-            strncmp(e->d_name, "en", 2) != 0) continue;
-        char path[512];
-        snprintf(path, sizeof(path), "/sys/class/net/%s/carrier", e->d_name);
-        FILE *f = fopen(path, "r");
-        if (!f) continue;   /* read fails while the interface is down = no link */
-        int link = 0;
-        if (fscanf(f, "%d", &link) == 1 && link == 1) up = 1;
-        fclose(f);
-    }
-    closedir(d);
-    return up;
-}
-
-static int bluetooth_up(void)
-{
-    DIR *d = opendir("/sys/class/rfkill");
-    if (!d) return 0;
-    struct dirent *e;
-    int powered = 0;
-    while (!powered && (e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') continue;
-        char path[512], type[32] = {0}, state[8] = {0};
-        FILE *f;
-        snprintf(path, sizeof(path), "/sys/class/rfkill/%s/type", e->d_name);
-        if (!(f = fopen(path, "r"))) continue;
-        if (!fgets(type, sizeof(type), f)) {
-            fclose(f);
-            continue;
-        }
-        fclose(f);
-        if (strncmp(type, "bluetooth", 9) != 0) continue;
-        snprintf(path, sizeof(path), "/sys/class/rfkill/%s/state", e->d_name);
-        if (!(f = fopen(path, "r"))) continue;
-        if (!fgets(state, sizeof(state), f)) {
-            fclose(f);
-            continue;
-        }
-        fclose(f);
-        powered = state[0] == '1';
-    }
-    closedir(d);
-    return powered;
-}
-
-static int wifi_radio_up(void)
-{
-    DIR *d = opendir("/sys/class/rfkill");
-    if (!d) return quick_wifi_on;
-    struct dirent *e;
-    int found = 0, powered = 0;
-    while ((e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') continue;
-        char path[512], type[32] = {0}, state[8] = {0};
-        FILE *f;
-        snprintf(path, sizeof(path), "/sys/class/rfkill/%s/type", e->d_name);
-        if (!(f = fopen(path, "r"))) continue;
-        if (!fgets(type, sizeof(type), f)) {
-            fclose(f);
-            continue;
-        }
-        fclose(f);
-        if (strncmp(type, "wlan", 4) != 0 && strncmp(type, "wifi", 4) != 0) continue;
-        found = 1;
-        snprintf(path, sizeof(path), "/sys/class/rfkill/%s/state", e->d_name);
-        if (!(f = fopen(path, "r"))) continue;
-        if (!fgets(state, sizeof(state), f)) {
-            fclose(f);
-            continue;
-        }
-        fclose(f);
-        if (state[0] == '1') { powered = 1; break; }
-    }
-    closedir(d);
-    return found ? powered : quick_wifi_on;
-}
-
-/* Read one firmware KV value so the Chromium bar follows the selected clock,
- * region, keyboard language, airplane mode and VPN state. */
+/* Read one firmware KV value so Chromium follows the selected Web View,
+ * clock, sound and display preferences. */
 static void setting_get(const char *ns, const char *key, const char *fallback,
                         char *out, size_t cap)
 {
@@ -492,54 +321,6 @@ static void setting_get(const char *ns, const char *key, const char *fallback,
         break;
     }
     fclose(f);
-}
-
-/* Firmware is stopped while the kiosk is active, so this small atomic rewrite
- * safely keeps volume/brightness choices shared across both UIs. */
-static void setting_set(const char *ns, const char *key, const char *value)
-{
-    const char *path = getenv("JETSON_SETTINGS_FILE");
-    if (!path || !*path) path = "/root/.jetson-fw/settings.kv";
-    char lines[256][512];
-    int nlines = 0, replaced = 0;
-    char wanted[128];
-    snprintf(wanted, sizeof(wanted), "%s\t%s\t", ns, key);
-    size_t wanted_n = strlen(wanted);
-    FILE *in = fopen(path, "r");
-    if (in) {
-        while (nlines < 256 && fgets(lines[nlines], sizeof(lines[nlines]), in)) {
-            if (strncmp(lines[nlines], wanted, wanted_n) == 0) {
-                snprintf(lines[nlines], sizeof(lines[nlines]), "%s%s\n", wanted, value);
-                replaced = 1;
-            }
-            nlines++;
-        }
-        fclose(in);
-    }
-    if (!replaced && nlines < 256)
-        snprintf(lines[nlines++], sizeof(lines[0]), "%s%s\n", wanted, value);
-    char tmp[600];
-    snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid());
-    FILE *out = fopen(tmp, "w");
-    if (!out) return;
-    for (int i = 0; i < nlines; i++) fputs(lines[i], out);
-    if (fclose(out) == 0) (void)rename(tmp, path);
-    else (void)unlink(tmp);
-}
-
-static void shell_quote(const char *src, char *dst, size_t cap)
-{
-    size_t n = 0;
-    if (!cap) return;
-    dst[n++] = '\'';
-    for (; *src && n + 5 < cap; src++) {
-        if (*src == '\'') {
-            memcpy(dst + n, "'\\''", 4);
-            n += 4;
-        } else dst[n++] = *src;
-    }
-    if (n + 1 < cap) dst[n++] = '\'';
-    dst[n < cap ? n : cap - 1] = 0;
 }
 
 static void run_command(const char *command)
@@ -573,231 +354,15 @@ static void spawn_command(const char *command)
     else free(copy);
 }
 
-static void read_usage_stats(void)
-{
-    unsigned long long mem_total = 0, mem_avail = 0;
-    FILE *f = fopen("/proc/meminfo", "r");
-    if (f) {
-        char line[128];
-        while (fgets(line, sizeof(line), f)) {
-            unsigned long long value = 0;
-            if (sscanf(line, "MemTotal: %llu kB", &value) == 1) mem_total = value;
-            else if (sscanf(line, "MemAvailable: %llu kB", &value) == 1) mem_avail = value;
-            if (mem_total && mem_avail) break;
-        }
-        fclose(f);
-    }
-    struct statvfs vfs;
-    unsigned long long disk_total = 0, disk_used = 0;
-    if (statvfs("/", &vfs) == 0) {
-        unsigned long long block = vfs.f_frsize ? vfs.f_frsize : vfs.f_bsize;
-        disk_total = (unsigned long long)vfs.f_blocks * block / 1024;
-        disk_used = ((unsigned long long)vfs.f_blocks - vfs.f_bavail) * block / 1024;
-    }
-    pthread_mutex_lock(&quick_lock);
-    quick_mem_total_kb = mem_total;
-    quick_mem_used_kb = mem_total > mem_avail ? mem_total - mem_avail : 0;
-    quick_disk_total_kb = disk_total;
-    quick_disk_used_kb = disk_used;
-    quick_revision++;
-    pthread_mutex_unlock(&quick_lock);
-}
-
-static void *cache_worker(void *unused)
-{
-    (void)unused;
-    sync();
-    FILE *f = fopen("/proc/sys/vm/drop_caches", "w");
-    if (f) { (void)fputs("3", f); fclose(f); }
-    usleep(400000);
-    read_usage_stats();
-    quick_cache_busy = 0;
-    __sync_fetch_and_add(&quick_revision, 1);
-    return NULL;
-}
-
-static void start_cache_clean(void)
-{
-    read_usage_stats();
-    if (!__sync_bool_compare_and_swap(&quick_cache_busy, 0, 1)) return;
-    pthread_t thread;
-    if (pthread_create(&thread, NULL, cache_worker, NULL) == 0)
-        pthread_detach(thread);
-    else quick_cache_busy = 0;
-}
-
-static int split_nmcli(const char *line, char fields[][128], int max_fields)
-{
-    int field = 0, pos = 0, escaped = 0;
-    memset(fields, 0, (size_t)max_fields * 128);
-    for (; *line && *line != '\n' && field < max_fields; line++) {
-        char c = *line;
-        if (escaped) { if (pos < 127) fields[field][pos++] = c; escaped = 0; }
-        else if (c == '\\') escaped = 1;
-        else if (c == ':' && field + 1 < max_fields) { field++; pos = 0; }
-        else if (pos < 127) fields[field][pos++] = c;
-    }
-    return field + 1;
-}
-
-static int wifi_item_cmp(const void *av, const void *bv)
-{
-    const struct QuickWifiItem *a = av, *b = bv;
-    if (a->active != b->active) return b->active - a->active;
-    return b->signal - a->signal;
-}
-
-static void *wifi_scan_worker(void *unused)
-{
-    (void)unused;
-    struct QuickWifiItem found[32];
-    int count = 0;
-    FILE *p = popen("nmcli -w 15 -t --escape yes -f IN-USE,SSID,SIGNAL,SECURITY device wifi list --rescan yes 2>/dev/null", "r");
-    if (p) {
-        char line[512];
-        while (count < 32 && fgets(line, sizeof(line), p)) {
-            char fields[4][128];
-            if (split_nmcli(line, fields, 4) < 4 || !fields[1][0] ||
-                strcmp(fields[1], "--") == 0) continue;
-            int duplicate = 0;
-            for (int i = 0; i < count; i++)
-                if (strcmp(found[i].ssid, fields[1]) == 0) {
-                    if (atoi(fields[2]) > found[i].signal) found[i].signal = atoi(fields[2]);
-                    duplicate = 1;
-                    break;
-                }
-            if (duplicate) continue;
-            snprintf(found[count].ssid, sizeof(found[count].ssid), "%s", fields[1]);
-            found[count].signal = atoi(fields[2]);
-            found[count].active = fields[0][0] == '*';
-            found[count].secured = fields[3][0] && strcmp(fields[3], "--") != 0;
-            count++;
-        }
-        (void)pclose(p);
-    }
-    qsort(found, (size_t)count, sizeof(found[0]), wifi_item_cmp);
-    pthread_mutex_lock(&quick_lock);
-    quick_wifi_n = count < QUICK_MAX_ITEMS ? count : QUICK_MAX_ITEMS;
-    memcpy(quick_wifi, found, (size_t)quick_wifi_n * sizeof(found[0]));
-    quick_wifi_busy = 0;
-    quick_revision++;
-    pthread_mutex_unlock(&quick_lock);
-    return NULL;
-}
-
-static void start_wifi_scan(void)
-{
-    if (!__sync_bool_compare_and_swap(&quick_wifi_busy, 0, 1)) return;
-    pthread_t thread;
-    if (pthread_create(&thread, NULL, wifi_scan_worker, NULL) == 0)
-        pthread_detach(thread);
-    else quick_wifi_busy = 0;
-}
-
-static void *wifi_enable_scan_worker(void *unused)
-{
-    (void)unused;
-    run_command("nmcli radio wifi on >/dev/null 2>&1");
-    start_wifi_scan();
-    return NULL;
-}
-
-static void enable_wifi_and_scan(void)
-{
-    pthread_t thread;
-    if (pthread_create(&thread, NULL, wifi_enable_scan_worker, NULL) == 0)
-        pthread_detach(thread);
-}
-
-static int bt_item_cmp(const void *av, const void *bv)
-{
-    const struct QuickBtItem *a = av, *b = bv;
-    if (a->connected != b->connected) return b->connected - a->connected;
-    if (a->paired != b->paired) return b->paired - a->paired;
-    return b->rssi - a->rssi;
-}
-
-static void *bt_scan_worker(void *unused)
-{
-    (void)unused;
-    run_command("{ printf 'scan on\\n'; sleep 4; printf 'scan off\\n'; } | timeout 10s bluetoothctl >/dev/null 2>&1");
-    struct QuickBtItem found[32];
-    int count = 0;
-    FILE *p = popen("printf 'devices\\n' | timeout 6s bluetoothctl 2>/dev/null", "r");
-    if (p) {
-        char line[256];
-        while (count < 32 && fgets(line, sizeof(line), p)) {
-            char address[24], name[96];
-            if (sscanf(line, "Device %23s %95[^\n]", address, name) != 2) continue;
-            int duplicate = 0;
-            for (int i = 0; i < count; i++)
-                if (strcmp(found[i].address, address) == 0) { duplicate = 1; break; }
-            if (duplicate) continue;
-            memset(&found[count], 0, sizeof(found[count]));
-            snprintf(found[count].address, sizeof(found[count].address), "%s", address);
-            snprintf(found[count].name, sizeof(found[count].name), "%s", name);
-            char cmd[160];
-            snprintf(cmd, sizeof(cmd), "printf 'info %s\\n' | timeout 6s bluetoothctl 2>/dev/null", address);
-            FILE *info = popen(cmd, "r");
-            if (info) {
-                char detail[256];
-                while (fgets(detail, sizeof(detail), info)) {
-                    if (strstr(detail, "Connected: yes")) found[count].connected = 1;
-                    else if (strstr(detail, "Paired: yes")) found[count].paired = 1;
-                    else {
-                        char *rssi = strstr(detail, "RSSI:");
-                        if (rssi) found[count].rssi = atoi(rssi + 5);
-                    }
-                }
-                (void)pclose(info);
-            }
-            count++;
-        }
-        (void)pclose(p);
-    }
-    qsort(found, (size_t)count, sizeof(found[0]), bt_item_cmp);
-    pthread_mutex_lock(&quick_lock);
-    quick_bt_n = count < QUICK_MAX_ITEMS ? count : QUICK_MAX_ITEMS;
-    memcpy(quick_bt, found, (size_t)quick_bt_n * sizeof(found[0]));
-    quick_bt_busy = 0;
-    quick_revision++;
-    pthread_mutex_unlock(&quick_lock);
-    return NULL;
-}
-
-static void start_bt_scan(void)
-{
-    if (!__sync_bool_compare_and_swap(&quick_bt_busy, 0, 1)) return;
-    pthread_t thread;
-    if (pthread_create(&thread, NULL, bt_scan_worker, NULL) == 0)
-        pthread_detach(thread);
-    else quick_bt_busy = 0;
-}
-
-static void *bt_enable_scan_worker(void *unused)
-{
-    (void)unused;
-    run_command("printf 'power on\\n' | bluetoothctl >/dev/null 2>&1");
-    start_bt_scan();
-    return NULL;
-}
-
-static void enable_bt_and_scan(void)
-{
-    pthread_t thread;
-    if (pthread_create(&thread, NULL, bt_enable_scan_worker, NULL) == 0)
-        pthread_detach(thread);
-}
-
 static void apply_system_volume(void)
 {
     char command[512];
-    const char *mute = quick_muted ? "mute" : "unmute";
+    const char *mute = session_muted ? "mute" : "unmute";
     snprintf(command, sizeof(command),
         "amixer -q sset Master %d%% %s 2>/dev/null || "
         "amixer -q sset PCM %d%% %s 2>/dev/null || "
         "wpctl set-volume @DEFAULT_AUDIO_SINK@ %.2f 2>/dev/null",
-        quick_volume, mute, quick_volume, mute, quick_volume / 100.0);
+        session_volume, mute, session_volume, mute, session_volume / 100.0);
     spawn_command(command);
 }
 
@@ -807,7 +372,7 @@ static void apply_x_brightness(void)
     snprintf(command, sizeof(command),
         "output=$(xrandr --current 2>/dev/null | awk '/ connected/{print $1; exit}'); "
         "[ -z \"$output\" ] || xrandr --output \"$output\" --brightness %.2f",
-        quick_brightness / 100.0);
+        session_brightness / 100.0);
     spawn_command(command);
 }
 
@@ -880,6 +445,44 @@ static void shape_round_corners(Window win, int w, int h, int r)
 #endif
 }
 
+/* ---------------------------------------------------------- island layout */
+
+static int visible_window_count(void)
+{
+    return nwins > 7 ? 7 : nwins;
+}
+
+static int queue_content_width(void)
+{
+    const int count = visible_window_count();
+    if (count <= 0) return 23;
+    int width = 23 + (count - 1) * 18;
+    if (nwins > count) width += 16; /* trailing overflow ellipsis */
+    return width;
+}
+
+static int desired_island_width(void)
+{
+    int width = queue_content_width() + 12;
+    if (width < PILL_H) width = PILL_H;
+    /* HH:MM, divider and battery percentage. This is intentionally compact:
+     * advanced mode is wider, but the page still remains the main surface. */
+    if (island_advanced) width += 78;
+    if (width > sw - 16) width = sw - 16;
+    return width;
+}
+
+static void sync_island_geometry(void)
+{
+    const int wanted = desired_island_width();
+    if (wanted != island_w) {
+        island_w = wanted;
+        XMoveResizeWindow(dpy, bar, (sw - island_w) / 2, PILL_Y,
+                          (unsigned)island_w, PILL_H);
+    }
+    shape_round_corners(bar, island_w, PILL_H, PILL_H / 2);
+}
+
 /* ---------------------------------------------------------- real app icons */
 
 /* Size-specific XImages produced once from the embedded 48x48 RGBA minis
@@ -941,16 +544,6 @@ static XImage *icon_ximage(int icon, int size)
     icon_ximages[nicon_ximages].img = img;
     nicon_ximages++;
     return img;
-}
-
-static void draw_wifi(Drawable d, int cx, int cy, int connected)
-{
-    /* Three upward arcs + a dot, same silhouette as LV_SYMBOL_WIFI. */
-    int r;
-    for (r = 4; r <= 12; r += 4)
-        XDrawArc(dpy, d, gc, cx - r, cy - r, 2 * r, 2 * r, 40 * 64, 100 * 64);
-    XFillArc(dpy, d, gc, cx - 2, cy - 2, 4, 4, 0, 360 * 64);
-    if (!connected) XDrawLine(dpy, d, gc, cx - 10, cy - 10, cx + 10, cy + 8);
 }
 
 static int contains_ci(const char *haystack, const char *needle)
@@ -1072,16 +665,20 @@ static int queue_x_for(int index, int count)
 {
     const int icon = 23, step = 18;
     int total = icon + (count - 1) * step;
-    return (sw - total) / 2 + icon / 2 + index * step;
+    if (nwins > count) total += 16;
+    int area_w = queue_content_width();
+    int left = island_advanced ? 6 : (island_w - area_w) / 2;
+    return left + (area_w - total) / 2 + icon / 2 + index * step;
 }
 
 static void draw_queue(Drawable d)
 {
-    int count = nwins > 7 ? 7 : nwins;
+    int count = visible_window_count();
     if (count <= 0) {
         /* Sensor/camera hint while Chromium is still starting. */
         XSetForeground(dpy, gc, px(0x202833));
-        XFillArc(dpy, d, gc, sw / 2 - 5, PILL_Y + 13, 10, 10, 0, 360 * 64);
+        int cx = island_advanced ? 6 + queue_content_width() / 2 : island_w / 2;
+        XFillArc(dpy, d, gc, cx - 5, PILL_H / 2 - 5, 10, 10, 0, 360 * 64);
         return;
     }
     long elapsed = queue_anim_start ? now_ms() - queue_anim_start : 999;
@@ -1102,7 +699,7 @@ static void draw_queue(Drawable d)
         int to_x = queue_x_for(i, count);
         int x = from_x + (int)((to_x - from_x) * ease);
         int lift = (i == 0 && t < 1.0) ? (int)(18.0 * t * (1.0 - t)) : 0;
-        draw_app_icon(d, effective_app(i), x, PILL_Y + PILL_H / 2 - lift, 23);
+        draw_app_icon(d, effective_app(i), x, PILL_H / 2 - lift, 23);
     }
     if (nwins > count) {
         XSetForeground(dpy, gc, px(0xffffff));
@@ -1111,427 +708,52 @@ static void draw_queue(Drawable d)
     }
 }
 
-/* RJ45 plug, drawn at the same weight as draw_wifi so wired and wireless read
- * as one icon set. The panel has no modem, so this replaces the old signal
- * bars entirely -- they only ever mirrored the Wi-Fi link. */
-static void draw_ethernet(Drawable d, int cx, int cy, int connected)
+static void redraw(int bat_level, int bat_charging)
 {
-    XSetForeground(dpy, gc, px(connected ? 0xffffff : 0x4b5563));
-    XDrawRectangle(dpy, d, gc, cx - 8, cy - 7, 16, 10);   /* connector body  */
-    XDrawLine(dpy, d, gc, cx - 3, cy + 3, cx - 3, cy + 7);/* latch tab       */
-    XDrawLine(dpy, d, gc, cx + 3, cy + 3, cx + 3, cy + 7);
-    XDrawLine(dpy, d, gc, cx - 3, cy + 7, cx + 3, cy + 7);
-    for (int i = -2; i <= 2; i++)                          /* contact pins   */
-        XDrawLine(dpy, d, gc, cx + i * 3, cy - 7, cx + i * 3, cy - 4);
-}
-
-static void draw_bluetooth(Drawable d, int cx, int cy, int on)
-{
-    XSetForeground(dpy, gc, px(on ? 0xffffff : 0x4b5563));
-    XDrawLine(dpy, d, gc, cx, cy - 9, cx, cy + 9);
-    XDrawLine(dpy, d, gc, cx, cy - 9, cx + 6, cy - 3);
-    XDrawLine(dpy, d, gc, cx + 6, cy - 3, cx - 5, cy + 6);
-    XDrawLine(dpy, d, gc, cx - 5, cy - 6, cx + 6, cy + 3);
-    XDrawLine(dpy, d, gc, cx + 6, cy + 3, cx, cy + 9);
-}
-
-static int quick_icon_center(int kind)
-{
-    return sw - 18 - (QUICK_POWER - kind) * QUICK_STEP;
-}
-
-static void draw_cache_icon(Drawable d, int cx, int cy)
-{
-    XDrawArc(dpy, d, gc, cx - 8, cy - 8, 16, 16, 35 * 64, 245 * 64);
-    XDrawLine(dpy, d, gc, cx + 7, cy - 7, cx + 9, cy - 2);
-    XDrawLine(dpy, d, gc, cx + 7, cy - 7, cx + 2, cy - 7);
-    XDrawArc(dpy, d, gc, cx - 6, cy - 6, 12, 12, 215 * 64, 160 * 64);
-}
-
-static void draw_sound_icon(Drawable d, int cx, int cy, int muted)
-{
-    XFillRectangle(dpy, d, gc, cx - 9, cy - 4, 5, 8);
-    XDrawLine(dpy, d, gc, cx - 4, cy - 4, cx + 1, cy - 8);
-    XDrawLine(dpy, d, gc, cx + 1, cy - 8, cx + 1, cy + 8);
-    XDrawLine(dpy, d, gc, cx + 1, cy + 8, cx - 4, cy + 4);
-    if (muted) XDrawLine(dpy, d, gc, cx + 4, cy - 6, cx + 11, cy + 6);
-    else {
-        XDrawArc(dpy, d, gc, cx - 2, cy - 7, 12, 14, -60 * 64, 120 * 64);
-        XDrawArc(dpy, d, gc, cx - 3, cy - 10, 18, 20, -60 * 64, 120 * 64);
-    }
-}
-
-static void draw_sun_icon(Drawable d, int cx, int cy)
-{
-    XDrawArc(dpy, d, gc, cx - 5, cy - 5, 10, 10, 0, 360 * 64);
-    for (int i = 0; i < 8; i++) {
-        static const int dx[8] = {0, 6, 9, 6, 0, -6, -9, -6};
-        static const int dy[8] = {-9, -6, 0, 6, 9, 6, 0, -6};
-        int ix = dx[i] * 6 / 9, iy = dy[i] * 6 / 9;
-        XDrawLine(dpy, d, gc, cx + ix, cy + iy, cx + dx[i], cy + dy[i]);
-    }
-}
-
-static void draw_power_status_icon(Drawable d, int cx, int cy)
-{
-    XDrawArc(dpy, d, gc, cx - 8, cy - 8, 16, 16, -45 * 64, 270 * 64);
-    XDrawLine(dpy, d, gc, cx, cy - 10, cx, cy);
-}
-
-static void quick_dimensions(int kind, int *w, int *h)
-{
-    int n = 0;
-    pthread_mutex_lock(&quick_lock);
-    if (kind == QUICK_WIFI) n = quick_eth_connected ? 1 : quick_wifi_n;
-    else if (kind == QUICK_BT) n = quick_bt_n;
-    pthread_mutex_unlock(&quick_lock);
-    if (kind == QUICK_CACHE) { *w = 260; *h = 94; }
-    else if (kind == QUICK_WIFI || kind == QUICK_BT) {
-        if (n < 1) n = 1;
-        *w = 276; *h = 52 + n * 34;
-    } else if (kind == QUICK_SOUND) { *w = 280; *h = 126; }
-    else if (kind == QUICK_DISPLAY) { *w = 280; *h = 82; }
-    else { *w = 200; *h = 120; }
-}
-
-static void draw_toggle(Drawable d, int x, int y, int on)
-{
-    XSetForeground(dpy, gc, px(on ? 0x0a84ff : 0x9a9da8));
-    fill_round_rect(d, x, y, 38, 22, 11, 1);
-    XSetForeground(dpy, gc, px(0xffffff));
-    XFillArc(dpy, d, gc, x + (on ? 18 : 2), y + 2, 18, 18, 0, 360 * 64);
-}
-
-static void draw_usage_bar(Drawable d, int y, const char *name,
-                           unsigned long long used, unsigned long long total,
-                           unsigned long color)
-{
-    char value[64];
-    double used_gb = used / 1048576.0, total_gb = total / 1048576.0;
-    snprintf(value, sizeof(value), "%s  %.1f GB / %.0f GB", name, used_gb, total_gb);
-    XSetForeground(dpy, gc, px(0xffffff));
-    fill_round_rect(d, 14, y, quick_w - 28, 23, 11, 1);
-    int fill = total ? (int)((quick_w - 28) * used / total) : 0;
-    if (fill > 0) {
-        XSetForeground(dpy, gc, px(color));
-        fill_round_rect(d, 14, y, fill, 23, 11, 1);
-    }
-    XSetForeground(dpy, gc, px(0x20242b));
-    draw_string(d, font_small, 22, y + 16, value);
-}
-
-static void draw_slider(Drawable d, int y, int value, int min, int max,
-                        unsigned long color)
-{
-    int x = 30, w = quick_w - 60;
-    XSetForeground(dpy, gc, px(0xb9bbc5));
-    fill_round_rect(d, x, y, w, 10, 5, 1);
-    int pos = max > min ? (value - min) * w / (max - min) : 0;
-    if (pos < 0) pos = 0;
-    if (pos > w) pos = w;
-    XSetForeground(dpy, gc, px(color));
-    if (pos > 0) fill_round_rect(d, x, y, pos, 10, 5, 1);
-    XSetForeground(dpy, gc, px(0xffffff));
-    XFillArc(dpy, d, gc, x + pos - 7, y - 3, 16, 16, 0, 360 * 64);
-}
-
-static void draw_quick(void)
-{
-    if (quick_popup == None || quick_kind == QUICK_NONE) return;
-    Drawable d = quick_buffer != None ? quick_buffer : quick_popup;
-    XSetForeground(dpy, gc, px(0xe9e9f3));
-    XFillRectangle(dpy, d, gc, 0, 0, (unsigned)quick_w, (unsigned)quick_h);
-    XSetForeground(dpy, gc, px(0x20242b));
-
-    if (quick_kind == QUICK_CACHE) {
-        draw_string(d, font_big, 14, 20, quick_cache_busy ? "Cleaning cache..." : "Cache cleaned");
-        pthread_mutex_lock(&quick_lock);
-        draw_usage_bar(d, 29, "Storage", quick_disk_used_kb, quick_disk_total_kb, 0x00c3d7);
-        draw_usage_bar(d, 59, "RAM", quick_mem_used_kb, quick_mem_total_kb, 0x0a84ff);
-        pthread_mutex_unlock(&quick_lock);
-    } else if (quick_kind == QUICK_WIFI) {
-        if (quick_eth_connected) {
-            draw_string(d, font_big, 14, 25, "Ethernet");
-            XSetForeground(dpy, gc, px(0x0a84ff));
-            draw_ethernet(d, 25, 67, 1);
-            draw_string(d, font_small, 44, 70, "Using wired LAN");
-            const char *state = "Connected";
-            int tw = XTextWidth(font_small, state, (int)strlen(state));
-            draw_string(d, font_small, quick_w - 14 - tw, 70, state);
-        } else {
-            draw_string(d, font_big, 14, 25, "Wi-Fi");
-            draw_toggle(d, quick_w - 52, 10, quick_wifi_on);
-            pthread_mutex_lock(&quick_lock);
-            int n = quick_wifi_n;
-            for (int i = 0; i < (n ? n : 1); i++) {
-                int y = 50 + i * 34;
-                if (!n) {
-                    draw_string(d, font_small, 16, y + 19,
-                                quick_wifi_busy ? "Scanning strongest networks..." : "No networks found");
-                    break;
-                }
-                XSetForeground(dpy, gc, px(quick_wifi[i].active ? 0x0a84ff : 0x20242b));
-                draw_wifi(d, 25, y + 17, 1);
-                draw_string(d, font_small, 44, y + 20, quick_wifi[i].ssid);
-                char state[24];
-                snprintf(state, sizeof(state), "%s%d%%", quick_wifi[i].secured ? "L " : "", quick_wifi[i].signal);
-                int tw = XTextWidth(font_small, state, (int)strlen(state));
-                draw_string(d, font_small, quick_w - 14 - tw, y + 20, state);
-            }
-            pthread_mutex_unlock(&quick_lock);
-        }
-    } else if (quick_kind == QUICK_BT) {
-        draw_string(d, font_big, 14, 25, "Bluetooth");
-        draw_toggle(d, quick_w - 52, 10, quick_bt_on);
-        pthread_mutex_lock(&quick_lock);
-        int n = quick_bt_n;
-        for (int i = 0; i < (n ? n : 1); i++) {
-            int y = 50 + i * 34;
-            if (!n) {
-                draw_string(d, font_small, 16, y + 19,
-                            quick_bt_busy ? "Scanning devices..." : "No nearby devices");
-                break;
-            }
-            XSetForeground(dpy, gc, px(quick_bt[i].connected ? 0x0a84ff : 0x20242b));
-            draw_bluetooth(d, 25, y + 17, 1);
-            draw_string(d, font_small, 44, y + 20, quick_bt[i].name);
-            const char *state = quick_bt[i].connected ? "Connected" : (quick_bt[i].paired ? "Paired" : "");
-            int tw = XTextWidth(font_small, state, (int)strlen(state));
-            draw_string(d, font_small, quick_w - 14 - tw, y + 20, state);
-        }
-        pthread_mutex_unlock(&quick_lock);
-    } else if (quick_kind == QUICK_SOUND) {
-        draw_string(d, font_big, 14, 24, "Sound");
-        XSetForeground(dpy, gc, px(0x5d6470));
-        draw_sound_icon(d, 18, 52, quick_muted);
-        draw_slider(d, 48, quick_volume, 0, 100, 0x0a84ff);
-        char volume[16];
-        snprintf(volume, sizeof(volume), "%d%%", quick_volume);
-        draw_string(d, font_small, quick_w - 42, 79, volume);
-        XSetForeground(dpy, gc, px(0x20242b));
-        draw_string(d, font_small, 14, 96, "Output");
-        draw_string(d, font_big, 28, 116, "Speaker Jetson");
-    } else if (quick_kind == QUICK_DISPLAY) {
-        draw_string(d, font_big, 14, 24, "Display");
-        XSetForeground(dpy, gc, px(0xff9f0a));
-        draw_sun_icon(d, 18, 54);
-        draw_slider(d, 49, quick_brightness, 20, 100, 0xff9f0a);
-        char brightness[16];
-        snprintf(brightness, sizeof(brightness), "%d%%", quick_brightness);
-        draw_string(d, font_small, quick_w - 42, 76, brightness);
-    } else if (quick_kind == QUICK_POWER) {
-        const char *items[] = {"Sleep", "Restart", "Shut Down"};
-        for (int i = 0; i < 3; i++) {
-            XSetForeground(dpy, gc, px(i == 2 ? 0xa51d2d : 0x20242b));
-            draw_string(d, font_big, 18, 25 + i * 38, items[i]);
-            if (i < 2) {
-                XSetForeground(dpy, gc, px(0xc3c5cf));
-                XDrawLine(dpy, d, gc, 12, 38 + i * 38, quick_w - 12, 38 + i * 38);
-            }
-        }
-    }
-    if (quick_buffer != None)
-        XCopyArea(dpy, quick_buffer, quick_popup, gc, 0, 0,
-                  (unsigned)quick_w, (unsigned)quick_h, 0, 0);
-    XFlush(dpy);
-}
-
-static void close_quick(void)
-{
-    if (quick_popup != None) XUnmapWindow(dpy, quick_popup);
-    quick_kind = QUICK_NONE;
-    quick_until = 0;
-}
-
-static void open_quick(int kind)
-{
-    if (quick_kind == kind) { close_quick(); return; }
-    if (menu_open) close_menu();
-    if (kind == QUICK_CACHE) start_cache_clean();
-    else if (kind == QUICK_WIFI) {
-        quick_eth_connected = ethernet_up();
-        quick_wifi_on = wifi_radio_up();
-        if (!quick_eth_connected && quick_wifi_on) start_wifi_scan();
-    } else if (kind == QUICK_BT) {
-        quick_bt_on = bluetooth_up();
-        if (quick_bt_on) start_bt_scan();
-    }
-    else if (kind == QUICK_SOUND) {
-        char value[16];
-        setting_get("display", "volume", "50", value, sizeof(value));
-        quick_volume = atoi(value);
-        setting_get("display", "muted", "0", value, sizeof(value));
-        quick_muted = atoi(value) != 0 || contains_ci(value, "true");
-    } else if (kind == QUICK_DISPLAY) {
-        char value[16];
-        setting_get("display", "brightness", "100", value, sizeof(value));
-        quick_brightness = atoi(value);
-        if (quick_brightness < 20) quick_brightness = 20;
-        if (quick_brightness > 100) quick_brightness = 100;
-    }
-    quick_kind = kind;
-    quick_dimensions(kind, &quick_w, &quick_h);
-    if (quick_popup == None) {
-        XSetWindowAttributes a;
-        a.override_redirect = True;
-        a.background_pixel = px(0xe9e9f3);
-        a.event_mask = ExposureMask | ButtonPressMask;
-        quick_popup = XCreateWindow(dpy, root, 0, BAR_H + 4, QUICK_POP_MAX_W,
-            QUICK_POP_MAX_H, 0, CopyFromParent, InputOutput, CopyFromParent,
-            CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
-        quick_buffer = XCreatePixmap(dpy, quick_popup, QUICK_POP_MAX_W,
-            QUICK_POP_MAX_H, (unsigned)DefaultDepth(dpy, DefaultScreen(dpy)));
-        XDefineCursor(dpy, quick_popup, XCreateFontCursor(dpy, XC_left_ptr));
-    }
-    int x = quick_icon_center(kind) - quick_w / 2;
-    if (x < 8) x = 8;
-    if (x + quick_w > sw - 8) x = sw - quick_w - 8;
-    XMoveResizeWindow(dpy, quick_popup, x, BAR_H + 4,
-                      (unsigned)quick_w, (unsigned)quick_h);
-    shape_round_corners(quick_popup, quick_w, quick_h, 14);
-    XMapRaised(dpy, quick_popup);
-    quick_until = now_ms() + 8000;
-    draw_quick();
-}
-
-static void handle_quick_click(int x, int y)
-{
-    if (quick_kind == QUICK_WIFI) {
-        if (quick_eth_connected) return;
-        if (y < 45 && x > quick_w - 70) {
-            quick_wifi_on = !quick_wifi_on;
-            if (quick_wifi_on) enable_wifi_and_scan();
-            else spawn_command("nmcli radio wifi off");
-            draw_quick();
-            return;
-        }
-        int row = (y - 50) / 34;
-        pthread_mutex_lock(&quick_lock);
-        if (y >= 50 && row >= 0 && row < quick_wifi_n) {
-            char ssid[96];
-            int active = quick_wifi[row].active;
-            snprintf(ssid, sizeof(ssid), "%s", quick_wifi[row].ssid);
-            pthread_mutex_unlock(&quick_lock);
-            char quoted[420], command[1024];
-            shell_quote(ssid, quoted, sizeof(quoted));
-            if (active)
-                snprintf(command, sizeof(command), "dev=$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2==\"wifi\"{print $1; exit}'); [ -z \"$dev\" ] || nmcli device disconnect \"$dev\"");
-            else
-                snprintf(command, sizeof(command), "nmcli -w 20 connection up id %s || nmcli -w 25 device wifi connect %s", quoted, quoted);
-            spawn_command(command);
-            close_quick();
-            return;
-        }
-        pthread_mutex_unlock(&quick_lock);
-    } else if (quick_kind == QUICK_BT) {
-        if (y < 45 && x > quick_w - 70) {
-            quick_bt_on = !quick_bt_on;
-            if (quick_bt_on) enable_bt_and_scan();
-            else spawn_command("printf 'power off\\n' | bluetoothctl");
-            draw_quick();
-            return;
-        }
-        int row = (y - 50) / 34;
-        pthread_mutex_lock(&quick_lock);
-        if (y >= 50 && row >= 0 && row < quick_bt_n) {
-            char address[24];
-            int connected = quick_bt[row].connected;
-            snprintf(address, sizeof(address), "%s", quick_bt[row].address);
-            pthread_mutex_unlock(&quick_lock);
-            char command[1024];
-            if (connected)
-                snprintf(command, sizeof(command), "printf 'disconnect %s\\n' | timeout 10s bluetoothctl", address);
-            else
-                snprintf(command, sizeof(command), "{ printf 'agent NoInputNoOutput\\ndefault-agent\\npair %s\\ntrust %s\\nconnect %s\\n'; sleep 12; } | timeout 25s bluetoothctl", address, address, address);
-            spawn_command(command);
-            close_quick();
-            return;
-        }
-        pthread_mutex_unlock(&quick_lock);
-    } else if (quick_kind == QUICK_SOUND) {
-        if (y < 34 || y > 78) return;
-        if (x < 30) quick_muted = !quick_muted;
-        else {
-            quick_volume = (x - 30) * 100 / (quick_w - 60);
-            if (quick_volume < 0) quick_volume = 0;
-            if (quick_volume > 100) quick_volume = 100;
-            quick_muted = quick_volume == 0;
-        }
-        char value[16];
-        snprintf(value, sizeof(value), "%d", quick_volume);
-        setting_set("display", "volume", value);
-        setting_set("display", "muted", quick_muted ? "1" : "0");
-        apply_system_volume();
-        quick_until = now_ms() + 8000;
-        draw_quick();
-    } else if (quick_kind == QUICK_DISPLAY) {
-        if (y < 34 || y > 78) return;
-        quick_brightness = 20 + (x - 30) * 80 / (quick_w - 60);
-        if (quick_brightness < 20) quick_brightness = 20;
-        if (quick_brightness > 100) quick_brightness = 100;
-        char value[16];
-        snprintf(value, sizeof(value), "%d", quick_brightness);
-        setting_set("display", "brightness", value);
-        apply_x_brightness();
-        quick_until = now_ms() + 8000;
-        draw_quick();
-    } else if (quick_kind == QUICK_POWER) {
-        int row = y / 38;
-        close_quick();
-        if (row == 0) spawn_command("systemctl suspend");
-        else if (row == 1) spawn_command("sync; reboot");
-        else if (row == 2) spawn_command("sync; poweroff");
-    }
-}
-
-static void redraw(int bat_level, int bat_charging, int wifi, int eth)
-{
+    sync_island_geometry();
     Drawable d = bar_buffer != None ? bar_buffer : bar;
-    XSetForeground(dpy, gc, px(COL_BAR_BG));
-    XFillRectangle(dpy, d, gc, 0, 0, sw, BAR_H);
-
-    /* Left cluster: HH:MM  DD/MM (firmware default region format). */
-    char ts[32], region[16], h24[8];
-    setting_get("system", "region", "VN", region, sizeof(region));
-    setting_get("display", "clock_24h", "1", h24, sizeof(h24));
-    time_t now = time(NULL);
-    struct tm t;
-    localtime_r(&now, &t);
-    const char *date = strcmp(region, "US") == 0 ? "%m/%d" :
-                       (strcmp(region, "JP") == 0 || strcmp(region, "CN") == 0) ? "%Y/%m/%d" : "%d/%m";
-    char fmt[32];
-    snprintf(fmt, sizeof(fmt), "%s  %s", (strcmp(h24, "0") == 0 ? "%I:%M" : "%H:%M"), date);
-    strftime(ts, sizeof(ts), fmt, &t);
-    XSetForeground(dpy, gc, px(COL_TEXT));
-    draw_string(d, font_big, 14,
-                (BAR_H + font_big->ascent - font_big->descent) / 2, ts);
-
-    /* Center: the resting island pill. Single click cycles the switcher,
-     * double click exits. Shows the active window's title (and a position
-     * indicator when several windows are open) so the user knows which app
-     * a cycle click will leave. */
-    int pillx = (sw - PILL_W) / 2;
     XSetForeground(dpy, gc, px(COL_PILL_BG));
-    fill_round_rect(d, pillx, PILL_Y, PILL_W, PILL_H, PILL_H / 2, 1);
+    XFillRectangle(dpy, d, gc, 0, 0, (unsigned)island_w, PILL_H);
+
+    /* The island is the complete Chromium chrome: no black top strip and no
+     * Wi-Fi/Bluetooth/cache/sound/brightness/power status controls. */
+    XSetForeground(dpy, gc, px(COL_PILL_BG));
+    fill_round_rect(d, 0, 0, island_w, PILL_H, PILL_H / 2, 1);
     XSetForeground(dpy, gc, px(COL_PILL_EDGE));
-    fill_round_rect(d, pillx, PILL_Y, PILL_W, PILL_H, PILL_H / 2, 0);
+    fill_round_rect(d, 0, 0, island_w, PILL_H, PILL_H / 2, 0);
     draw_queue(d);
 
-    /* Exact firmware order: cache, Bluetooth, connectivity, sound, display, power.
-     * Every glyph is a stable click target even when its service is off. */
-    (void)bat_level; (void)bat_charging;
-    XSetForeground(dpy, gc, px(COL_TEXT));
-    draw_cache_icon(d, quick_icon_center(QUICK_CACHE), 21);
-    draw_bluetooth(d, quick_icon_center(QUICK_BT), 21, bluetooth_up());
-    if (eth) draw_ethernet(d, quick_icon_center(QUICK_WIFI), 21, 1);
-    else draw_wifi(d, quick_icon_center(QUICK_WIFI), 25, wifi > 0);
-    draw_sound_icon(d, quick_icon_center(QUICK_SOUND), 21, quick_muted);
-    draw_sun_icon(d, quick_icon_center(QUICK_DISPLAY), 21);
-    draw_power_status_icon(d, quick_icon_center(QUICK_POWER), 21);
+    if (island_advanced) {
+        const int divider_x = 6 + queue_content_width() + 5;
+        XSetForeground(dpy, gc, px(COL_PILL_EDGE));
+        XDrawLine(dpy, d, gc, divider_x, 9, divider_x, PILL_H - 9);
 
-    /* One copy makes the entire strip appear atomically. This removes the
+        char clock_text[16], h24[8], battery_text[16];
+        setting_get("display", "clock_24h", "1", h24, sizeof(h24));
+        time_t now = time(NULL);
+        struct tm t;
+        localtime_r(&now, &t);
+        strftime(clock_text, sizeof(clock_text),
+                 strcmp(h24, "0") == 0 ? "%I:%M" : "%H:%M", &t);
+        snprintf(battery_text, sizeof(battery_text), "%d%%", bat_level);
+        const int baseline = (PILL_H + font_small->ascent - font_small->descent) / 2;
+        const int time_x = divider_x + 8;
+        XSetForeground(dpy, gc, px(COL_TEXT));
+        draw_string(d, font_small, time_x, baseline, clock_text);
+        int battery_x = island_w - 7 - XTextWidth(font_small, battery_text,
+                                                  (int)strlen(battery_text));
+        unsigned long battery_color = bat_level <= 20 ? COL_BAT_RED :
+                                      bat_level <= 40 ? COL_BAT_YELLO : COL_BAT_GREEN;
+        if (bat_charging) battery_color = COL_BAT_GREEN;
+        XSetForeground(dpy, gc, px(battery_color));
+        draw_string(d, font_small, battery_x, baseline, battery_text);
+    }
+
+    /* One copy makes the island appear atomically. This removes the
      * visible clear/draw flicker from the original once-per-second repaint. */
-    if (bar_buffer != None) XCopyArea(dpy, bar_buffer, bar, gc, 0, 0, sw, BAR_H, 0, 0);
+    if (bar_buffer != None)
+        XCopyArea(dpy, bar_buffer, bar, gc, 0, 0,
+                  (unsigned)island_w, PILL_H, 0, 0);
     XFlush(dpy);
 }
 
@@ -1662,13 +884,13 @@ static void manage(Window w, int give_focus)
         return;
     }
 
-    /* Anything big enough to be a browser window: kick it out from under the
-     * bar and track it in the switcher list. Menus/tooltips are
+    /* Anything big enough to be a browser window fills the panel behind the
+     * floating island and is tracked in the switcher list. Menus/tooltips are
      * override-redirect and never reach this point; small normal windows
      * (e.g. an OAuth popup) still get focus below but are not cycled. */
     if (a.width >= sw * 3 / 5) {
-        if (a.y < BAR_H || a.height > sh - BAR_H)
-            XMoveResizeWindow(dpy, w, 0, BAR_H, (unsigned)sw, (unsigned)(sh - BAR_H));
+        if (a.x != 0 || a.y != 0 || a.width != sw || a.height != sh)
+            XMoveResizeWindow(dpy, w, 0, 0, (unsigned)sw, (unsigned)sh);
         int i = win_index(w);
         if (i < 0 && nwins < MAX_WINS) {
             i = nwins++;
@@ -1911,7 +1133,7 @@ static void open_menu(void)
     if (menu_buffer != None) XFreePixmap(dpy, menu_buffer);
     menu_buffer = XCreatePixmap(dpy, menu, (unsigned)menu_w, MENU_H,
                                 (unsigned)DefaultDepth(dpy, DefaultScreen(dpy)));
-    XMoveResizeWindow(dpy, menu, (sw - menu_w) / 2, BAR_H - 3,
+    XMoveResizeWindow(dpy, menu, (sw - menu_w) / 2, PILL_Y + PILL_H - 3,
                       (unsigned)menu_w, 1);
     XMapRaised(dpy, menu);
     menu_open = 1;
@@ -1966,7 +1188,7 @@ static void draw_transition(void)
 {
     if (transition == None || !transition_start || transition_buffer == None)
         return;
-    int W = sw, H = sh - BAR_H;              /* the cover spans the app area */
+    int W = sw, H = sh;                      /* cover spans the full web area */
     Drawable d = transition_buffer;
     double s = transition_scale;             /* 1 = full panel, 0 = island */
 
@@ -1975,7 +1197,7 @@ static void draw_transition(void)
     XSetForeground(dpy, gc, px(COL_BAR_BG));
     XFillRectangle(dpy, d, gc, 0, 0, (unsigned)W, (unsigned)H);
 
-    const int cw = PILL_W, ch = 6;           /* collapsed footprint = island */
+    const int cw = island_w, ch = 6;         /* collapsed footprint = island */
     int w = cw + (int)((W - cw) * s);
     int h = ch + (int)((H - ch) * s);
     if (w < 2) w = 2;
@@ -2006,13 +1228,13 @@ static void draw_transition(void)
 static void start_switch(Window target)
 {
     if (target == None || win_index(target) < 0) return;
-    unsigned W = (unsigned)sw, H = (unsigned)(sh - BAR_H);
+    unsigned W = (unsigned)sw, H = (unsigned)sh;
     if (transition == None) {
         XSetWindowAttributes a;
         a.override_redirect = True;
         a.background_pixel = px(COL_BAR_BG);
         a.event_mask = ExposureMask;
-        transition = XCreateWindow(dpy, root, 0, BAR_H, W, H, 0,
+        transition = XCreateWindow(dpy, root, 0, 0, W, H, 0,
                                    CopyFromParent, InputOutput, CopyFromParent,
                                    CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
         transition_buffer = XCreatePixmap(dpy, transition, W, H,
@@ -2025,7 +1247,7 @@ static void start_switch(Window target)
     transition_scale = 1.0;
     transition_start = now_ms();
     transition_switched = 0;
-    XMoveResizeWindow(dpy, transition, 0, BAR_H, W, H);
+    XMoveResizeWindow(dpy, transition, 0, 0, W, H);
     XMapRaised(dpy, transition);
 }
 
@@ -2047,13 +1269,13 @@ static void start_cycle(void)
 static void start_handoff(void)
 {
     const char *url = getenv("JETSON_KIOSK_HANDOFF_URL");
-    unsigned W = (unsigned)sw, H = (unsigned)(sh - BAR_H);
+    unsigned W = (unsigned)sw, H = (unsigned)sh;
     if (transition == None) {
         XSetWindowAttributes a;
         a.override_redirect = True;
         a.background_pixel = px(COL_BAR_BG);
         a.event_mask = ExposureMask;
-        transition = XCreateWindow(dpy, root, 0, BAR_H, W, H, 0,
+        transition = XCreateWindow(dpy, root, 0, 0, W, H, 0,
                                    CopyFromParent, InputOutput, CopyFromParent,
                                    CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
         transition_buffer = XCreatePixmap(dpy, transition, W, H,
@@ -2075,7 +1297,7 @@ static void start_handoff(void)
     transition_show_app = app;
     transition_scale = 0.0;
     transition_start = now_ms();
-    XMoveResizeWindow(dpy, transition, 0, BAR_H, W, H);
+    XMoveResizeWindow(dpy, transition, 0, 0, W, H);
     XMapRaised(dpy, transition);
 }
 
@@ -2195,7 +1417,9 @@ static void show_notification(Window target, int app, const char *message)
              message && *message ? message : "Tin nhan moi");
     toast_start = now_ms();
     toast_until = toast_start + 5500;
-    XMoveResizeWindow(dpy, toast, (sw - PILL_W) / 2, PILL_Y, PILL_W, PILL_H);
+    toast_base_w = island_w;
+    XMoveResizeWindow(dpy, toast, (sw - toast_base_w) / 2, PILL_Y,
+                      (unsigned)toast_base_w, PILL_H);
     XMapRaised(dpy, toast);
 }
 
@@ -2211,7 +1435,7 @@ static void update_toast(long now)
     if (t > 1.0) t = 1.0;
     if (t < 0.0) t = 0.0;
     double ease = t * t * (3.0 - 2.0 * t);
-    int w = PILL_W + (int)((TOAST_MAX_W - PILL_W) * ease);
+    int w = toast_base_w + (int)((TOAST_MAX_W - toast_base_w) * ease);
     int h = PILL_H + (int)((TOAST_MAX_H - PILL_H) * ease);
     XMoveResizeWindow(dpy, toast, (sw - w) / 2, PILL_Y, (unsigned)w, (unsigned)h);
     shape_round_corners(toast, w, h, 22);
@@ -2263,7 +1487,7 @@ static void update_menu_animation(long now)
     int h = 1 + (int)((MENU_H - 1) * ease);
     if (h < 1) h = 1;
     if (h > MENU_H) h = MENU_H; /* overshoot would tear the rounded mask */
-    XMoveResizeWindow(dpy, menu, (sw - menu_w) / 2, BAR_H - 3,
+    XMoveResizeWindow(dpy, menu, (sw - menu_w) / 2, PILL_Y + PILL_H - 3,
                       (unsigned)menu_w, (unsigned)h);
     shape_round_corners(menu, menu_w, h, MENU_RADIUS);
     XRaiseWindow(dpy, menu);
@@ -2320,17 +1544,25 @@ int main(void)
     }
 
     XSetWindowAttributes wa;
-    wa.override_redirect = True; /* nothing may reparent or move the strip */
+    wa.override_redirect = True; /* nothing may reparent or move the island */
     wa.background_pixel = px(COL_BAR_BG);
     wa.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask;
-    bar = XCreateWindow(dpy, root, 0, 0, (unsigned)sw, BAR_H, 0,
+    {
+        char mode[24];
+        setting_get("chromium", "web_view_mode", "basic", mode, sizeof(mode));
+        island_advanced = strcmp(mode, "advanced") == 0;
+        island_w = desired_island_width();
+    }
+    bar = XCreateWindow(dpy, root, (sw - island_w) / 2, PILL_Y,
+                        (unsigned)island_w, PILL_H, 0,
                         CopyFromParent, InputOutput, CopyFromParent,
                         CWOverrideRedirect | CWBackPixel | CWEventMask, &wa);
     XStoreName(dpy, bar, "jetson_kiosk_bar");
     XDefineCursor(dpy, bar, XCreateFontCursor(dpy, XC_left_ptr));
     gc = XCreateGC(dpy, bar, 0, NULL);
-    bar_buffer = XCreatePixmap(dpy, bar, (unsigned)sw, BAR_H,
+    bar_buffer = XCreatePixmap(dpy, bar, (unsigned)sw, PILL_H,
                                (unsigned)DefaultDepth(dpy, screen));
+    sync_island_geometry();
 
     /* Watch the whole session: every map/configure of a sibling window. */
     XSelectInput(dpy, root, SubstructureNotifyMask);
@@ -2338,14 +1570,13 @@ int main(void)
     {
         char value[16];
         setting_get("display", "volume", "50", value, sizeof(value));
-        quick_volume = atoi(value);
+        session_volume = atoi(value);
         setting_get("display", "muted", "0", value, sizeof(value));
-        quick_muted = atoi(value) != 0 || contains_ci(value, "true");
+        session_muted = atoi(value) != 0 || contains_ci(value, "true");
         setting_get("display", "brightness", "100", value, sizeof(value));
-        quick_brightness = atoi(value);
-        if (quick_brightness < 20) quick_brightness = 20;
-        if (quick_brightness > 100) quick_brightness = 100;
-        read_usage_stats();
+        session_brightness = atoi(value);
+        if (session_brightness < 20) session_brightness = 20;
+        if (session_brightness > 100) session_brightness = 100;
         apply_system_volume();
         apply_x_brightness();
     }
@@ -2355,11 +1586,8 @@ int main(void)
      * has no collapse to continue, and covering the screen would be wrong. */
     if (getenv("JETSON_KIOSK_HANDOFF_URL")) start_handoff();
 
-    int bat_level = 100, bat_charging = 0, wifi = 0, eth = 0;
-    battery_read(&bat_level, &bat_charging);
-    wifi = wifi_signal();
-    eth = ethernet_up();
-    quick_eth_connected = eth;
+    int bat_level = 100, bat_charging = 0;
+    if (island_advanced) battery_read(&bat_level, &bat_charging);
 
     long press_start = 0; /* monotonic ms of a pill ButtonPress, 0 = idle */
     int ticks = 0;
@@ -2367,7 +1595,7 @@ int main(void)
     long menu_opened = 0;
     struct pollfd pfd = {ConnectionNumber(dpy), POLLIN, 0};
 
-    redraw(bat_level, bat_charging, wifi, eth);
+    redraw(bat_level, bat_charging);
     for (;;) {
         int dirty = 0;
         while (XPending(dpy)) {
@@ -2377,7 +1605,6 @@ int main(void)
             case Expose:
                 if (ev.xexpose.count != 0) break;
                 if (ev.xexpose.window == menu) draw_menu();
-                else if (ev.xexpose.window == quick_popup) draw_quick();
                 else if (ev.xexpose.window == transition) draw_transition();
                 else if (ev.xexpose.window == toast) draw_toast(now_ms());
                 else dirty = 1;
@@ -2430,9 +1657,7 @@ int main(void)
                 }
                 break;
             case ButtonPress:
-                if (ev.xbutton.window == quick_popup) {
-                    handle_quick_click(ev.xbutton.x, ev.xbutton.y);
-                } else if (ev.xbutton.window == menu) {
+                if (ev.xbutton.window == menu) {
                     if (ev.xbutton.button == Button4 && menu_scroll > 0) {
                         menu_scroll--;
                         draw_menu();
@@ -2464,24 +1689,7 @@ int main(void)
                     toast_start = 0;
                     if (target != None) start_switch(target);
                 } else if (ev.xbutton.window == bar) {
-                    int pillx = (sw - PILL_W) / 2;
-                    int x = ev.xbutton.x, y = ev.xbutton.y;
-                    int opened = 0;
-                    if (y >= 2 && y <= BAR_H - 2) {
-                        for (int kind = QUICK_CACHE; kind <= QUICK_POWER; kind++) {
-                            if (abs(x - quick_icon_center(kind)) <= 14) {
-                                open_quick(kind);
-                                opened = 1;
-                                break;
-                            }
-                        }
-                    }
-                    if (opened) { press_start = 0; break; }
-                    if (x >= pillx - PILL_HIT && x <= pillx + PILL_W + PILL_HIT &&
-                        y >= PILL_Y - PILL_HIT && y <= PILL_Y + PILL_H + PILL_HIT) {
-                        close_quick();
-                        press_start = now_ms();
-                    } else close_quick();
+                    press_start = now_ms();
                 }
                 break;
             case ButtonRelease: {
@@ -2512,26 +1720,12 @@ int main(void)
             }
         }
         long frame_now = now_ms();
-        if (quick_revision != quick_applied_revision) {
-            quick_applied_revision = quick_revision;
-            if (quick_kind != QUICK_NONE) {
-                quick_dimensions(quick_kind, &quick_w, &quick_h);
-                int qx = quick_icon_center(quick_kind) - quick_w / 2;
-                if (qx < 8) qx = 8;
-                if (qx + quick_w > sw - 8) qx = sw - quick_w - 8;
-                XMoveResizeWindow(dpy, quick_popup, qx, BAR_H + 4,
-                                  (unsigned)quick_w, (unsigned)quick_h);
-                shape_round_corners(quick_popup, quick_w, quick_h, 14);
-                draw_quick();
-            }
-        }
-        if (quick_until && frame_now >= quick_until) close_quick();
         update_menu_animation(frame_now);
         if (menu_hover_anim) draw_menu(); /* clears menu_hover_anim when done */
         update_transition(frame_now);
         update_toast(frame_now);
         if (queue_anim_start) dirty = 1;
-        if (dirty) redraw(bat_level, bat_charging, wifi, eth);
+        if (dirty) redraw(bat_level, bat_charging);
         /* Short poll while the pill is held so the launcher can drop at the
          * long-press threshold instead of waiting for the release. 16 ms
          * animation frames (~60 fps) keep the drop/switch/toast motion
@@ -2553,27 +1747,13 @@ int main(void)
             frame_now = now_ms();
             if (frame_now - last_status >= 1000) {
                 last_status = frame_now;
-                /* Wired link is a sysfs read, not a shell-out, so refresh it
-                 * every second: plugging the cable shows up almost at once,
-                 * matching the firmware bar. Battery/Wi-Fi stay on 5 s. */
-                {
-                    int new_eth = ethernet_up();
-                    if (new_eth != eth) {
-                        eth = new_eth;
-                        quick_eth_connected = eth;
-                        if (quick_kind == QUICK_WIFI && !eth && quick_wifi_on)
-                            start_wifi_scan();
-                        __sync_fetch_and_add(&quick_revision, 1);
-                    }
-                }
-                if (++ticks % 5 == 0) {
+                if (island_advanced && ++ticks % 5 == 0) {
                     battery_read(&bat_level, &bat_charging);
-                    wifi = wifi_signal();
                 }
                 if (menu_open && menu_opened &&
                     frame_now - menu_opened >= MENU_AUTOCLOSE_S * 1000L)
                     close_menu();
-                redraw(bat_level, bat_charging, wifi, eth);
+                redraw(bat_level, bat_charging);
             }
         }
     }

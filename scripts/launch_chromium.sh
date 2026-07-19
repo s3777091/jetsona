@@ -8,9 +8,9 @@
 # Runtime prerequisite (install once on the Jetson):
 #   sudo apt install -y xserver-xorg-video-all xserver-xorg-input-libinput \
 #       x11-xkb-utils x11-xserver-utils xinit openbox onboard curl dbus \
-#       chromium-browser libx11-dev
-# (libx11-dev is a build dependency for tools/kiosk_bar, the Dynamic Island
-# strip + micro-WM that runs on top of Chromium.)
+#       chromium-browser libx11-dev libxext-dev
+# (libx11-dev/libxext-dev build tools/kiosk_bar, the rounded Dynamic Island
+# + micro-WM that floats on top of Chromium.)
 # The HDMI LCD is driven by the stock tegra/nvidia X driver; this script just
 # starts a bare X server (no desktop) with Chromium as its only client, so the
 # default /etc/X11/xorg.conf is reused as-is.
@@ -133,8 +133,8 @@ if [ "${1:-}" = "--x-client" ]; then
         done
     }
 
-    # With the kiosk bar available, run it next to Chromium. The bar draws the
-    # Dynamic Island strip on top and acts as a micro-WM: it hands Chromium the
+    # With the kiosk island available, run it next to Chromium. It draws the
+    # compact floating island on top and acts as a micro-WM: it hands Chromium the
     # X input focus (without it the USB keyboard is dead in a WM-less session)
     # and exits via the app rail's power button. Without the bar, openbox is a
     # best-effort focus/stacking fallback, especially for the touch keyboard.
@@ -142,6 +142,7 @@ if [ "${1:-}" = "--x-client" ]; then
     WM_PID=""
     ONBOARD_PID=""
     PORTAL_WATCH_PID=""
+    STUDIO_LOGIN_CLEANUP_PID=""
     if [ -n "${JETSON_KIOSK_BAR:-}" ] && [ -x "$JETSON_KIOSK_BAR" ]; then
         "$JETSON_KIOSK_BAR" &
         BAR_PID=$!
@@ -152,6 +153,17 @@ if [ "${1:-}" = "--x-client" ]; then
 
     chromium_run "$@" &
     APP_PID=$!
+
+    # The bootstrap contains the password only long enough for Chromium to
+    # submit code-server's normal login form. Its resulting session cookie is
+    # persisted in the firmware browser profile.
+    if [ -n "${JETSON_STUDIO_AUTOLOGIN_FILE:-}" ]; then
+        (
+            sleep 60
+            rm -f -- "$JETSON_STUDIO_AUTOLOGIN_FILE"
+        ) &
+        STUDIO_LOGIN_CLEANUP_PID=$!
+    fi
 
     if [ -n "${JETSON_CAPTIVE_PORTAL_ONBOARD:-}" ] &&
        [ -x "$JETSON_CAPTIVE_PORTAL_ONBOARD" ]; then
@@ -197,6 +209,7 @@ EOF
     {
         trap - EXIT INT TERM HUP
         [ -z "$PORTAL_WATCH_PID" ] || kill "$PORTAL_WATCH_PID" 2>/dev/null || true
+        [ -z "$STUDIO_LOGIN_CLEANUP_PID" ] || kill "$STUDIO_LOGIN_CLEANUP_PID" 2>/dev/null || true
         [ -z "$ONBOARD_PID" ] || kill "$ONBOARD_PID" 2>/dev/null || true
         [ -z "$BAR_PID" ] || kill "$BAR_PID" 2>/dev/null || true
         [ -z "$WM_PID" ] || kill "$WM_PID" 2>/dev/null || true
@@ -204,9 +217,12 @@ EOF
         # Let Chromium shut down cleanly so portal cookies and other persisted
         # sessions reach the profile before Xorg gives the panel back.
         wait "$APP_PID" 2>/dev/null || true
+        [ -z "$STUDIO_LOGIN_CLEANUP_PID" ] || wait "$STUDIO_LOGIN_CLEANUP_PID" 2>/dev/null || true
         [ -z "$ONBOARD_PID" ] || wait "$ONBOARD_PID" 2>/dev/null || true
         [ -z "$BAR_PID" ] || wait "$BAR_PID" 2>/dev/null || true
         [ -z "$WM_PID" ] || wait "$WM_PID" 2>/dev/null || true
+        [ -z "${JETSON_STUDIO_AUTOLOGIN_FILE:-}" ] ||
+            rm -f -- "$JETSON_STUDIO_AUTOLOGIN_FILE"
     }
     trap session_cleanup EXIT
     trap 'exit 130' INT
@@ -279,14 +295,11 @@ if [ -z "$CHROMIUM" ]; then
     exit 1
 fi
 
-# Locate the kiosk status bar (Dynamic Island strip + micro-WM). Installed
+# Locate the kiosk Dynamic Island + micro-WM. Installed
 # next to the firmware; the build tree is checked for the run_fbdev.sh /
-# non-installed path. When found, Chromium runs as a borderless --app window
-# tucked below the 42px strip instead of a full-screen --kiosk (which would
-# paint over the bar); the bar re-asserts that geometry anyway if a page goes
-# full-screen. Long-press the island and tap the rail's trailing power
-# button to exit back to the firmware.
-BAR_H=42
+# non-installed path. When found, Chromium runs as a full-panel borderless
+# --app window and the small island floats over it. Long-press the island and
+# tap the rail's trailing power button to exit back to the firmware.
 PANEL_W="${CHROMIUM_PANEL_WIDTH:-800}"
 PANEL_H="${CHROMIUM_PANEL_HEIGHT:-480}"
 # Prefer whichever copy is NEWEST, not just the installed one. build.sh
@@ -357,6 +370,48 @@ chown -R "$run_identity:$run_group" "$PROFILE_DIR" "$RUNTIME_HOME" \
 chmod 700 "$PROFILE_DIR" "$RUNTIME_HOME" "$RUNTIME_DIR"
 export CHROMIUM_KIOSK_HOME="$RUNTIME_HOME"
 export CHROMIUM_KIOSK_RUNTIME_DIR="$RUNTIME_DIR"
+
+# Keep code-server authentication enabled for normal clients. Only an exact
+# Studio hand-off from the firmware starts at this short-lived local page,
+# which POSTs the password from the firmware-only .env to code-server's normal
+# login endpoint. Other browsers still receive the login screen.
+BROWSER_HOME_URL="$HOME_URL"
+STUDIO_AUTOLOGIN_FILE=""
+if [ -n "${JETSON_STUDIO_URL:-}" ] &&
+   [ -n "${JETSON_STUDIO_PASSWORD:-}" ] &&
+   [ "${HOME_URL%/}" = "${JETSON_STUDIO_URL%/}" ]; then
+    html_escape()
+    {
+        printf '%s' "$1" |
+            sed -e 's/\&/\&amp;/g' \
+                -e 's/</\&lt;/g' \
+                -e 's/>/\&gt;/g' \
+                -e 's/"/\&quot;/g' \
+                -e "s/'/\&#39;/g"
+    }
+
+    STUDIO_AUTOLOGIN_FILE="$RUNTIME_HOME/.studio-autologin.html"
+    studio_action="$(html_escape "${JETSON_STUDIO_URL%/}/login?to=/")"
+    studio_password="$(html_escape "$JETSON_STUDIO_PASSWORD")"
+    umask 077
+    {
+        printf '%s\n' '<!doctype html>'
+        printf '%s\n' '<meta charset="utf-8">'
+        printf '<form method="post" action="%s">\n' "$studio_action"
+        printf '<input type="hidden" name="password" value="%s">\n' "$studio_password"
+        printf '%s\n' '</form>'
+        printf '%s\n' '<script>document.forms[0].submit()</script>'
+    } > "$STUDIO_AUTOLOGIN_FILE"
+    chown "$run_identity:$run_group" "$STUDIO_AUTOLOGIN_FILE"
+    chmod 600 "$STUDIO_AUTOLOGIN_FILE"
+    BROWSER_HOME_URL="file://$STUDIO_AUTOLOGIN_FILE"
+    export JETSON_STUDIO_AUTOLOGIN_FILE="$STUDIO_AUTOLOGIN_FILE"
+    unset studio_action studio_password
+    echo "launch_chromium: prepared firmware-only Studio login"
+fi
+# Never pass the plaintext credential into Chromium, Xorg or the kiosk bar.
+unset JETSON_STUDIO_PASSWORD
+
 # The supervisor serializes kiosk sessions, so any singleton left in the
 # (now persistent) profile is from a dead process. Clearing it up front keeps
 # the extra-URL relaunches from racing a stale lock into a second browser.
@@ -423,9 +478,9 @@ CHROMIUM_FLAGS=(
 )
 if [ -n "$JETSON_KIOSK_BAR" ]; then
     CHROMIUM_FLAGS+=(
-        --app="$HOME_URL"
-        --window-position=0,"$BAR_H"
-        --window-size="$PANEL_W","$((PANEL_H - BAR_H))"
+        --app="$BROWSER_HOME_URL"
+        --window-position=0,0
+        --window-size="$PANEL_W","$PANEL_H"
     )
 else
     # No bar built (libx11-dev missing at build time): legacy full-screen
@@ -439,7 +494,7 @@ else
         --kiosk
         --start-maximized
         --window-size="$PANEL_W","$PANEL_H"
-        "$HOME_URL"
+        "$BROWSER_HOME_URL"
     )
 fi
 
