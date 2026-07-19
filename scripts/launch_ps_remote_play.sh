@@ -38,6 +38,8 @@ export QT_QPA_PLATFORM=xcb
 export QT_QUICK_CONTROLS_MATERIAL_VARIANT="${QT_QUICK_CONTROLS_MATERIAL_VARIANT:-Dense}"
 if [ "$(id -u)" -eq 0 ]; then
     export QTWEBENGINE_DISABLE_SANDBOX="${QTWEBENGINE_DISABLE_SANDBOX:-1}"
+    # Chiaki's PSN login webview is QtWebEngine/Chromium; root launches need
+    # the real Chromium flags too, otherwise PSN Login exits immediately.
     PSRP_QTWEBENGINE_ROOT_FLAGS="--no-sandbox --disable-setuid-sandbox"
 else
     PSRP_QTWEBENGINE_ROOT_FLAGS=""
