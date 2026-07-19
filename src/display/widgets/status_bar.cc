@@ -1339,6 +1339,15 @@ void StatusBar::BuildOrbitMenu() {
 
 void StatusBar::StopOrbitAnimation() {
     if (orbit_orb_) SetOrbitAnimated(orbit_orb_, false);
+    // Every path that dismisses the orbit funnels through here, which makes it
+    // the one reliable place to report "the orbit is gone".
+    NotifyOrbitVisible(false);
+}
+
+void StatusBar::NotifyOrbitVisible(bool visible) {
+    if (orbit_visible_ == visible) return;
+    orbit_visible_ = visible;
+    if (orbit_visibility_cb_) orbit_visibility_cb_(visible, orbit_accent_);
 }
 
 void StatusBar::ToggleAssistantOrbit() {
@@ -1359,6 +1368,7 @@ void StatusBar::ToggleAssistantOrbit() {
 
     ShowQuickMenu(orbit_menu_, nullptr);
     if (orbit_orb_) SetOrbitAnimated(orbit_orb_, true);
+    NotifyOrbitVisible(true);
     // Unlike the quick menus the orbit has no auto-close: it stays until the
     // island is tapped, the dock icon toggles it, or a press lands outside.
     if (quick_menu_timer_) { lv_timer_del(quick_menu_timer_); quick_menu_timer_ = nullptr; }

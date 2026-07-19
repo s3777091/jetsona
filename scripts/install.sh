@@ -57,6 +57,22 @@ sudo install -d -m 700 -o "$chromium_uid" -g "$chromium_gid" \
     /var/lib/jetson-fw/chromium-home \
     /var/lib/jetson-fw/chromium-profile
 
+# Settings store, shared by every launch path (see JETSON_SETTINGS_FILE in
+# config.yaml and the service unit). Older installs left it at
+# $HOME/.jetson-fw/settings.kv, which resolved differently for the systemd boot
+# (HOME=/root) than for a manual `sudo run_fbdev.sh` (HOME=/home/<user>), so the
+# panel booted with defaults while the hand-run kept the customized look. Adopt
+# the newest surviving store once; the originals are left untouched.
+sudo install -d -m 755 /var/lib/jetson-fw
+if [ ! -f /var/lib/jetson-fw/settings.kv ]; then
+    legacy_kv="$(sudo find /root/.jetson-fw /home/*/.jetson-fw -maxdepth 1 \
+        -name settings.kv -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
+    if [ -n "$legacy_kv" ]; then
+        echo "==> Adopting existing settings from $legacy_kv"
+        sudo cp "$legacy_kv" /var/lib/jetson-fw/settings.kv
+    fi
+fi
+
 sudo cp "$BUILD_DIR/jetson_fw" /opt/jetson-fw/
 # Chromium kiosk Dynamic Island + keyboard-focus micro-WM.
 # Optional: only built when libx11-dev was present at cmake time.

@@ -20,6 +20,12 @@ public:
     RemindersView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
     ~RemindersView() override;
 
+    /* Re-read the store and repaint. The list is held in memory and saved
+     * wholesale, so a row written behind this view's back (the agent's
+     * reminder_add tool) would be erased by the next save without this.
+     * Call on the LVGL thread. */
+    void ReloadFromStore();
+
 protected:
     void OnStart() override;
 

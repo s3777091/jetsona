@@ -1,4 +1,5 @@
 #include "tools.h"
+#include "system_tools.h"
 #include "settings.h"
 #include "esp_log.h"
 
@@ -397,12 +398,31 @@ std::string WebOpenTool::Execute(const std::string &args_json) {
 
 std::shared_ptr<ToolRegistry> BuildDefaultToolRegistry() {
     auto reg = std::make_shared<ToolRegistry>();
-    reg->Register(std::make_unique<TaskTool>(TaskTool::Create));
-    reg->Register(std::make_unique<TaskTool>(TaskTool::List));
-    reg->Register(std::make_unique<TaskTool>(TaskTool::Complete));
-    reg->Register(std::make_unique<TaskTool>(TaskTool::Delete));
+
+    /* Device control first: these are what make Ekko an operator rather than a
+     * chatbot, and listing them first also puts them earliest in the tool array
+     * the model sees. */
+    reg->Register(std::make_unique<DeviceStatusTool>());
+    reg->Register(std::make_unique<OpenAppTool>());
+    reg->Register(std::make_unique<VolumeTool>());
+    reg->Register(std::make_unique<BrightnessTool>());
+    reg->Register(std::make_unique<WifiTool>());
+    reg->Register(std::make_unique<MusicTool>());
+    reg->Register(std::make_unique<MusicPlayTool>());
+
+    /* Scheduling. TaskTool's ~/.jetson-fw/tasks.json store is deliberately NOT
+     * registered: it is invisible to every app on the device, so a task saved
+     * there looks lost to the user. calendar_* and reminder_* write the stores
+     * CalendarView and RemindersView actually render. NoteTool still uses the
+     * JSON store, which is fine — notes have no app of their own. */
+    reg->Register(std::make_unique<CalendarTool>(CalendarTool::Add));
+    reg->Register(std::make_unique<CalendarTool>(CalendarTool::List));
+    reg->Register(std::make_unique<ReminderTool>(ReminderTool::Add));
+    reg->Register(std::make_unique<ReminderTool>(ReminderTool::List));
+    reg->Register(std::make_unique<ReminderTool>(ReminderTool::Complete));
     reg->Register(std::make_unique<NoteTool>(NoteTool::Add));
     reg->Register(std::make_unique<NoteTool>(NoteTool::List));
+
     reg->Register(std::make_unique<WebSearchTool>());
     reg->Register(std::make_unique<WebOpenTool>());
     return reg;

@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -33,6 +34,19 @@ std::string EnvOr(const char *name, const std::string &fallback) {
     if (v && v[0]) return std::string(v);
     return fallback;
 }
+
+/* Ekko is the firmware's own operator, not a general chatbot: the tools are the
+ * only way it can touch the device, so the prompt pushes it to act first and
+ * narrate afterwards. Kept short — every turn of the tool loop resends it. */
+constexpr const char *kDefaultSystemPrompt =
+    "Ban la Ekko, tro ly da nang song ben trong firmware cua thiet bi Jetson nay. "
+    "Ban dieu khien thiet bi that: mo ung dung, chinh am luong, xem pin/wifi, "
+    "phat nhac, tao lich va nhac nho. Khi nguoi dung yeu cau mot hanh dong, "
+    "GOI TOOL ngay thay vi hoi lai hoac mo ta cach lam thu cong; chi hoi lai khi "
+    "that su thieu thong tin bat buoc. Ngay hom nay lay tu device_status. "
+    "Khi can thong tin moi tren mang, dung web_search; muon doc ky mot trang ket "
+    "qua thi dung web_open voi URL do. Sau khi tool chay xong, tra loi ngan gon "
+    "bang tieng Viet tu nhien ve ket qua that su da xay ra, khong bia them.";
 } // namespace
 
 LlmClient::LlmClient() {
@@ -44,15 +58,31 @@ LlmClient::~LlmClient() = default;
 
 void LlmClient::ConfigureFromSettings() {
     Settings s("llm", false);
-    base_url_      = EnvOr("OLLAMA_BASE_URL", s.GetString("base_url", "https://ollama.com/v1"));
-    api_key_       = EnvOr("OLLAMA_API_KEY",  s.GetString("api_key", ""));
-    model_         = EnvOr("OLLAMA_MODEL",   s.GetString("model", "qwen2.5:7b"));
-    system_prompt_ = s.GetString("system_prompt",
-        "Ban la tro ly AI tieng Viet, huu ich va thuc tinh. "
-        "Khi nguoi dung muon ghi nho/cong viec/nhac nho, dung tool de luu va quan ly. "
-        "Khi can thong tin moi, dung web_search; muon doc chi tiet mot trang "
-        "ket qua, dung web_open voi URL do. Tra loi ngan gon, tieng Viet tu nhien.");
+    provider_ = EnvOr("LLM_PROVIDER", s.GetString("provider", "ollama"));
+    for (auto &c : provider_) c = (char)std::tolower((unsigned char)c);
+
+    // Per-provider defaults, then the provider's own env vars, then a
+    // provider-agnostic LLM_* override for one-off experiments.
+    const bool openrouter = (provider_ == "openrouter");
+    const char *base_env  = openrouter ? "OPENROUTER_BASE_URL" : "OLLAMA_BASE_URL";
+    const char *key_env   = openrouter ? "OPENROUTER_API_KEY"  : "OLLAMA_API_KEY";
+    const char *model_env = openrouter ? "OPENROUTER_MODEL"    : "OLLAMA_MODEL";
+    const char *base_def  = openrouter ? "https://openrouter.ai/api/v1" : "https://ollama.com/v1";
+    const char *model_def = openrouter ? "google/gemini-2.5-flash" : "qwen2.5:7b";
+
+    base_url_ = EnvOr("LLM_BASE_URL", EnvOr(base_env,  s.GetString("base_url", base_def)));
+    api_key_  = EnvOr("LLM_API_KEY",  EnvOr(key_env,   s.GetString("api_key", "")));
+    model_    = EnvOr("LLM_MODEL",    EnvOr(model_env, s.GetString("model", model_def)));
+    // A stale Settings base_url/model from the other provider would silently
+    // point OpenRouter at ollama.com; fall back to this provider's default.
+    if (openrouter && base_url_.find("ollama.com") != std::string::npos) base_url_ = base_def;
+    while (!base_url_.empty() && base_url_.back() == '/') base_url_.pop_back();
+
+    system_prompt_ = s.GetString("system_prompt", kDefaultSystemPrompt);
     temperature_ = (double)s.GetInt("temperature_x100", 70) / 100.0; // 70 -> 0.7
+
+    ESP_LOGI(TAG, "provider=%s base=%s model=%s key=%s", provider_.c_str(),
+             base_url_.c_str(), model_.c_str(), api_key_.empty() ? "MISSING" : "set");
 }
 
 // ---- Shared HTTP POST ----------------------------------------------------
@@ -68,6 +98,12 @@ static ChatResult DoPost(const std::string &url, const std::string &api_key,
     if (!api_key.empty()) {
         std::string auth = "Authorization: Bearer " + api_key;
         headers = curl_slist_append(headers, auth.c_str());
+    }
+    if (url.find("openrouter.ai") != std::string::npos) {
+        // OpenRouter attributes requests by these two headers; without them the
+        // call still works but shows up unlabelled on the dashboard.
+        headers = curl_slist_append(headers, "HTTP-Referer: https://github.com/s3777091/jetsona");
+        headers = curl_slist_append(headers, "X-Title: jetsona");
     }
 
     std::string resp;
@@ -115,7 +151,16 @@ bool LlmClient::Chat(const std::vector<ChatMessage> &messages,
 ChatResult LlmClient::ChatWithTools(const std::vector<ChatMessage> &messages,
                                     const std::vector<ToolDef> &tools) {
     ChatResult r;
-    if (!Configured()) { r.error = "LLM chua cau hinh (OLLAMA_API_KEY/MODEL)"; return r; }
+    if (!Configured()) {
+        r.error = "LLM chua cau hinh (provider=" + provider_ + ", thieu base_url/model)";
+        return r;
+    }
+    if (api_key_.empty()) {
+        r.error = "Thieu API key cho provider '" + provider_ + "' — dat " +
+                  (provider_ == "openrouter" ? "OPENROUTER_API_KEY" : "OLLAMA_API_KEY") +
+                  " trong .env";
+        return r;
+    }
 
     nlohmann::json body;
     body["model"] = model_;

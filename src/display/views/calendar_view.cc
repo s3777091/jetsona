@@ -128,6 +128,11 @@ void CalendarView::LoadTaskDates() {
     }
 }
 
+void CalendarView::ReloadFromStore() {
+    LoadTaskDates();
+    UpdateGrid();
+}
+
 void CalendarView::SaveTaskDates() {
     Settings s("calendar", true);
     std::string out;

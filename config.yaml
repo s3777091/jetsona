@@ -1,5 +1,15 @@
+# Ekko agent LLM. LLM_PROVIDER picks which credential set below is used:
+#   ollama      -> OLLAMA_* here + OLLAMA_API_KEY in .env      (production)
+#   openrouter  -> OPENROUTER_* here + OPENROUTER_API_KEY in .env
+# Switch to openrouter only to exercise the agent while the Ollama token is
+# out; switch back afterwards. The model must support tool calling either way.
+LLM_PROVIDER: "ollama"
+
 OLLAMA_BASE_URL: "https://ollama.com/v1"
 OLLAMA_MODEL: "gemma4:31b"
+
+OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1"
+OPENROUTER_MODEL: "google/gemini-2.5-flash"
 
 EXA_BASE_URL: "https://api.exa.ai"
 EXA_SEARCH_TYPE: "auto"
@@ -35,7 +45,12 @@ JETSON_WEATHER_NAME: ""
 # Network and local paths.
 JETSON_VPN_EXIT_NODE: "jetsona-vpn"
 JETSON_FILES_HOME: ""
-JETSON_SETTINGS_FILE: ""
+# Absolute path pins the settings store to one file. Left empty it falls back to
+# $HOME/.jetson-fw/settings.kv, and $HOME differs per launch path (systemd sets
+# /root, `sudo run_fbdev.sh` keeps /home/<user>), so boot and manual runs would
+# each read their own store and the panel would come up with stale wallpaper,
+# theme and language -- looking like an older firmware build.
+JETSON_SETTINGS_FILE: "/var/lib/jetson-fw/settings.kv"
 # Captive Portal: HTTP endpoint must normally return an empty 204 response.
 # "auto" opens Onboard only when no physical USB keyboard is detected.
 JETSON_CAPTIVE_PORTAL_PROBE_URL: "http://connectivitycheck.gstatic.com/generate_204"

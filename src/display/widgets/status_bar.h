@@ -83,6 +83,14 @@ public:
      * island entry points. */
     void ToggleAssistantOrbit();
 
+    /* Fired (already under the LVGL lock) whenever the orbit becomes visible or
+     * goes away, including the outside-press and island-tap close paths. The
+     * home screen uses it to bloom the Ekko composer above the dock in step
+     * with the orb. The uint32_t is the active palette's accent color. */
+    void SetOrbitVisibilityCb(std::function<void(bool visible, uint32_t accent)> cb) {
+        orbit_visibility_cb_ = std::move(cb);
+    }
+
 private:
     lv_obj_t *status_strip_ = nullptr;
     lv_obj_t *pill_ = nullptr;
@@ -172,6 +180,10 @@ private:
     lv_obj_t *orbit_orb_ = nullptr;
     lv_obj_t *orbit_label_ = nullptr;
     uint32_t orbit_accent_ = 0xffb24d;
+    std::function<void(bool, uint32_t)> orbit_visibility_cb_;
+    // Deduped so the several close paths that all end in StopOrbitAnimation()
+    // report the transition exactly once.
+    bool orbit_visible_ = false;
     lv_obj_t *active_quick_menu_ = nullptr;
     bool quick_island_open_ = false;
     bool quick_island_closing_ = false;
@@ -272,6 +284,7 @@ private:
     void BuildQuickMenus();
     void BuildOrbitMenu();
     void StopOrbitAnimation();
+    void NotifyOrbitVisible(bool visible);
     lv_obj_t *CreateQuickMenu(int width);
     void RebuildWifiMenu();
     void RebuildBluetoothMenu();

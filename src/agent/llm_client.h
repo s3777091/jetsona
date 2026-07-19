@@ -53,10 +53,19 @@ struct ChatResult {
  * Blocking API: must be called on a worker thread, never the LVGL thread.
  * Non-streaming (stream=false) — we wait for the full reply / tool_calls.
  *
- * Config (highest priority first):
- *   env OLLAMA_API_KEY / OLLAMA_BASE_URL / OLLAMA_MODEL
- *   Settings namespace "llm": api_key, base_url, model, system_prompt, temperature_x100
- * Defaults: base_url=https://ollama.com/v1, model=qwen2.5:7b */
+ * ---- Providers ----
+ * LLM_PROVIDER (env, or Settings "llm"/provider) selects which credential set
+ * is read. Ollama Cloud stays the default; "openrouter" exists so the agent can
+ * be exercised while the Ollama token is exhausted, without touching the
+ * production path:
+ *
+ *   ollama      base OLLAMA_BASE_URL     key OLLAMA_API_KEY     model OLLAMA_MODEL
+ *   openrouter  base OPENROUTER_BASE_URL key OPENROUTER_API_KEY model OPENROUTER_MODEL
+ *
+ * Whatever the provider, per-provider env vars win over the Settings values,
+ * and both lose to an explicit LLM_BASE_URL / LLM_API_KEY / LLM_MODEL override.
+ * Defaults: ollama -> https://ollama.com/v1 + qwen2.5:7b,
+ *           openrouter -> https://openrouter.ai/api/v1 + google/gemini-2.5-flash */
 class LlmClient {
 public:
     LlmClient();
@@ -66,6 +75,7 @@ public:
 
     bool Configured() const { return !base_url_.empty() && !model_.empty(); }
     std::string Model() const { return model_; }
+    std::string Provider() const { return provider_; }
     std::string SystemPrompt() const { return system_prompt_; }
 
     // Plain chat (no tools). Returns true on success with reply in out_reply.
@@ -80,6 +90,7 @@ public:
                              const std::vector<ToolDef> &tools);
 
 private:
+    std::string provider_ = "ollama";
     std::string base_url_;
     std::string api_key_;
     std::string model_;

@@ -131,6 +131,10 @@ bool Ina219::Init() {
 }
 
 bool Ina219::Read(int &level_pct, bool &charging, bool &discharging) {
+    /* A read is a write-pointer/read-value pair on a shared fd, so two threads
+     * interleaving would hand each caller the other's register. The status-bar
+     * poll thread and the agent's battery tool both land here. */
+    std::lock_guard<std::mutex> lk(mtx_);
     if (!Init()) return false;
 
     uint16_t bus_raw = 0;

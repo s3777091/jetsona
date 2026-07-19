@@ -16,7 +16,9 @@
 #include "display/views/terminal_view.h"
 #include "display/views/trash_view.h"
 #include "display/views/wifi_settings_view.h"
+#include "display/widgets/ekko_bar.h"
 #include "agent/conversation.h"
+#include "agent/device_bridge.h"
 #include "app/boot_prefetch.h"
 #include "application.h"
 #include "media/player_controller.h"
@@ -198,6 +200,21 @@ Ds02HomeDisplay::Ds02HomeDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_pan
       wifi_(wifi), bluetooth_(bluetooth) {}
 
 Ds02HomeDisplay::~Ds02HomeDisplay() {
+    /* Drop the hooks that call back into this object before any member is
+     * destroyed. StatusBar outlives ekko_bar_ (members die in reverse
+     * declaration order) and its teardown collapses the island, which would
+     * otherwise reach a half-destroyed display through the orbit callback.
+     * The agent's worker thread can be mid-tool at the same time, so
+     * DeviceBridge's handlers have to go too. */
+    if (status_bar_) status_bar_->SetOrbitVisibilityCb(nullptr);
+    auto &bridge = jetson::DeviceBridge::Instance();
+    bridge.SetAppOpener(nullptr);
+    bridge.SetNotifier(nullptr);
+    bridge.SetVolumeSetter(nullptr);
+    bridge.SetBrightnessSetter(nullptr);
+    bridge.SetReminderReloader(nullptr);
+    bridge.SetCalendarReloader(nullptr);
+
     if (refresh_timer_) { esp_timer_stop(refresh_timer_); esp_timer_delete(refresh_timer_); }
     if (splash_) {
         lv_anim_delete(splash_, OnSplashOpa);
@@ -220,6 +237,8 @@ void Ds02HomeDisplay::SetupUI() {
     CreateDrawerObjects();
     CreateSystemBarObjects();
     CreateDockObjects();
+    CreateEkkoBar();
+    RegisterAgentBridge();
 
     // A simulated screen-off surface above the home UI but below app overlays.
     // It consumes taps so an accidental touch cannot launch a dock app while
@@ -762,6 +781,93 @@ void Ds02HomeDisplay::CreateDockObjects() {
     }
 }
 
+std::shared_ptr<jetson::Conversation> Ds02HomeDisplay::EnsureConversation() {
+    if (!chat_conv_) {
+        chat_conv_ = std::make_shared<jetson::Conversation>();
+        chat_conv_->SetTools(jetson::BuildDefaultToolRegistry());
+    }
+    return chat_conv_;
+}
+
+void Ds02HomeDisplay::CreateEkkoBar() {
+    /* Lives on lv_layer_top() beside the island rather than on root_, so it
+     * stays usable while an app overlay covers the dock -- the orbit it belongs
+     * to is drawn there too. Sits directly above the dock. */
+    ekko_bar_ = std::make_unique<EkkoBar>(lv_layer_top(), width_,
+                                          kDockBottomMargin + kDockHeight + 10,
+                                          EnsureConversation());
+
+    if (!status_bar_) return;
+    status_bar_->SetOrbitVisibilityCb([this](bool visible, uint32_t accent) {
+        // Already on the LVGL thread under the lock (StatusBar's contract).
+        if (!ekko_bar_) return;
+        if (visible) {
+            ekko_bar_->SetAccent(accent);
+            ekko_bar_->Show();
+        } else {
+            ekko_bar_->Hide();
+        }
+    });
+}
+
+void Ds02HomeDisplay::RegisterAgentBridge() {
+    /* Everything the agent's tools can do to this display. The handlers run on
+     * the main loop (DeviceBridge marshals them there), so they may touch LVGL
+     * through the usual lock guards. */
+    auto &bridge = jetson::DeviceBridge::Instance();
+
+    bridge.SetAppOpener([this](const std::string &id) {
+        if (id == "calendar")            OpenCalendar();
+        else if (id == "reminders")      OpenReminders();
+        else if (id == "music")          OpenMusic();
+        else if (id == "documents")      OpenDocuments();
+        else if (id == "settings")       OpenSettings();
+        else if (id == "terminal")       OpenTerminal();
+        else if (id == "trash")          OpenTrash();
+        else if (id == "chat")           OpenChat();
+        else if (id == "gallery")        OpenBackgroundGallery();
+        else if (id == "wifi")           OpenWifiSettings();
+        else if (id == "bluetooth")      OpenBluetoothSettings();
+        else if (id == "pods")           OpenPods();
+        else if (id == "studio")         OpenStudio();
+        else if (id == "ps_remote_play") OpenPsRemotePlay();
+        else if (id == "browser")        OpenChromium();
+        else if (id == "lock_screen")    OpenLockScreen();
+        else ESP_LOGW(TAG, "agent asked for unknown app id '%s'", id.c_str());
+    });
+
+    bridge.SetNotifier([this](const std::string &text) {
+        ShowNotification(text.c_str(), 2500);
+    });
+
+    // Same three sinks the status-bar slider drives, so the agent and the
+    // slider can never disagree about the current level.
+    bridge.SetVolumeSetter([this](int volume, bool muted) {
+        volume_muted_ = muted;
+        auto &player = jetson::music::PlayerController::Instance();
+        player.SetVolume(volume);
+        player.SetMuted(muted);
+        Board::GetInstance().GetAudioCodec()->SetOutputState(volume, muted);
+        // The status bar persists the same two keys when its slider moves, and
+        // re-reads them every time the sound menu opens, so writing here is what
+        // keeps the popover in sync with an agent-driven change.
+        Settings w("display", true);
+        w.SetInt("volume", volume);
+        w.SetBool("muted", muted);
+    });
+
+    bridge.SetBrightnessSetter([this](int percent) { SetBrightness(percent); });
+
+    // Only meaningful while the matching app is open; see DeviceBridge's note
+    // on why a live view must re-read the store the agent just wrote.
+    bridge.SetReminderReloader([this]() {
+        if (reminders_view_) reminders_view_->ReloadFromStore();
+    });
+    bridge.SetCalendarReloader([this]() {
+        if (calendar_view_) calendar_view_->ReloadFromStore();
+    });
+}
+
 void Ds02HomeDisplay::SetDockActive(int index) {
     dock_active_index_ = index;
     for (size_t i = 0; i < kDockItemCount; ++i) {
@@ -1084,12 +1190,8 @@ void Ds02HomeDisplay::OpenChat() {
     DisplayLockGuard lock(this);
     if (chat_view_) { RestoreApp(kAppChat); return; }
     if (!root_) root_ = lv_screen_active();
-    if (!chat_conv_) {
-        chat_conv_ = std::make_shared<jetson::Conversation>();
-        chat_conv_->SetTools(jetson::BuildDefaultToolRegistry());
-    }
     chat_view_ = std::make_shared<ChatView>(
-        root_, width_, height_, chat_conv_,
+        root_, width_, height_, EnsureConversation(),
         [this]() { chat_view_.reset(); OnAppClosed(kAppChat); });
     chat_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppChat); });
     chat_view_->Start();

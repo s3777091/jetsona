@@ -221,6 +221,11 @@ void RemindersView::Load() {
     }
 }
 
+void RemindersView::ReloadFromStore() {
+    Load();
+    Render();
+}
+
 void RemindersView::Save() const {
     std::ostringstream out;
     for (size_t i = 0; i < tasks_.size(); ++i) {

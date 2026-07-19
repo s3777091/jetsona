@@ -3,6 +3,7 @@
 #include "media/music_types.h"
 
 #include <string>
+#include <vector>
 
 namespace jetson {
 
@@ -20,6 +21,13 @@ public:
     ZingMusicClient();
 
     bool FetchDiscover(music::DiscoverData &out, std::string &err);
+    /* Full-text song search, best match first. Returns at most `limit` tracks
+     * with id/title/artist/artwork_url filled; streaming_url and artwork_path
+     * are left empty for the caller to resolve (PlayerController already does
+     * the former when a queue is played). False with `err` set when the API
+     * rejects the request or nothing matched. */
+    bool SearchSongs(const std::string &query, int limit,
+                     std::vector<music::Track> &out, std::string &err);
     bool FetchAlbum(const std::string &id, music::Album &out, std::string &err);
     /* Download the per-track covers after album metadata is already visible.
      * This is intentionally separate from FetchAlbum: a large playlist must

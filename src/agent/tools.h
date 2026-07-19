@@ -76,7 +76,13 @@ private:
     std::string data_json_;
 };
 
-/* Tool wrappers around TaskStore. */
+/* Tool wrappers around TaskStore.
+ *
+ * NOT registered by BuildDefaultToolRegistry any more: tasks.json is invisible
+ * to every app on the device, so a task saved through these looked lost to the
+ * user. Scheduling now goes through system_tools.h's calendar_* / reminder_*,
+ * which write the stores CalendarView and RemindersView actually render.
+ * NoteTool below still uses TaskStore, which is why it stays. */
 class TaskTool : public Tool {
 public:
     enum Op { Create, List, Complete, Delete };

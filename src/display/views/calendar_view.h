@@ -26,6 +26,12 @@ class CalendarView : public OverlayView {
 public:
     CalendarView(lv_obj_t *parent, int width, int height, ClosedCb on_closed);
 
+    /* Re-read the date index and repaint the grid so an event written behind
+     * this view's back (the agent's calendar_add tool) gets its dot. Per-day
+     * task lists are loaded on demand, so nothing else needs invalidating.
+     * Call on the LVGL thread. */
+    void ReloadFromStore();
+
 protected:
     void OnStart() override;
     void OnResize(int w, int h) override;

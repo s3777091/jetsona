@@ -52,6 +52,14 @@ constexpr char kDefaultBaseUrl[] = "https://zingmp3.vn";
 constexpr char kHomeEndpoint[] = "/api/v2/page/get/home";
 constexpr char kPlaylistEndpoint[] = "/api/v2/page/get/playlist";
 constexpr char kStreamingEndpoint[] = "/api/v2/song/get/streaming";
+/* Search has two shapes upstream. "multi" is what the site's own search box
+ * calls and returns songs/artists/playlists together; the typed endpoint is the
+ * older paginated one. Zing has rotated between them, so SearchSongs tries
+ * multi first and falls back rather than betting on either. `q` is a request
+ * parameter only -- IsSignatureParameter deliberately leaves it out of the
+ * signed canonical string. */
+constexpr char kSearchMultiEndpoint[] = "/api/v2/search/multi";
+constexpr char kSearchEndpoint[] = "/api/v2/search";
 constexpr char kTop100Endpoint[] = "/api/v2/page/get/top-100";
 constexpr char kRadioEndpoint[] = "/api/v2/page/get/radio";
 
@@ -1186,6 +1194,107 @@ bool ZingMusicClient::FetchDiscover(DiscoverData &out, std::string &err) {
     }
     err.clear();
     return true;
+}
+
+bool ZingMusicClient::SearchSongs(const std::string &query, int limit,
+                                  std::vector<Track> &out, std::string &err) {
+    ReloadConfig();
+    out.clear();
+
+    const size_t begin = query.find_first_not_of(" \t\r\n");
+    const std::string q =
+        begin == std::string::npos
+            ? std::string()
+            : query.substr(begin, query.find_last_not_of(" \t\r\n") - begin + 1);
+    if (q.empty()) { err = "Zing search query is empty"; return false; }
+    if (limit <= 0) limit = 10;
+
+    ClientConfig config{version_, api_key_, secret_key_, base_url_, cookies_,
+                        artwork_cache_dir_};
+
+    struct Attempt {
+        const char *endpoint;
+        const char *songs_key;   // where that endpoint puts its song list
+        std::map<std::string, std::string> params;
+    };
+    /* Verified against the live API: multi answers with data.songs, the typed
+     * endpoint with data.items, both plain arrays already in relevance order. */
+    const Attempt attempts[] = {
+        {kSearchMultiEndpoint, "songs", {{"q", q}}},
+        {kSearchEndpoint, "items", {{"q", q},
+                                    {"type", "song"},
+                                    {"page", "1"},
+                                    {"count", std::to_string(limit)}}},
+    };
+
+    std::string last_err;
+    for (const auto &attempt : attempts) {
+        json data;
+        if (!RequestApi(config, attempt.endpoint, attempt.params, data, err)) {
+            last_err = err;
+            continue;
+        }
+
+        /* Read the endpoint's own song list rather than walking the whole
+         * document. A multi response also carries an `artists` section listing
+         * each matched artist's popular tracks, and that section comes first --
+         * a blind collector returns the artist's back catalogue instead of the
+         * search hits, silently playing the wrong song. Fall back to the
+         * collector only when the expected key is missing, so a future key
+         * rename degrades to "roughly right" instead of "no results". */
+        std::vector<const json *> candidates;
+        const json *songs = nullptr;
+        if (data.is_object()) {
+            auto it = data.find(attempt.songs_key);
+            if (it != data.end()) songs = &*it;
+        }
+        if (songs && songs->is_object()) {
+            auto items = songs->find("items");
+            songs = (items != songs->end()) ? &*items : nullptr;
+        }
+        if (songs && songs->is_array()) {
+            for (const auto &entry : *songs) candidates.push_back(&entry);
+        } else {
+            ESP_LOGW(TAG, "Zing search: no data.%s array, falling back to scan",
+                     attempt.songs_key);
+            CollectCandidates(data, candidates);
+        }
+
+        for (const json *item : candidates) {
+            if (!item || !LooksLikeSong(*item)) continue;
+
+            Track track;
+            track.id = JsonString(*item, {"encodeId", "id"});
+            track.title = JsonString(*item, {"title", "name"});
+            if (track.id.empty() || track.title.empty()) continue;
+
+            // Multi-search can list the same song under several sections.
+            bool duplicate = false;
+            for (const auto &seen : out)
+                if (seen.id == track.id) { duplicate = true; break; }
+            if (duplicate) continue;
+
+            track.artist = JsonString(*item, {"artistsNames", "artist", "creator"});
+            auto album = item->find("album");
+            if (album != item->end() && album->is_object())
+                track.album = JsonString(*album, {"title", "name"});
+            track.artwork_url =
+                JsonString(*item, {"thumbnailM", "thumbnail", "thumbnailR"});
+            auto duration = item->find("duration");
+            if (duration != item->end())
+                track.duration_ms = static_cast<int64_t>(JsonInt(*duration)) * 1000LL;
+            track.premium = IsPremium(*item);
+
+            out.push_back(std::move(track));
+            if (static_cast<int>(out.size()) >= limit) break;
+        }
+
+        if (!out.empty()) { err.clear(); return true; }
+    }
+
+    err = last_err.empty() ? ("Zing không tìm thấy bài nào cho \"" + q + "\"")
+                           : last_err;
+    return false;
 }
 
 bool ZingMusicClient::FetchAlbum(const std::string &id, Album &out,

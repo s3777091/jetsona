@@ -27,6 +27,7 @@ class BluetoothSettingsView;
 class CalendarView;
 class ChatView;
 class DocumentsView;
+class EkkoBar;
 class LockScreenView;
 class MusicView;
 class OverlayView;
@@ -166,6 +167,11 @@ private:
     void CreateDrawerObjects();
     void CreateSystemBarObjects();
     void CreateDockObjects();
+    /* The Ekko composer strip and the agent's hooks into this display. Both
+     * run after the dock exists, since the strip is positioned from it. */
+    void CreateEkkoBar();
+    void RegisterAgentBridge();
+    std::shared_ptr<jetson::Conversation> EnsureConversation();
     void SetDockActive(int index);
     void CheckIdleDim();
     void ApplyStandbyState();
@@ -272,7 +278,10 @@ private:
     std::shared_ptr<PsRemotePlayView> ps_remote_play_view_;
     std::shared_ptr<PodsView> pods_view_;
     std::shared_ptr<LockScreenView> lock_screen_view_;
+    /* One Conversation shared by the Ekko composer above the dock and the
+     * full-screen Ekko app, so the same history and tool loop back both. */
     std::shared_ptr<jetson::Conversation> chat_conv_;
+    std::unique_ptr<EkkoBar> ekko_bar_;
 
     lv_obj_t *app_grid_ = nullptr;
     lv_obj_t *drawer_page_indicator_ = nullptr;

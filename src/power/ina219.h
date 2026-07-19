@@ -35,6 +35,7 @@
  */
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 class Ina219 {
@@ -59,6 +60,8 @@ private:
     bool ReadReg16(uint8_t reg, uint16_t &out);
     bool WriteReg16(uint8_t reg, uint16_t val);
 
+    // Serializes Read(); see the comment there. Init()/Reset() are startup-only.
+    std::mutex  mtx_;
     int         fd_ = -1;
     std::string bus_path_;
     uint8_t     addr_ = 0x42;
