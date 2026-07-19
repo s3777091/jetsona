@@ -23,18 +23,28 @@ fi
 jetson_load_config "${JETSON_CONFIG_FILE:-$JETSON_DIR/config.yaml}"
 jetson_load_secrets "${JETSON_ENV_FILE:-$JETSON_DIR/.env}"
 
+# Resolve the build tree exactly like build.sh and install.sh do. Preferring a
+# hardcoded build-fbdev/ here silently ran a stale binary: build.sh writes to
+# build/ by default, so after a rebuild this script kept launching whatever old
+# firmware happened to sit in build-fbdev/, and the panel came up as an "older
+# version" that no rebuild could fix.
+BUILD_DIR="${JETSON_BUILD_DIR:-$JETSON_DIR/build}"
+case "$BUILD_DIR" in
+    /*) ;;
+    *) BUILD_DIR="$JETSON_DIR/$BUILD_DIR" ;;
+esac
+
 if [ -n "${JETSON_FW_BIN:-}" ]; then
     FW="$JETSON_FW_BIN"
-elif [ -x "$JETSON_DIR/build-fbdev/jetson_fw" ]; then
-    FW="$JETSON_DIR/build-fbdev/jetson_fw"
 else
-    FW="$JETSON_DIR/build/jetson_fw"
+    FW="$BUILD_DIR/jetson_fw"
 fi
 
 if [ ! -x "$FW" ]; then
     echo "run_fbdev: firmware binary not found: $FW" >&2
     echo "Build it first:" >&2
-    echo "  JETSON_BUILD_DIR=build-fbdev JETSON_DISPLAY_BACKEND=FBDEV bash scripts/build.sh" >&2
+    echo "  bash scripts/build.sh" >&2
+    echo "(JETSON_DISPLAY_BACKEND and JETSON_BUILD_DIR come from config.yaml)" >&2
     exit 1
 fi
 
