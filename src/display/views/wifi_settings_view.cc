@@ -1,6 +1,7 @@
 #include "display/views/wifi_settings_view.h"
 #include "display/common/lvgl_utils.h"
 #include "display/common/signal_bars.h"
+#include "display/core/app_icons.h"
 #include "fonts.h"
 #include "esp_log.h"
 #include "lvgl_runtime.h"
@@ -189,7 +190,8 @@ void WifiSettingsView::BuildUi() {
 
     kb_textarea_ = lv_textarea_create(kb_panel_);
     lv_obj_set_pos(kb_textarea_, 8, 30);
-    lv_obj_set_size(kb_textarea_, width_ - 16 - 176, 40);
+    // Leave 48px to the right of the field for the show/hide-password eye.
+    lv_obj_set_size(kb_textarea_, width_ - 16 - 176 - 48, 40);
     lv_obj_set_style_text_font(kb_textarea_, &BUILTIN_TEXT_FONT, 0);
     lv_textarea_set_placeholder_text(kb_textarea_, "Mật khẩu...");
     lv_textarea_set_password_mode(kb_textarea_, true);
@@ -197,6 +199,18 @@ void WifiSettingsView::BuildUi() {
     lv_textarea_set_max_length(kb_textarea_, 63);
     /* Let the USB keyboard type the WiFi password via the keypad group. */
     if (auto *g = jetson::LvglRuntime::Instance().keypad_group()) lv_group_add_obj(g, kb_textarea_);
+
+    // Show/hide password toggle: an eye icon button sitting just left of the
+    // Connect button. Tapping flips password_mode so **** becomes plaintext.
+    kb_eye_btn_ = lv_button_create(kb_panel_);
+    lv_obj_set_size(kb_eye_btn_, 40, 40);
+    lv_obj_align(kb_eye_btn_, LV_ALIGN_TOP_RIGHT, -184, 30);
+    lv_obj_set_style_bg_color(kb_eye_btn_, Color(0x2a2d33), 0);
+    lv_obj_add_event_cb(kb_eye_btn_, OnEyeToggle, LV_EVENT_CLICKED, this);
+    kb_eye_img_ = jetson::ui::CreateAppIcon(kb_eye_btn_, "eye", 22);
+    lv_obj_set_style_image_recolor(kb_eye_img_, Color(0x9aa0a6), 0);
+    lv_obj_set_style_image_recolor_opa(kb_eye_img_, LV_OPA_COVER, 0);
+    lv_obj_center(kb_eye_img_);
 
     kb_connect_btn_ = lv_button_create(kb_panel_);
     lv_obj_set_size(kb_connect_btn_, 80, 40);
@@ -341,6 +355,10 @@ void WifiSettingsView::ShowKeyboardFor(const std::string &ssid) {
     pending_ssid_ = ssid;
     if (kb_ssid_label_) lv_label_set_text(kb_ssid_label_, ("Mật khẩu cho: " + ssid).c_str());
     if (kb_textarea_) lv_textarea_set_text(kb_textarea_, "");
+    // Always start masked; the eye toggle is per-session, not sticky.
+    kb_password_hidden_ = true;
+    if (kb_textarea_) lv_textarea_set_password_mode(kb_textarea_, true);
+    if (kb_eye_img_) lv_obj_set_style_image_recolor_opa(kb_eye_img_, LV_OPA_COVER, 0);
     if (kb_panel_) lv_obj_clear_flag(kb_panel_, LV_OBJ_FLAG_HIDDEN);
     if (kb_keyboard_) lv_keyboard_set_textarea(kb_keyboard_, kb_textarea_);
     if (kb_textarea_) lv_group_focus_obj(kb_textarea_);
@@ -433,6 +451,21 @@ void WifiSettingsView::OnCancel(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<WifiSettingsView *>(lv_event_get_user_data(e));
     self->HideKeyboard();
+}
+
+void WifiSettingsView::OnEyeToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<WifiSettingsView *>(lv_event_get_user_data(e));
+    if (!self || !self->kb_textarea_) return;
+    self->kb_password_hidden_ = !self->kb_password_hidden_;
+    lv_textarea_set_password_mode(self->kb_textarea_, self->kb_password_hidden_);
+    // Dim the eye when the password is shown in plain text, full when masked,
+    // so the icon doubles as a state indicator without needing a second asset.
+    if (self->kb_eye_img_) {
+        lv_obj_set_style_image_recolor_opa(
+            self->kb_eye_img_,
+            self->kb_password_hidden_ ? LV_OPA_COVER : (lv_opa_t)LV_OPA_40, 0);
+    }
 }
 
 } // namespace home

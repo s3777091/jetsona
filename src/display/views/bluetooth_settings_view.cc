@@ -236,10 +236,45 @@ void BluetoothSettingsView::StartScan() {
     ESP_LOGI(TAG, "scan requested");
     std::thread([self = shared_from_this()]() {
         const bool available = self->bluetooth_.Available();
+
+        // Phase 1: previously paired ("saved") devices come straight from
+        // BlueZ's bonding store in ~1-2 s. Render them right away so old
+        // devices are visible and tappable while discovery still runs —
+        // before this, the list stayed empty for the whole 8 s scan and
+        // looked as if paired devices had been forgotten.
+        std::vector<jetson::BtDevice> paired;
+        if (available) {
+            paired = self->bluetooth_.PairedDevices();
+            if (!paired.empty()) {
+                LvglLockGuard lock;
+                if (self->closed_.load()) {
+                    self->scanning_ = false;
+                    return;
+                }
+                self->RenderList(paired);
+                self->SetStatus("Thiết bị đã lưu — đang quét thêm...");
+            }
+        }
+
+        // Phase 2: full discovery.
         std::vector<jetson::BtDevice> devs;
         std::string error;
         if (available) devs = self->bluetooth_.Scan(8);
         error = self->bluetooth_.LastError();
+
+        // Discovery output wins, but never lose a paired device it dropped
+        // (device asleep, or BlueZ named the scan result after its own MAC).
+        for (const auto &p : paired) {
+            const bool found = std::any_of(devs.begin(), devs.end(),
+                [&](const jetson::BtDevice &d) { return d.address == p.address; });
+            if (!found) devs.push_back(p);
+        }
+        std::sort(devs.begin(), devs.end(),
+                  [](const jetson::BtDevice &a, const jetson::BtDevice &b) {
+            if (a.connected != b.connected) return a.connected;
+            if (a.paired != b.paired) return a.paired;
+            return a.rssi > b.rssi;
+        });
 
         LvglLockGuard lock;
         self->scanning_ = false;

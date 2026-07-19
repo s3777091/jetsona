@@ -65,6 +65,11 @@ INA219_CHARGE_MA: "50"
 CHIAKI_BIN: "/home/ekkohuynh/chiaki-ng/chiaki-ng"
 PS_REMOTE_PLAY_HOME: "/var/lib/jetson-fw/chiaki"
 PS_REMOTE_PLAY_STATE_FILE: "/var/lib/jetson-fw/ps-remote-play.conf"
+# PSN account id (8-byte base64, e.g. from https://psn.flipscreen.games or the
+# chiaki-ng docs). With this set AND a chiaki-cli binary present, the firmware
+# registers the PS5 fully headless from the in-app IP + PIN form. When either
+# piece is missing the launcher opens chiaki's own setup screen once instead.
+PS_REMOTE_PLAY_PSN_ACCOUNT_ID: ""
 PS_REMOTE_PLAY_AUDIO_DRIVER: "alsa"
 PS_REMOTE_PLAY_HW_DECODER: "software"
 PS_REMOTE_PLAY_RENDER_BACKEND: "vulkan"

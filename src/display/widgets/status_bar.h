@@ -103,7 +103,10 @@ private:
     lv_obj_t *media_elapsed_ = nullptr;
     lv_obj_t *media_remaining_ = nullptr;
     lv_obj_t *media_toggle_label_ = nullptr;
+    // Pre-decoded now-playing artwork, one copy per island size (30 px
+    // compact / 48 px expanded). See LoadMediaArtwork.
     std::unique_ptr<LvglImage> media_artwork_;
+    std::unique_ptr<LvglImage> media_artwork_small_;
     std::string media_artwork_path_;
     uint64_t media_revision_ = 0;
     lv_obj_t *left_cluster_ = nullptr;

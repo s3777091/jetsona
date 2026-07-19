@@ -61,4 +61,20 @@ private:
 /* Load an image file (PNG/JPG/GIF) from disk into an owning LvglRawImage. */
 std::unique_ptr<LvglImage> LvglImageFromFile(const std::string &path);
 
+/* Decode a JPEG/PNG file completely into raw pixels and cover-fit it so the
+ * SHORTER side equals box_px (aspect ratio preserved; the longer side
+ * overflows the box and is meant to be clipped by the host object). The
+ * returned descriptor is fully decoded (RGB888 for JPEG, ARGB8888 for PNG):
+ * it draws as a plain blit with scale=256, is never re-decoded per frame and
+ * needs no LVGL transform.
+ *
+ * Why this exists: LVGL 9.2's built-in TJPGD decoder streams JPEG files and
+ * in-memory JPEGs MCU-by-MCU (get_area). Combining that streaming path with
+ * lv_image_set_scale intersects untransformed decode strips with the
+ * transformed screen area — covers render blank (the music "missing artwork"
+ * bug) and the sw renderer can read past the strip buffer (the album
+ * pull-to-refresh crash). Decoding up-front side-steps that decoder entirely.
+ * Returns nullptr when the file is missing or not a baseline JPEG/PNG. */
+std::unique_ptr<LvglImage> LvglImageFromFileFit(const std::string &path, int box_px);
+
 #endif

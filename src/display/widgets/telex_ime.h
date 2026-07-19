@@ -39,6 +39,8 @@ public:
     // Delete the last UTF-8 codepoint.
     void Backspace();
     void Clear() { buf_.clear(); }
+    // Replace the buffer wholesale (pre-filling a field with a stored value).
+    void SetText(std::string text) { buf_ = std::move(text); }
     const std::string &Text() const { return buf_; }
     void SetMaxLen(size_t n) { max_len_ = n; }
 
@@ -66,6 +68,7 @@ public:
     void SetPlaceholder(const char *text);
     void SetFont(const lv_font_t *font);
     void Clear() { ime_.Clear(); Refresh(); }
+    void SetText(const std::string &text) { ime_.SetText(text); Refresh(); }
     const std::string &Text() const { return ime_.Text(); }
     void Focus();
 

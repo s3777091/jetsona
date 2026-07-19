@@ -34,9 +34,12 @@ cat > "$FAKE_CHIAKI" <<'EOF'
 #!/bin/bash
 case " $* " in
     *" --help "*)
-        echo "--exit-app-on-stream-exit"
+        echo "--exit-app-on-stream-exit --registkey --morning"
         ;;
     *" list "*)
+        # FAKE_CHIAKI_NO_LIST simulates a client with no registered console
+        # in its own config (the headless-registration scenario).
+        [ -n "${FAKE_CHIAKI_NO_LIST:-}" ] && exit 0
         # Upstream intentionally prints a space before the newline.
         printf 'Host: PS5 Living Room \n'
         ;;
@@ -46,6 +49,20 @@ case " $* " in
 esac
 EOF
 chmod 700 "$FAKE_CHIAKI"
+
+# chiaki-cli sibling used by the headless registration leg.
+FAKE_CLI="$TMP_ROOT/chiaki-cli"
+cat > "$FAKE_CLI" <<'EOF'
+#!/bin/bash
+case " $* " in
+    *" regist "*)
+        echo "[I] Regist successful"
+        echo "[I] RP-RegistKey: 1a2b3c4d"
+        echo "[I] RP-Key: 000102030405060708090a0b0c0d0e0f"
+        ;;
+esac
+EOF
+chmod 700 "$FAKE_CLI"
 
 export CHIAKI_BIN="$FAKE_CHIAKI"
 export PS_REMOTE_PLAY_HOME="$TMP_ROOT/home"

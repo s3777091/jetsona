@@ -58,53 +58,10 @@ bool HasAnyRail(const jetson::music::DiscoverData &d) {
            !d.radio.empty();
 }
 
-bool HasArtworkFileExtension(const std::string &path) {
-    const size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos) return false;
-    std::string extension = path.substr(dot + 1);
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return extension == "jpg" || extension == "jpeg" || extension == "png";
-}
-
 void RemoveInteraction(lv_obj_t *obj) {
     if (!obj) return;
     lv_obj_clear_flag(obj,
         (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-}
-
-void ImageDimensions(const lv_img_dsc_t *dsc, int &w, int &h) {
-    w = h = 240;
-    if (!dsc || !dsc->data || dsc->data_size < 24) return;
-    const uint8_t *d = dsc->data;
-    const size_t n = dsc->data_size;
-    if (d[0] == 0x89 && d[1] == 0x50) {
-        w = (d[16] << 24) | (d[17] << 16) | (d[18] << 8) | d[19];
-        h = (d[20] << 24) | (d[21] << 16) | (d[22] << 8) | d[23];
-        return;
-    }
-    if (d[0] != 0xff || d[1] != 0xd8) return;
-    size_t p = 2;
-    while (p + 8 < n) {
-        if (d[p] != 0xff) { ++p; continue; }
-        while (p < n && d[p] == 0xff) ++p;
-        if (p >= n) break;
-        const uint8_t marker = d[p++];
-        if (marker == 0xd8 || marker == 0xd9) continue;
-        if (p + 2 > n) break;
-        const size_t len = (static_cast<size_t>(d[p]) << 8) | d[p + 1];
-        if (len < 2 || p + len > n) break;
-        const bool sof = (marker >= 0xc0 && marker <= 0xc3) ||
-                         (marker >= 0xc5 && marker <= 0xc7) ||
-                         (marker >= 0xc9 && marker <= 0xcb) ||
-                         (marker >= 0xcd && marker <= 0xcf);
-        if (sof && len >= 7) {
-            h = (d[p + 3] << 8) | d[p + 4];
-            w = (d[p + 5] << 8) | d[p + 6];
-            return;
-        }
-        p += len;
-    }
 }
 
 lv_obj_t *MakeIconButton(lv_obj_t *parent, const char *symbol,
@@ -278,49 +235,32 @@ lv_obj_t *MusicView::CreateArtwork(lv_obj_t *parent, const std::string &path,
 
     if (path.empty()) return host;
 
-    auto *obj = lv_image_create(host);
-    int w = 0;
-    int h = 0;
-
-    /* New artwork cache entries keep their real .jpg/.png extension. Let
-     * LVGL open those files directly: TJPGD then parses the JPEG header itself
-     * and does not depend on the stricter in-memory JFIF detector. Keep the
-     * descriptor path below for old .img cache entries and user albums saved
-     * by an earlier firmware. */
-    if (HasArtworkFileExtension(path)) {
-        lv_image_header_t header {};
-        if (lv_image_decoder_get_info(path.c_str(), &header) != LV_RESULT_OK ||
-            header.w == 0 || header.h == 0) {
-            lv_obj_delete(obj);
-            return host;
-        }
-        w = static_cast<int>(header.w);
-        h = static_cast<int>(header.h);
-        lv_image_set_src(obj, path.c_str());
+    /* Every cover (fresh .jpg/.png cache entries AND legacy .img files from
+     * older firmwares/user albums) is decoded ONCE into raw pixels already
+     * scaled to this box, then cached per path+size for the lifetime of the
+     * page. Never hand LVGL a JPEG file path or encoded descriptor combined
+     * with lv_image_set_scale: LVGL 9.2's TJPGD streams MCU strips and the sw
+     * renderer cannot transform those — covers rendered blank ("music không
+     * load được ảnh") and a mid-draw strip could be read out of bounds (the
+     * album pull-to-refresh crash). */
+    const std::string cache_key = path + "#" + std::to_string(size);
+    LvglImage *image = nullptr;
+    auto cached = artwork_by_path_.find(cache_key);
+    if (cached != artwork_by_path_.end()) {
+        image = cached->second;
     } else {
-        LvglImage *image = nullptr;
-        auto cached = artwork_by_path_.find(path);
-        if (cached != artwork_by_path_.end()) {
-            image = cached->second;
-        } else {
-            auto owner = LvglImageFromFile(path);
-            if (!owner) {
-                lv_obj_delete(obj);
-                return host;
-            }
-            image = owner.get();
-            artwork_by_path_.emplace(path, image);
-            artwork_.push_back(std::move(owner));
-        }
-        const auto *dsc = image->image_dsc();
-        ImageDimensions(dsc, w, h);
-        lv_image_set_src(obj, dsc);
+        auto owner = LvglImageFromFileFit(path, size);
+        if (!owner) return host;  // decode failed: keep the note placeholder
+        image = owner.get();
+        artwork_by_path_.emplace(cache_key, image);
+        artwork_.push_back(std::move(owner));
     }
 
-    lv_obj_set_size(obj, w, h);
-    const int shorter = std::max(1, std::min(w, h));
-    lv_image_set_scale(obj, static_cast<uint32_t>(size * 256 / shorter));
-    lv_image_set_pivot(obj, w / 2, h / 2);
+    const auto *dsc = image->image_dsc();
+    auto *obj = lv_image_create(host);
+    lv_image_set_src(obj, dsc);
+    lv_obj_set_size(obj, static_cast<int>(dsc->header.w),
+                    static_cast<int>(dsc->header.h));
     lv_obj_center(obj);
     RemoveInteraction(obj);
     image_objects_.push_back(obj);

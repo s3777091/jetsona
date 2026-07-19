@@ -48,7 +48,8 @@ private:
     lv_obj_t *controller_icon_ = nullptr;
     lv_obj_t *controller_state_label_ = nullptr;
     lv_obj_t *controller_hint_label_ = nullptr;
-    lv_obj_t *sign_in_btn_ = nullptr;
+    lv_obj_t *register_btn_ = nullptr;
+    lv_obj_t *play_btn_ = nullptr;
 
     // Live gamepad test overlay. The session owns the non-blocking Linux
     // input fd(s), the current input snapshot and its LVGL control objects.
@@ -56,17 +57,15 @@ private:
     lv_timer_t *controller_input_timer_ = nullptr;
     std::unique_ptr<ControllerTestSession> controller_test_;
 
-    // PIN bottom sheet.
-    lv_obj_t *pin_modal_ = nullptr;
-    TelexInput *pin_input_ = nullptr;
-    lv_obj_t *pin_error_ = nullptr;
-
     // Settings bottom sheet.
     lv_obj_t *settings_modal_ = nullptr;
     lv_obj_t *settings_card_ = nullptr;
     lv_obj_t *settings_controller_label_ = nullptr;
     lv_obj_t *settings_ps5_name_label_ = nullptr;
-    lv_obj_t *settings_ip_input_ = nullptr;
+    // TelexInput (not lv_textarea): native textareas do not reliably receive
+    // EV_KEY input on the Jetson evdev keyboard path, which made the IP field
+    // impossible to type into.
+    TelexInput *settings_ip_input_ = nullptr;
     lv_obj_t *settings_ip_error_ = nullptr;
     lv_obj_t *performance_card_ = nullptr;
     lv_obj_t *quality_card_ = nullptr;
@@ -101,19 +100,22 @@ private:
     void PollControllerInput();
     void UpdateControllerTestUi();
 
-    void OpenPinModal();
-    void ClosePinModal();
-    void AcceptPin();
+    void StartRegister();
+    void StartStream();
 
     void OpenSettingsModal();
     void CloseSettingsModal();
     void SaveSettingsModal();
     void OpenBluetoothSettings();
 
-    static void OnSignIn(lv_event_t *e);
-    static void OnPinDismiss(lv_event_t *e);
-    static void OnPinCancel(lv_event_t *e);
-    static void OnPinSave(lv_event_t *e);
+    /* Launcher-facing state. The stream/configure hand-off scripts read
+     * /var/lib/jetson-fw/ps-remote-play.conf, not the firmware Settings
+     * store; this keeps the two in sync. */
+    void WriteLauncherState() const;
+    bool HasChiakiRegistration() const;
+
+    static void OnRegister(lv_event_t *e);
+    static void OnPlay(lv_event_t *e);
     static void OnSettingsDismiss(lv_event_t *e);
     static void OnSettingsCancel(lv_event_t *e);
     static void OnSettingsSave(lv_event_t *e);

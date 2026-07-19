@@ -64,6 +64,7 @@ private:
     static void OnRowClicked(lv_event_t *e);
     static void OnConnect(lv_event_t *e);
     static void OnCancel(lv_event_t *e);
+    static void OnEyeToggle(lv_event_t *e);
     static void OnCloseTimer(lv_timer_t *t);
 
     lv_obj_t *parent_ = nullptr;
@@ -78,6 +79,9 @@ private:
     lv_obj_t *kb_keyboard_ = nullptr;
     lv_obj_t *kb_connect_btn_ = nullptr;
     lv_obj_t *kb_cancel_btn_ = nullptr;
+    lv_obj_t *kb_eye_btn_ = nullptr;
+    lv_obj_t *kb_eye_img_ = nullptr;
+    bool kb_password_hidden_ = true;
 
     int width_ = 0;
     int height_ = 0;

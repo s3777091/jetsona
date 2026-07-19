@@ -3,17 +3,23 @@
 #include "display/common/lvgl_utils.h"
 #include "display/core/app_icons.h"
 #include "display/theme/ui_theme.h"
+#include "esp_log.h"
 #include "fonts.h"
 #include "input/gamepad_device.h"
 #include "lvgl_runtime.h"
 #include "settings.h"
 
 #include <arpa/inet.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 namespace home {
@@ -381,19 +387,23 @@ void PsRemotePlayView::BuildBody() {
     lv_obj_set_style_text_opa(controller_hint_label_, LV_OPA_70, 0);
     lv_obj_align(controller_hint_label_, LV_ALIGN_TOP_MID, 0, 240);
 
-    sign_in_btn_ = lv_button_create(body_);
-    lv_obj_set_size(sign_in_btn_, 190, 48);
-    lv_obj_align(sign_in_btn_, LV_ALIGN_BOTTOM_MID, 0, -38);
-    lv_obj_set_style_bg_color(sign_in_btn_, Color(kBlue), 0);
-    lv_obj_set_style_bg_opa(sign_in_btn_, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(sign_in_btn_, 0, 0);
-    lv_obj_set_style_radius(sign_in_btn_, 24, 0);
-    lv_obj_set_style_shadow_width(sign_in_btn_, 0, 0);
-    lv_obj_add_event_cb(sign_in_btn_, OnSignIn, LV_EVENT_CLICKED, this);
-
-    auto *sign_in_label = MakeLabel(sign_in_btn_, "Sign In to PSN",
-                                    &BUILTIN_SMALL_TEXT_FONT, 0xffffff);
-    lv_obj_center(sign_in_label);
+    auto make_action_button = [&](int x_offset, uint32_t color, const char *text,
+                                  lv_event_cb_t cb) {
+        auto *button = lv_button_create(body_);
+        lv_obj_set_size(button, 190, 48);
+        lv_obj_align(button, LV_ALIGN_BOTTOM_MID, x_offset, -38);
+        lv_obj_set_style_bg_color(button, Color(color), 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(button, 0, 0);
+        lv_obj_set_style_radius(button, 24, 0);
+        lv_obj_set_style_shadow_width(button, 0, 0);
+        lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, this);
+        auto *label = MakeLabel(button, text, &BUILTIN_SMALL_TEXT_FONT, 0xffffff);
+        lv_obj_center(label);
+        return button;
+    };
+    register_btn_ = make_action_button(-105, kBlue, "Đăng ký PS5", OnRegister);
+    play_btn_ = make_action_button(105, kGreen, "Chơi ngay", OnPlay);
 }
 
 void PsRemotePlayView::RefreshControllerState() {
@@ -685,92 +695,44 @@ void PsRemotePlayView::UpdateControllerTestUi() {
     }
 }
 
-void PsRemotePlayView::OpenPinModal() {
-    if (pin_modal_) return;
-    const auto &palette = jetson::UiTheme::Instance().Palette();
-
-    pin_modal_ = MakeModalBackdrop(overlay_, width_, height_, palette.scrim,
-                                   OnPinDismiss, this);
-    // Fit the content tightly; the old 230 px sheet left a visible dead strip
-    // below the error line on the 480 px display.
-    constexpr int kSheetHeight = 210;
-    auto *card = MakeBottomSheet(pin_modal_, 580, kSheetHeight, palette.panel);
-    AddGrabber(card, palette.sub_text);
-    MakeSheetHeader(card, "Đăng nhập mã PIN", OnPinCancel, OnPinSave, this);
-
-    auto *hint = MakeLabel(card, "Nhập mã PIN đang hiển thị trên PS5 của bạn",
-                           &BUILTIN_SMALL_TEXT_FONT, palette.sub_text);
-    lv_obj_set_width(hint, lv_pct(100));
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-
-    auto *form = lv_obj_create(card);
-    StyleSurface(form, palette.row, palette.border, 14);
-    lv_obj_set_size(form, lv_pct(100), 54);
-    lv_obj_set_style_pad_all(form, 5, 0);
-    lv_obj_set_style_pad_column(form, 6, 0);
-    lv_obj_set_flex_flow(form, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(form, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-
-    // Use the same keypad-group input wrapper as the rest of the firmware.
-    // Native lv_textarea did not reliably receive EV_KEY input on the Jetson
-    // evdev keyboard path, while TelexInput owns LV_EVENT_KEY explicitly.
-    pin_input_ = new TelexInput(form, 1, 44);
-    lv_obj_set_flex_grow(pin_input_->obj(), 1);
-    pin_input_->SetTelex(false);
-    pin_input_->SetPassword(true);
-    pin_input_->SetMaxLen(8);
-    pin_input_->SetAcceptedChars("0123456789");
-    pin_input_->SetPlaceholder("Nhập mã PIN PS5 của bạn");
-    lv_obj_add_event_cb(pin_input_->obj(), OnPinSave, LV_EVENT_READY, this);
-
-    auto *submit = lv_button_create(form);
-    lv_obj_set_size(submit, 44, 44);
-    lv_obj_set_style_bg_color(submit, Color(palette.accent), 0);
-    lv_obj_set_style_bg_opa(submit, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(submit, 0, 0);
-    lv_obj_set_style_radius(submit, 11, 0);
-    lv_obj_set_style_shadow_width(submit, 0, 0);
-    lv_obj_set_style_pad_all(submit, 0, 0);
-    lv_obj_add_event_cb(submit, OnPinSave, LV_EVENT_CLICKED, this);
-    auto *enter = jetson::ui::CreateAppIcon(submit, "enter", 22);
-    lv_obj_set_style_image_recolor(enter, lv_color_white(), 0);
-    lv_obj_set_style_image_recolor_opa(enter, LV_OPA_COVER, 0);
-    lv_obj_center(enter);
-
-    pin_error_ = MakeLabel(card, " ", &BUILTIN_SMALL_TEXT_FONT,
-                           palette.sub_text);
-    lv_obj_set_width(pin_error_, lv_pct(100));
-    lv_obj_set_style_text_align(pin_error_, LV_TEXT_ALIGN_CENTER, 0);
-
-    pin_input_->Focus();
-    lv_obj_move_foreground(pin_modal_);
-    AnimateSheetIn(card, kSheetHeight);
-}
-
-void PsRemotePlayView::ClosePinModal() {
-    if (!pin_modal_) return;
-    lv_obj_del(pin_modal_);
-    pin_modal_ = nullptr;
-    pin_input_ = nullptr;
-    pin_error_ = nullptr;
-}
-
-void PsRemotePlayView::AcceptPin() {
-    if (!pin_input_) return;
-    const std::string pin = pin_input_->Text();
-    if (pin.empty()) {
-        if (pin_error_) {
-            lv_label_set_text(pin_error_, "Vui lòng nhập mã PIN PS5");
-            lv_obj_set_style_text_color(pin_error_, Color(kRed), 0);
-        }
+void PsRemotePlayView::StartRegister() {
+    if (host_.empty()) {
+        Notify("Nhập IP PS5 trong Cài đặt trước");
+        OpenSettingsModal();
         return;
     }
+    if (!launch_cb_) {
+        Notify("Launcher Remote Play chưa sẵn sàng trong phiên này");
+        return;
+    }
+    // chiaki-ng has no headless registration (no CLI `regist`): the first
+    // device-link MUST be completed inside chiaki-ng's own GUI, where the
+    // user enters the IP and the 8-digit Remote Play PIN shown on the PS5
+    // (Settings > System > Remote Play > Link Device). After that the
+    // console is registered permanently and "Chơi ngay" streams directly
+    // with no PIN.
+    WriteLauncherState();  // ensure ps-remote-play.conf has host= for the launcher
+    Notify("Đang mở chiaki-ng — chọn Register, nhập IP + mã PIN trên PS5");
+    launch_cb_(true);
+}
 
-    // This screen is intentionally only a form.  Do not persist or log the
-    // passcode; acknowledge it through the Dynamic Island and discard it.
-    ClosePinModal();
-    Notify("Đã nhận mã PIN PS5");
+void PsRemotePlayView::StartStream() {
+    if (host_.empty()) {
+        Notify("Nhập IP PS5 trong Cài đặt trước");
+        OpenSettingsModal();
+        return;
+    }
+    if (!HasChiakiRegistration()) {
+        Notify("PS5 chưa đăng ký — bấm 'Đăng ký PS5' trước");
+        return;
+    }
+    if (!launch_cb_) {
+        Notify("Launcher Remote Play chưa sẵn sàng trong phiên này");
+        return;
+    }
+    WriteLauncherState();  // ensure ps-remote-play.conf has host= for stream/wakeup
+    Notify("Đang kết nối PS5...");
+    launch_cb_(false);
 }
 
 void PsRemotePlayView::OpenSettingsModal() {
@@ -863,21 +825,18 @@ void PsRemotePlayView::OpenSettingsModal() {
     auto *ip_label = MakeLabel(ip_form, "IP PS5", &BUILTIN_SMALL_TEXT_FONT,
                                palette.text);
     lv_obj_set_width(ip_label, 68);
-    settings_ip_input_ = lv_textarea_create(ip_form);
-    lv_obj_set_size(settings_ip_input_, 1, 42);
-    lv_obj_set_flex_grow(settings_ip_input_, 1);
-    lv_obj_set_style_bg_opa(settings_ip_input_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(settings_ip_input_, 0, 0);
-    lv_obj_set_style_text_font(settings_ip_input_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(settings_ip_input_, Color(palette.text), 0);
-    lv_obj_set_style_text_color(settings_ip_input_, Color(palette.sub_text),
-                                LV_PART_TEXTAREA_PLACEHOLDER);
-    lv_textarea_set_one_line(settings_ip_input_, true);
-    lv_textarea_set_max_length(settings_ip_input_, 15);
-    lv_textarea_set_accepted_chars(settings_ip_input_, "0123456789.");
-    lv_textarea_set_placeholder_text(settings_ip_input_,
-                                     "Chưa kết nối tới IP PS5");
-    lv_textarea_set_text(settings_ip_input_, host_.c_str());
+    /* TelexInput, not lv_textarea: the native textarea never received EV_KEY
+     * input from the Jetson evdev keyboard, so the IP could not be typed at
+     * all ("con trỏ bàn phím không có"). TelexInput owns LV_EVENT_KEY and
+     * joins the keypad group in its constructor. */
+    settings_ip_input_ = new TelexInput(ip_form, 1, 42);
+    lv_obj_set_flex_grow(settings_ip_input_->obj(), 1);
+    settings_ip_input_->SetTelex(false);
+    settings_ip_input_->SetMaxLen(15);
+    settings_ip_input_->SetAcceptedChars("0123456789.");
+    settings_ip_input_->SetFont(&BUILTIN_SMALL_TEXT_FONT);
+    settings_ip_input_->SetPlaceholder("Chưa kết nối tới IP PS5");
+    if (!host_.empty()) settings_ip_input_->SetText(host_);
 
     settings_ip_error_ = MakeLabel(settings_card_, " ",
                                    &BUILTIN_SMALL_TEXT_FONT, palette.sub_text);
@@ -963,10 +922,7 @@ void PsRemotePlayView::OpenSettingsModal() {
 
     UpdateSettingsUi();
     UpdatePresetCards();
-    if (auto *group = jetson::LvglRuntime::Instance().keypad_group()) {
-        lv_group_add_obj(group, settings_ip_input_);
-        lv_group_focus_obj(settings_ip_input_);
-    }
+    settings_ip_input_->Focus();
     lv_obj_move_foreground(settings_modal_);
     AnimateSheetIn(settings_card_, kSheetHeight);
 }
@@ -1001,15 +957,14 @@ void PsRemotePlayView::CloseSettingsModal() {
 
 void PsRemotePlayView::SaveSettingsModal() {
     if (!settings_ip_input_) return;
-    const char *input = lv_textarea_get_text(settings_ip_input_);
     std::string canonical;
-    if (!CanonicalIpv4(input ? input : "", canonical)) {
+    if (!CanonicalIpv4(settings_ip_input_->Text(), canonical)) {
         if (settings_ip_error_) {
             lv_label_set_text(settings_ip_error_, "Địa chỉ IP PS5 không hợp lệ");
             lv_obj_set_style_text_color(settings_ip_error_, Color(kRed), 0);
         }
-        lv_obj_set_style_border_width(settings_ip_input_, 2, 0);
-        lv_obj_set_style_border_color(settings_ip_input_, Color(kRed), 0);
+        lv_obj_set_style_border_width(settings_ip_input_->obj(), 2, 0);
+        lv_obj_set_style_border_color(settings_ip_input_->obj(), Color(kRed), 0);
         Notify("Địa chỉ IP PS5 không hợp lệ");
         return;
     }
@@ -1022,6 +977,9 @@ void PsRemotePlayView::SaveSettingsModal() {
     settings.SetString("ps5_name", ps5_name_);
     settings.SetString("preset",
                        preset_ == Preset::Performance ? "performance" : "quality");
+    // Keep the launcher's state file in sync, otherwise `stream` mode exits
+    // with "PS5 address is not configured" even though the UI saved an IP.
+    WriteLauncherState();
 
     CloseSettingsModal();
     Notify(host_.empty() ? "Đã lưu cài đặt Remote Play"
@@ -1034,25 +992,94 @@ void PsRemotePlayView::OpenBluetoothSettings() {
     else Notify("Mở Cài đặt > Bluetooth để kết nối tay cầm");
 }
 
-void PsRemotePlayView::OnSignIn(lv_event_t *e) {
-    LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->OpenPinModal();
+namespace {
+constexpr char kLauncherStateDir[] = "/var/lib/jetson-fw";
+constexpr char kLauncherStateFile[] = "/var/lib/jetson-fw/ps-remote-play.conf";
+// Direct-stream credentials written by launch_ps_remote_play.sh after a
+// headless chiaki-cli registration (Chiaki's own Qt config is untouched in
+// that path). "Play" must accept these as proof of registration too, not
+// only Chiaki's own Chiaki.conf.
+constexpr char kRegistKeysFile[] =
+    "/var/lib/jetson-fw/ps-remote-play-regist.conf";
+} // namespace
+
+void PsRemotePlayView::WriteLauncherState() const {
+    // Preserve fields the UI does not own (nickname/passcode may have been
+    // written by ps_remote_play_ctl.sh save).
+    std::string nickname;
+    std::string passcode;
+    if (FILE *file = std::fopen(kLauncherStateFile, "r")) {
+        char line[256];
+        while (std::fgets(line, sizeof(line), file)) {
+            std::string entry(line);
+            while (!entry.empty() &&
+                   (entry.back() == '\n' || entry.back() == '\r'))
+                entry.pop_back();
+            if (entry.rfind("nickname=", 0) == 0) nickname = entry.substr(9);
+            else if (entry.rfind("passcode=", 0) == 0) passcode = entry.substr(9);
+        }
+        std::fclose(file);
+    }
+
+    ::mkdir(kLauncherStateDir, 0755);  // best effort; firmware runs as root
+    const std::string temporary = std::string(kLauncherStateFile) + ".tmp";
+    FILE *file = std::fopen(temporary.c_str(), "w");
+    if (!file) {
+        ESP_LOGW("PsRemotePlay", "cannot write %s: %s", kLauncherStateFile,
+                 std::strerror(errno));
+        return;
+    }
+    std::fprintf(file, "host=%s\nnickname=%s\npreset=%s\npasscode=%s\n",
+                 host_.c_str(), nickname.c_str(),
+                 preset_ == Preset::Performance ? "smooth" : "quality",
+                 passcode.c_str());
+    std::fclose(file);
+    ::chmod(temporary.c_str(), 0600);
+    ::rename(temporary.c_str(), kLauncherStateFile);
 }
 
-void PsRemotePlayView::OnPinDismiss(lv_event_t *e) {
-    if (lv_event_get_target(e) != lv_event_get_current_target(e)) return;
-    LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->ClosePinModal();
+bool PsRemotePlayView::HasChiakiRegistration() const {
+    // The launcher keeps Chiaki's QSettings under /var/lib/jetson-fw/chiaki.
+    // A registered console always serializes an rp_regist_key entry.
+    static const char *kConfigs[] = {
+        "/var/lib/jetson-fw/chiaki/.config/Chiaki/Chiaki.conf",
+        "/var/lib/jetson-fw/chiaki/.config/chiaki/Chiaki.conf",
+    };
+    for (const char *path : kConfigs) {
+        FILE *file = std::fopen(path, "r");
+        if (!file) continue;
+        char line[512];
+        bool found = false;
+        while (!found && std::fgets(line, sizeof(line), file))
+            found = std::strstr(line, "rp_regist_key=") != nullptr;
+        std::fclose(file);
+        if (found) return true;
+    }
+    // Fall back to the direct-stream credentials a headless registration stored
+    // (registkey= + morning=). Chiaki's Qt config is never written in that
+    // path, so without this check "Play" would bounce back to the PIN sheet
+    // even though the launcher can stream directly.
+    if (FILE *file = std::fopen(kRegistKeysFile, "r")) {
+        char line[512];
+        bool has_key = false, has_morning = false;
+        while (std::fgets(line, sizeof(line), file)) {
+            if (!has_key && std::strstr(line, "registkey=")) has_key = true;
+            if (!has_morning && std::strstr(line, "morning=")) has_morning = true;
+        }
+        std::fclose(file);
+        if (has_key && has_morning) return true;
+    }
+    return false;
 }
 
-void PsRemotePlayView::OnPinCancel(lv_event_t *e) {
+void PsRemotePlayView::OnRegister(lv_event_t *e) {
     LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->ClosePinModal();
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->StartRegister();
 }
 
-void PsRemotePlayView::OnPinSave(lv_event_t *e) {
+void PsRemotePlayView::OnPlay(lv_event_t *e) {
     LvglLockGuard lock;
-    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->AcceptPin();
+    static_cast<PsRemotePlayView *>(lv_event_get_user_data(e))->StartStream();
 }
 
 void PsRemotePlayView::OnSettingsDismiss(lv_event_t *e) {

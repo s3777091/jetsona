@@ -1,9 +1,17 @@
 #include "display/core/lvgl_image.h"
 #include "esp_log.h"
 
+/* Bundled decoders, driven directly for LvglImageFromFileFit: TJPGD for a
+ * one-shot full-frame JPEG decode (LVGL's patched copy already emits the
+ * B,G,R byte order LV_COLOR_FORMAT_RGB888 expects) and lodepng for PNG. */
+#include <src/libs/lodepng/lodepng.h>
+#include <src/libs/tjpgd/tjpgd.h>
+
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
+#include <memory>
 
 #define TAG "lvgl_image"
 
@@ -87,11 +95,12 @@ LvglAllocatedImage::LvglAllocatedImage(void *data, size_t size) : data_(data) {
 }
 
 LvglAllocatedImage::LvglAllocatedImage(void *data, size_t size, int width, int height,
-                                       int /*stride*/, int color_format) : data_(data) {
+                                       int stride, int color_format) : data_(data) {
     std::memset(&image_dsc_, 0, sizeof(image_dsc_));
     image_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
     image_dsc_.header.w = (uint32_t)width;
     image_dsc_.header.h = (uint32_t)height;
+    image_dsc_.header.stride = (uint32_t)stride;
     image_dsc_.header.cf = (lv_color_format_t)color_format;
     image_dsc_.data_size = (uint32_t)size;
     image_dsc_.data = (const uint8_t *)data;
@@ -132,4 +141,161 @@ std::unique_ptr<LvglImage> LvglImageFromFile(const std::string &path) {
         return nullptr;
     }
     return std::unique_ptr<LvglImage>(new LvglRawImage(data, size));
+}
+
+/* ---- Full-frame decode + cover-fit resize (LvglImageFromFileFit) ---- */
+
+namespace {
+
+struct TjpgdSource {
+    const uint8_t *data;
+    size_t size;
+    size_t pos;
+    uint8_t *out;       // width*height*3, LVGL RGB888 byte order (B,G,R)
+    unsigned width;
+    unsigned height;
+};
+
+size_t TjpgdRead(JDEC *jd, uint8_t *buf, size_t len) {
+    auto *src = static_cast<TjpgdSource *>(jd->device);
+    const size_t remain = src->size - src->pos;
+    if (len > remain) len = remain;
+    if (buf) std::memcpy(buf, src->data + src->pos, len);
+    src->pos += len;
+    return len;
+}
+
+int TjpgdWrite(JDEC *jd, void *bitmap, JRECT *rect) {
+    auto *src = static_cast<TjpgdSource *>(jd->device);
+    if (rect->right >= src->width || rect->bottom >= src->height) return 0;
+    const uint8_t *pix = static_cast<const uint8_t *>(bitmap);
+    const size_t run = (size_t)(rect->right - rect->left + 1) * 3;
+    for (unsigned y = rect->top; y <= rect->bottom; ++y) {
+        std::memcpy(src->out + ((size_t)y * src->width + rect->left) * 3, pix, run);
+        pix += run;
+    }
+    return 1; // continue decoding
+}
+
+/* One-shot TJPGD decode (baseline JPEG only) into a tightly packed RGB888
+ * buffer owned by the caller (free()). nullptr on any decoder error, e.g. a
+ * progressive JPEG (JDR_FMT3). */
+uint8_t *DecodeJpegRgb888(const uint8_t *data, size_t size,
+                          unsigned *w, unsigned *h) {
+    /* 8 KB pool: TJPGD needs ~3.5 KB for baseline 4:2:0; LVGL's own decoder
+     * runs with 4 KB, doubled here for headroom at trivial cost. The JDEC
+     * keeps pointers into the pool, so it must outlive jd_decomp. */
+    constexpr size_t kPoolSize = 8192;
+    std::unique_ptr<uint8_t[]> pool(new uint8_t[kPoolSize]);
+    TjpgdSource src{data, size, 0, nullptr, 0, 0};
+    JDEC jd;
+    if (jd_prepare(&jd, TjpgdRead, pool.get(), kPoolSize, &src) != JDR_OK)
+        return nullptr;
+    if (jd.width == 0 || jd.height == 0 || jd.width > 4096 || jd.height > 4096)
+        return nullptr;
+    src.width = jd.width;
+    src.height = jd.height;
+    src.out = (uint8_t *)std::malloc((size_t)jd.width * jd.height * 3);
+    if (!src.out) return nullptr;
+    if (jd_decomp(&jd, TjpgdWrite, 0) != JDR_OK) {
+        std::free(src.out);
+        return nullptr;
+    }
+    *w = jd.width;
+    *h = jd.height;
+    return src.out;
+}
+
+/* Fixed-point bilinear resample of a tightly packed image (3/4 bytes per
+ * pixel). Returns a malloc'd buffer of dw*dh*channels. */
+uint8_t *ResizePixels(const uint8_t *src, unsigned sw, unsigned sh,
+                      unsigned dw, unsigned dh, int channels) {
+    uint8_t *dst = (uint8_t *)std::malloc((size_t)dw * dh * (size_t)channels);
+    if (!dst) return nullptr;
+    for (unsigned y = 0; y < dh; ++y) {
+        const uint32_t fy = (uint32_t)(((uint64_t)y * sh << 8) / dh);
+        const uint32_t y0 = fy >> 8;
+        const uint32_t wy = fy & 0xff;
+        const uint32_t y1 = std::min(y0 + 1, sh - 1);
+        for (unsigned x = 0; x < dw; ++x) {
+            const uint32_t fx = (uint32_t)(((uint64_t)x * sw << 8) / dw);
+            const uint32_t x0 = fx >> 8;
+            const uint32_t wx = fx & 0xff;
+            const uint32_t x1 = std::min(x0 + 1, sw - 1);
+            const uint8_t *p00 = src + ((size_t)y0 * sw + x0) * channels;
+            const uint8_t *p01 = src + ((size_t)y0 * sw + x1) * channels;
+            const uint8_t *p10 = src + ((size_t)y1 * sw + x0) * channels;
+            const uint8_t *p11 = src + ((size_t)y1 * sw + x1) * channels;
+            uint8_t *o = dst + ((size_t)y * dw + x) * channels;
+            for (int c = 0; c < channels; ++c) {
+                const uint32_t top = p00[c] * (256 - wx) + p01[c] * wx;
+                const uint32_t bottom = p10[c] * (256 - wx) + p11[c] * wx;
+                o[c] = (uint8_t)((top * (256 - wy) + bottom * wy) >> 16);
+            }
+        }
+    }
+    return dst;
+}
+
+} // namespace
+
+std::unique_ptr<LvglImage> LvglImageFromFileFit(const std::string &path, int box_px) {
+    if (box_px <= 0) return nullptr;
+    void *raw = nullptr;
+    size_t raw_size = 0;
+    if (!readFile(path, &raw, &raw_size)) {
+        ESP_LOGW(TAG, "image not found: %s", path.c_str());
+        return nullptr;
+    }
+
+    unsigned w = 0, h = 0;
+    uint8_t *pixels = nullptr;
+    int channels = 0;
+    lv_color_format_t cf = LV_COLOR_FORMAT_RGB888;
+    if (isJpeg(raw)) {
+        pixels = DecodeJpegRgb888((const uint8_t *)raw, raw_size, &w, &h);
+        channels = 3;
+    } else if (isPng(raw)) {
+        unsigned char *rgba = nullptr;
+        if (lodepng_decode32(&rgba, &w, &h, (const unsigned char *)raw,
+                             raw_size) == 0 && rgba) {
+            /* lodepng emits R,G,B,A; LVGL ARGB8888 stores B,G,R,A in memory. */
+            const size_t count = (size_t)w * h;
+            pixels = (uint8_t *)std::malloc(count * 4);
+            if (pixels) {
+                for (size_t i = 0; i < count; ++i) {
+                    pixels[i * 4 + 0] = rgba[i * 4 + 2];
+                    pixels[i * 4 + 1] = rgba[i * 4 + 1];
+                    pixels[i * 4 + 2] = rgba[i * 4 + 0];
+                    pixels[i * 4 + 3] = rgba[i * 4 + 3];
+                }
+            }
+            /* This tree's lodepng allocates through lv_malloc (see
+             * LODEPNG_COMPILE_ALLOCATORS in lodepng.c). */
+            lv_free(rgba);
+        }
+        channels = 4;
+        cf = LV_COLOR_FORMAT_ARGB8888;
+    }
+    free(raw);
+    if (!pixels || w == 0 || h == 0) {
+        ESP_LOGW(TAG, "cannot fully decode %s", path.c_str());
+        std::free(pixels);
+        return nullptr;
+    }
+
+    const unsigned shorter = std::min(w, h);
+    unsigned dw = w;
+    unsigned dh = h;
+    if ((int)shorter != box_px) {
+        dw = std::max<unsigned>(1, (unsigned)((uint64_t)w * (unsigned)box_px / shorter));
+        dh = std::max<unsigned>(1, (unsigned)((uint64_t)h * (unsigned)box_px / shorter));
+        uint8_t *scaled = ResizePixels(pixels, w, h, dw, dh, channels);
+        std::free(pixels);
+        if (!scaled) return nullptr;
+        pixels = scaled;
+    }
+    return std::unique_ptr<LvglImage>(new LvglAllocatedImage(
+        pixels, (size_t)dw * dh * (size_t)channels, (int)dw, (int)dh,
+        (int)dw * channels, cf));
 }

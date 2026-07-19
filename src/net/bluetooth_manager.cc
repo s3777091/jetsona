@@ -404,6 +404,41 @@ std::vector<BtDevice> BluetoothManager::Scan(int duration_s) {
     return devs;
 }
 
+std::vector<BtDevice> BluetoothManager::PairedDevices() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::vector<BtDevice> devs;
+    std::string out;
+    // BlueZ 5.48 (JetPack) uses `paired-devices`; BlueZ >= 5.65 removed it in
+    // favour of `devices Paired`. Try both so either stack answers. On 5.48
+    // `devices Paired` degrades to listing every known device, so paired-ness
+    // is re-verified below through `info` before a row is reported.
+    if (runBt("paired-devices\n", out, 6) != 0 ||
+        out.find("Device ") == std::string::npos) {
+        std::string alt;
+        if (runBt("devices Paired\n", alt, 6) == 0) out = alt;
+    }
+    for (const std::string &address : ParseDeviceAddresses(out)) {
+        std::string info;
+        if (runBt("info " + address + "\n", info, 5) != 0) continue;
+        if (!fieldBool(info, "Paired")) continue;
+        BtDevice d;
+        d.address = address;
+        d.name = field(info, "Alias");
+        if (d.name.empty()) d.name = field(info, "Name");
+        if (d.name.empty()) d.name = address;
+        d.paired = true;
+        d.connected = fieldBool(info, "Connected");
+        d.kind = KindFromInfo(info);
+        devs.push_back(std::move(d));
+    }
+    std::sort(devs.begin(), devs.end(), [](const BtDevice &a, const BtDevice &b) {
+        if (a.connected != b.connected) return a.connected;
+        return a.name < b.name;
+    });
+    ESP_LOGI(TAG, "%zu paired devices", devs.size());
+    return devs;
+}
+
 BtDeviceKind BluetoothManager::ConnectedDeviceKind() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     // Polled every 10 s by the status bar, so skip Available()'s extra

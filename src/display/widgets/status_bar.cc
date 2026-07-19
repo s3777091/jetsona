@@ -67,41 +67,6 @@ std::string MediaTime(int64_t milliseconds) {
     return out;
 }
 
-void ImageDimensions(const lv_img_dsc_t *dsc, int &w, int &h) {
-    w = h = 240;
-    if (!dsc || !dsc->data || dsc->data_size < 24) return;
-    const uint8_t *d = dsc->data;
-    const size_t n = dsc->data_size;
-    if (d[0] == 0x89 && d[1] == 0x50) {
-        w = (d[16] << 24) | (d[17] << 16) | (d[18] << 8) | d[19];
-        h = (d[20] << 24) | (d[21] << 16) | (d[22] << 8) | d[23];
-        return;
-    }
-    if (d[0] != 0xff || d[1] != 0xd8) return;
-    size_t offset = 2;
-    while (offset + 8 < n) {
-        if (d[offset] != 0xff) { ++offset; continue; }
-        while (offset < n && d[offset] == 0xff) ++offset;
-        if (offset >= n) break;
-        const uint8_t marker = d[offset++];
-        if (marker == 0xd8 || marker == 0xd9) continue;
-        if (offset + 2 > n) break;
-        const size_t length = (static_cast<size_t>(d[offset]) << 8) |
-                              d[offset + 1];
-        if (length < 2 || offset + length > n) break;
-        const bool start_of_frame =
-            (marker >= 0xc0 && marker <= 0xc3) ||
-            (marker >= 0xc5 && marker <= 0xc7) ||
-            (marker >= 0xc9 && marker <= 0xcb) ||
-            (marker >= 0xcd && marker <= 0xcf);
-        if (start_of_frame && length >= 7) {
-            h = (d[offset + 3] << 8) | d[offset + 4];
-            w = (d[offset + 5] << 8) | d[offset + 6];
-            return;
-        }
-        offset += length;
-    }
-}
 } // namespace
 
 StatusBar::StatusBar(lv_obj_t *parent) {
@@ -545,25 +510,34 @@ void StatusBar::LoadMediaArtwork(const std::string &path) {
     if (media_artwork_)
         lv_image_cache_drop(media_artwork_->image_dsc());
     media_artwork_.reset();
+    if (media_artwork_small_)
+        lv_image_cache_drop(media_artwork_small_->image_dsc());
+    media_artwork_small_.reset();
     if (path.empty()) return;
-    media_artwork_ = LvglImageFromFile(path);
-    if (!media_artwork_) return;
+    /* Decode ONCE per island size into raw pixels (no lv_image_set_scale):
+     * LVGL's TJPGD streams JPEGs and cannot be transformed by the sw
+     * renderer, which left the island cover blank and re-decoded the JPEG on
+     * every FULL-mode frame while music was playing. */
+    media_artwork_small_ = LvglImageFromFileFit(path, 30);
+    media_artwork_ = LvglImageFromFileFit(path, 48);
+    if (!media_artwork_ || !media_artwork_small_) {
+        media_artwork_.reset();
+        media_artwork_small_.reset();
+        return;
+    }
 
-    int w, h;
-    ImageDimensions(media_artwork_->image_dsc(), w, h);
-    auto create_image = [&](lv_obj_t *host, int size) {
+    auto create_image = [&](lv_obj_t *host, const LvglImage &art) {
+        const auto *dsc = art.image_dsc();
         auto *image = lv_image_create(host);
-        lv_image_set_src(image, media_artwork_->image_dsc());
-        lv_obj_set_size(image, w, h);
-        lv_image_set_scale(image,
-            static_cast<uint32_t>(size * 256 / std::max(1, std::min(w, h))));
-        lv_image_set_pivot(image, w / 2, h / 2);
+        lv_image_set_src(image, dsc);
+        lv_obj_set_size(image, static_cast<int>(dsc->header.w),
+                        static_cast<int>(dsc->header.h));
         lv_obj_center(image);
         RemoveInteraction(image);
         return image;
     };
-    media_compact_art_ = create_image(media_compact_art_host_, 30);
-    media_expanded_art_ = create_image(media_expanded_art_host_, 48);
+    media_compact_art_ = create_image(media_compact_art_host_, *media_artwork_small_);
+    media_expanded_art_ = create_image(media_expanded_art_host_, *media_artwork_);
 }
 
 void StatusBar::ShowMediaPresentation(bool animate) {
@@ -1152,6 +1126,10 @@ StatusBar::~StatusBar() {
     if (media_artwork_) {
         lv_image_cache_drop(media_artwork_->image_dsc());
         media_artwork_.reset();
+    }
+    if (media_artwork_small_) {
+        lv_image_cache_drop(media_artwork_small_->image_dsc());
+        media_artwork_small_.reset();
     }
 }
 

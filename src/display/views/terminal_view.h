@@ -42,7 +42,14 @@ protected:
     void OnStart() override;
 
 private:
-    static constexpr size_t kBufCap = 12 * 1024;
+    /* The whole scrollback lives in ONE textarea label. LVGL re-runs the
+     * label's line-wrap layout (per-glyph TTF metric lookups) on every frame
+     * the screen repaints, and the fbdev backend renders in FULL mode, so any
+     * invalidation (mouse move, caret blink, output) repaints everything.
+     * 12 KB of text made that per-frame layout dominate and the terminal
+     * unusably laggy; 4 KB (~50-60 lines of scrollback) keeps typing and
+     * `ls`-style bursts fluid on the Jetson while still allowing scrollback. */
+    static constexpr size_t kBufCap = 4 * 1024;
     static constexpr size_t kHistoryCap = 100;
     static constexpr size_t kPasteCap = 4096;
 

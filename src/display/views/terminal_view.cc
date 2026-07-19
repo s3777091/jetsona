@@ -173,7 +173,11 @@ void TerminalView::OnStart() {
     SetStatus("Shell san sang tai /root");
     if (terminal_) lv_group_focus_obj(terminal_);
     reader_ = std::thread([this]() { ReaderLoop(); });
-    flush_timer_ = lv_timer_create(OnFlushTimer, 50, this);
+    /* 100 ms coalescing: every flush replaces the textarea text and forces a
+     * full-screen repaint in the FULL render mode, so flushing at 20 Hz made
+     * bursty command output (find/ls -laR) starve the UI thread. 10 Hz is
+     * still instant to the eye at a fraction of the render cost. */
+    flush_timer_ = lv_timer_create(OnFlushTimer, 100, this);
 }
 
 bool TerminalView::SpawnShell() {
@@ -192,8 +196,12 @@ bool TerminalView::SpawnShell() {
     }
     if (pid == 0) {
         /* The firmware service runs as root. Start in root's home and expose the
-         * requested compact prompt regardless of the repository/service cwd. */
-        if (chdir("/root") != 0) (void)chdir("/");
+         * requested compact prompt regardless of the repository/service cwd.
+         * glibc marks chdir warn_unused_result; a (void) cast does not silence
+         * it, so test both calls and accept the inherited cwd as last resort. */
+        if (chdir("/root") != 0 && chdir("/") != 0) {
+            /* keep the service's working directory */
+        }
         setenv("HOME", "/root", 1);
         setenv("USER", "root", 1);
         setenv("LOGNAME", "root", 1);
@@ -227,7 +235,7 @@ bool TerminalView::SpawnShell() {
 }
 
 void TerminalView::ReaderLoop() {
-    char buf[1024];
+    char buf[4096];
     while (!stopping_) {
         const ssize_t n = read(master_fd_, buf, sizeof(buf));
         if (n < 0) {
@@ -249,7 +257,9 @@ void TerminalView::StopShell() {
     if (master_fd_ >= 0) {
         if (child_pid_ > 0) {
             const char exit_cmd[] = "exit\n";
-            (void)write(master_fd_, exit_cmd, sizeof(exit_cmd) - 1);
+            if (write(master_fd_, exit_cmd, sizeof(exit_cmd) - 1) < 0) {
+                /* best effort; the SIGHUP/SIGKILL fallback below still runs */
+            }
             for (int i = 0; i < 20 && child_pid_ > 0; ++i) {
                 int status = 0;
                 const pid_t waited = waitpid(child_pid_, &status, WNOHANG);

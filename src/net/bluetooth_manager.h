@@ -65,6 +65,10 @@ public:
     virtual bool PowerOff() = 0;
     virtual bool IsPowered() const = 0;
     virtual std::vector<BtDevice> Scan(int duration_s = 8) = 0;
+    // Bonded devices only — no discovery, so it answers in ~1-2 s and works
+    // for devices that are currently off/asleep. Default keeps existing
+    // test/fake managers source-compatible.
+    virtual std::vector<BtDevice> PairedDevices() { return {}; }
     virtual BtDeviceKind ConnectedDeviceKind() const = 0;
     virtual bool PairAndConnect(const std::string &address) = 0;
     // Pair with an optional interactive passkey prompt. Existing test/fake
@@ -95,6 +99,10 @@ public:
 
     // Scan for `duration_s` seconds, then return all known devices. Blocking.
     std::vector<BtDevice> Scan(int duration_s = 8) override;
+
+    // Previously paired devices straight from BlueZ's bonding store, without
+    // running discovery. Lets the UI list "old" devices immediately.
+    std::vector<BtDevice> PairedDevices() override;
 
     // Category of the currently connected paired device (best match when
     // several are connected: controller > headphones > unknown). Blocking

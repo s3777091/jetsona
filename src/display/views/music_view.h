@@ -129,6 +129,8 @@ private:
     std::vector<TrackCtx *> track_rows_;
     std::vector<lv_obj_t *> image_objects_;
     std::vector<std::unique_ptr<LvglImage>> artwork_;
+    // Pre-decoded covers, keyed by "<file path>#<box px>" (one decoded copy
+    // per rendered size; see CreateArtwork).
     std::unordered_map<std::string, LvglImage *> artwork_by_path_;
     NotifyCb notify_cb_;
 };
