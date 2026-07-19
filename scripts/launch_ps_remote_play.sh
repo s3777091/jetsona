@@ -399,6 +399,119 @@ if [ -n "$browser_ld_library_path" ]; then
     export LD_LIBRARY_PATH="$browser_ld_library_path"
 fi
 
+psrp_psn_redirect_requested()
+{
+    local arg
+    case "${PS_REMOTE_PLAY_PSN_REDIRECT_AUTO:-1}" in
+        0|false|FALSE|no|NO|off|OFF) return 1 ;;
+    esac
+    for arg in "$@"; do
+        case "$arg" in
+            https://auth.api.sonyentertainmentnetwork.com/*/oauth/authorize\?*)
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+psrp_extract_psn_redirect()
+{
+    python3 -c '
+import json
+import sys
+from urllib.parse import parse_qsl, urlsplit
+
+try:
+    pages = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+
+for page in pages if isinstance(pages, list) else []:
+    url = page.get("url", "") if isinstance(page, dict) else ""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        continue
+    if (parsed.scheme == "https" and
+            parsed.hostname == "remoteplay.dl.playstation.net" and
+            parsed.path == "/remoteplay/redirect" and
+            any(key == "code" and value
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True))):
+        sys.stdout.write(url)
+        break
+'
+}
+
+psrp_deliver_psn_redirect()
+{
+    local redirect_url="$1" browser_windows="" focused_name=""
+    local window attempt
+
+    browser_windows="$(DISPLAY="$browser_display" \
+        xdotool search --onlyvisible --class chromium 2>/dev/null || true)"
+    for window in $browser_windows; do
+        DISPLAY="$browser_display" xdotool windowclose "$window" >/dev/null 2>&1 || true
+    done
+
+    # Both PSNLoginDialog and PSNTokenDialog leave their Paste button focused
+    # while the external browser is open. Left selects the adjacent URL field;
+    # Menu activates DialogView's enabled submit action after the URL is typed.
+    # Openbox focuses Chiaki's reparenting frame after the Chromium window is
+    # closed. Searching/activating the client window itself can hang because
+    # that frame owns X input focus, so verify the actual focused window name.
+    for attempt in {1..20}; do
+        focused_name="$(DISPLAY="$browser_display" \
+            xdotool getwindowfocus getwindowname 2>/dev/null || true)"
+        case "$focused_name" in
+            *chiaki-ng*) break ;;
+        esac
+        sleep 0.1
+    done
+    case "$focused_name" in
+        *chiaki-ng*) ;;
+        *) return 1 ;;
+    esac
+    DISPLAY="$browser_display" xdotool key --clearmodifiers Left \
+        >/dev/null 2>&1 || return 1
+    DISPLAY="$browser_display" xdotool key --clearmodifiers ctrl+a \
+        >/dev/null 2>&1 || return 1
+    printf '%s' "$redirect_url" | DISPLAY="$browser_display" \
+        xdotool type --clearmodifiers --delay 1 --file - \
+        >/dev/null 2>&1 || return 1
+    DISPLAY="$browser_display" xdotool key --clearmodifiers Menu \
+        >/dev/null 2>&1 || return 1
+}
+
+psrp_monitor_psn_redirect()
+{
+    local browser_pid="$1" devtools_file="$browser_profile/DevToolsActivePort"
+    local port="" ignored="" page_json="" redirect_url=""
+
+    while kill -0 "$browser_pid" 2>/dev/null; do
+        if [ -r "$devtools_file" ]; then
+            IFS= read -r port ignored < "$devtools_file" || true
+            case "$port" in
+                ''|*[!0-9]*) port="" ;;
+            esac
+        fi
+        if [ -n "$port" ]; then
+            page_json="$(curl --silent --fail --max-time 1 \
+                "http://127.0.0.1:$port/json/list" 2>/dev/null || true)"
+            if [ -n "$page_json" ]; then
+                redirect_url="$(printf '%s' "$page_json" | \
+                    psrp_extract_psn_redirect 2>/dev/null || true)"
+            fi
+            if [ -n "$redirect_url" ] && psrp_deliver_psn_redirect "$redirect_url"; then
+                echo "launch_ps_remote_play: PSN redirect returned to Chiaki" >&2
+                return 0
+            fi
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
 if [ -n "${PS_REMOTE_PLAY_BROWSER:-}" ] && [ -x "$PS_REMOTE_PLAY_BROWSER" ]; then
     exec "$PS_REMOTE_PLAY_BROWSER" "$@"
 fi
@@ -416,7 +529,41 @@ if [ -n "$resolved" ]; then
         runuser -u "$browser_run_user" -- rm -f \
             "$browser_profile/SingletonLock" \
             "$browser_profile/SingletonSocket" \
-            "$browser_profile/SingletonCookie" 2>/dev/null || true
+            "$browser_profile/SingletonCookie" \
+            "$browser_profile/DevToolsActivePort" 2>/dev/null || true
+        if psrp_psn_redirect_requested "$@" &&
+            command -v curl >/dev/null 2>&1 &&
+            command -v python3 >/dev/null 2>&1 &&
+            command -v xdotool >/dev/null 2>&1; then
+            runuser -u "$browser_run_user" -- env \
+                -u DBUS_SESSION_BUS_ADDRESS -u DBUS_SYSTEM_BUS_ADDRESS \
+                HOME="$browser_home" \
+                XDG_CONFIG_HOME="$browser_home/.config" \
+                XDG_CACHE_HOME="$browser_home/.cache" \
+                XDG_RUNTIME_DIR="${PS_REMOTE_PLAY_BROWSER_RUNTIME:-/tmp/chromium-kiosk-runtime}" \
+                DISPLAY="$browser_display" \
+                LD_LIBRARY_PATH="$browser_ld_library_path" \
+                dbus-run-session -- "$resolved" \
+                --user-data-dir="$browser_profile" \
+                --disk-cache-dir="$browser_cache" \
+                --remote-debugging-address=127.0.0.1 --remote-debugging-port=0 \
+                --disable-gpu --disable-software-rasterizer \
+                --no-first-run --no-default-browser-check \
+                --disable-session-crashed-bubble \
+                --start-maximized --window-size=800,480 "$@" &
+            browser_pid=$!
+            if psrp_monitor_psn_redirect "$browser_pid"; then
+                for attempt in {1..20}; do
+                    kill -0 "$browser_pid" 2>/dev/null || break
+                    sleep 0.1
+                done
+                kill "$browser_pid" 2>/dev/null || true
+                wait "$browser_pid" 2>/dev/null || true
+                exit 0
+            fi
+            wait "$browser_pid"
+            exit $?
+        fi
         exec runuser -u "$browser_run_user" -- env \
             -u DBUS_SESSION_BUS_ADDRESS -u DBUS_SYSTEM_BUS_ADDRESS \
             HOME="$browser_home" \

@@ -149,6 +149,7 @@ case ":${LD_LIBRARY_PATH:-}:" in
         exit 45
         ;;
 esac
+[ "${1:-}" != "--" ] || shift
 "$@"
 EOF
 chmod 700 "$FAKE_XINIT_DIR/dbus-run-session"
@@ -171,6 +172,54 @@ trap 'exit 0' INT TERM HUP
 while :; do sleep 1; done
 EOF
 chmod 700 "$FAKE_XINIT_DIR/onboard"
+cat > "$FAKE_XINIT_DIR/runuser" <<'EOF'
+#!/bin/bash
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--" ]; then
+        shift
+        exec "$@"
+    fi
+    shift
+done
+exit 61
+EOF
+chmod 700 "$FAKE_XINIT_DIR/runuser"
+cat > "$FAKE_XINIT_DIR/curl" <<'EOF'
+#!/bin/bash
+printf '%s' '[{"url":"https://remoteplay.dl.playstation.net/remoteplay/redirect?code=unit-test-code&state=ok"}]'
+EOF
+chmod 700 "$FAKE_XINIT_DIR/curl"
+cat > "$FAKE_XINIT_DIR/xdotool" <<'EOF'
+#!/bin/bash
+command_name="${1:-}"
+shift || true
+case "$command_name" in
+    getwindowfocus)
+        : > "$EXPECTED_CHIAKI_FOCUS_MARKER"
+        echo chiaki-ng
+        ;;
+    search)
+        case " $* " in
+            *" --class chromium "*) echo 222 ;;
+            *) exit 1 ;;
+        esac
+        ;;
+    windowclose)
+        : > "$EXPECTED_BROWSER_CLOSE_MARKER"
+        ;;
+    key)
+        case " $* " in
+            *" Left "*) : > "$EXPECTED_REDIRECT_LEFT_MARKER" ;;
+            *" Menu "*) : > "$EXPECTED_REDIRECT_SUBMIT_MARKER" ;;
+        esac
+        ;;
+    type)
+        cat > "$EXPECTED_TYPED_REDIRECT"
+        ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod 700 "$FAKE_XINIT_DIR/xdotool"
 cat > "$FAKE_XINIT_DIR/chromium-browser" <<'EOF'
 #!/bin/bash
 case ":${LD_LIBRARY_PATH:-}:" in
@@ -182,6 +231,23 @@ esac
 case ":${LD_LIBRARY_PATH:-}:" in
     *":$EXPECTED_SYSTEM_NSS_DIR:"*) ;;
     *) echo "browser missing isolated system NSS path: ${LD_LIBRARY_PATH:-}" >&2; exit 50 ;;
+esac
+case " $* " in
+    *" --remote-debugging-port=0 "*)
+        browser_profile=""
+        for arg in "$@"; do
+            case "$arg" in
+                --user-data-dir=*) browser_profile="${arg#*=}" ;;
+            esac
+        done
+        [ -n "$browser_profile" ] || exit 62
+        mkdir -p "$browser_profile"
+        printf '34567\n/devtools/browser/unit-test\n' > \
+            "$browser_profile/DevToolsActivePort"
+        : > "$EXPECTED_AUTO_BROWSER_MARKER"
+        while [ ! -e "$EXPECTED_BROWSER_CLOSE_MARKER" ]; do sleep 0.05; done
+        exit 0
+        ;;
 esac
 [ "${1:-}" = "--no-sandbox" ] || { echo "browser missing --no-sandbox" >&2; exit 47; }
 : > "$EXPECTED_BROWSER_MARKER"
@@ -299,6 +365,46 @@ env PATH="$FAKE_XINIT_DIR:$PATH" \
     fail "configure session hid the X cursor"
 ! grep -Fq 'org.freedesktop.ScreenSaver' "$TMP_ROOT/extracted-stderr" || \
     fail "known ScreenSaver warning was not filtered"
+
+# The external PSN browser must hand Sony's redirect back to the already-open
+# Chiaki dialog without logging the authorization code or requiring a manual
+# copy/paste round trip.
+AUTO_BROWSER_HOME="$TMP_ROOT/auto-browser-home"
+AUTO_BROWSER_PROFILE="$TMP_ROOT/auto-browser-profile"
+mkdir -p "$AUTO_BROWSER_HOME" "$AUTO_BROWSER_PROFILE"
+if ! env PATH="$FAKE_XINIT_DIR:$PATH" \
+    DISPLAY=:0 \
+    EXPECTED_AUTO_BROWSER_MARKER="$TMP_ROOT/auto-browser-ok" \
+    EXPECTED_BROWSER_CLOSE_MARKER="$TMP_ROOT/auto-browser-closed" \
+    EXPECTED_CHIAKI_FOCUS_MARKER="$TMP_ROOT/auto-chiaki-focused" \
+    EXPECTED_REDIRECT_LEFT_MARKER="$TMP_ROOT/auto-redirect-left" \
+    EXPECTED_REDIRECT_SUBMIT_MARKER="$TMP_ROOT/auto-redirect-submit" \
+    EXPECTED_SYSTEM_NSS_DIR="$FAKE_SYSTEM_NSS_DIR" \
+    EXPECTED_TYPED_REDIRECT="$TMP_ROOT/auto-typed-redirect" \
+    PSRP_BROWSER_CACHE="$TMP_ROOT/auto-browser-cache" \
+    PSRP_BROWSER_HOME="$AUTO_BROWSER_HOME" \
+    PSRP_BROWSER_LD_LIBRARY_PATH="$FAKE_SYSTEM_NSS_DIR" \
+    PSRP_BROWSER_PROFILE="$AUTO_BROWSER_PROFILE" \
+    PSRP_BROWSER_RUN_USER=jetson-kiosk \
+    "$PS_REMOTE_PLAY_HOME/runtime/psrp-browser" \
+    'https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?unit-test=1' \
+    >/dev/null 2>"$TMP_ROOT/auto-browser-stderr"; then
+    sed -E 's/(code=)[^&"[:space:]]+/\1REDACTED/g' \
+        "$TMP_ROOT/auto-browser-stderr" >&2
+    fail "PSN redirect browser wrapper exited with an error"
+fi
+[[ -e "$TMP_ROOT/auto-browser-ok" ]] || fail "PSN browser monitor did not launch"
+[[ -e "$TMP_ROOT/auto-browser-closed" ]] || fail "PSN redirect did not close Chromium"
+[[ -e "$TMP_ROOT/auto-chiaki-focused" ]] || fail "PSN redirect did not focus Chiaki"
+[[ -e "$TMP_ROOT/auto-redirect-left" ]] || fail "PSN redirect did not select URL field"
+[[ -e "$TMP_ROOT/auto-redirect-submit" ]] || fail "PSN redirect did not submit dialog"
+assert_line \
+    'https://remoteplay.dl.playstation.net/remoteplay/redirect?code=unit-test-code&state=ok' \
+    "$TMP_ROOT/auto-typed-redirect"
+grep -Fq 'PSN redirect returned to Chiaki' "$TMP_ROOT/auto-browser-stderr" || \
+    fail "PSN redirect handoff did not report success"
+! grep -Fq 'unit-test-code' "$TMP_ROOT/auto-browser-stderr" || \
+    fail "PSN authorization code leaked to stderr"
 
 # Applying a new preset must update both the default file and active profile.
 (

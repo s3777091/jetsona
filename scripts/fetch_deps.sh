@@ -17,7 +17,7 @@ sudo apt-get install -y \
     bluez bluez-tools rfkill \
     network-manager \
     xserver-xorg-video-all xserver-xorg-input-libinput \
-    x11-xkb-utils x11-xserver-utils xinit openbox onboard dbus libnss3 \
+    x11-xkb-utils x11-xserver-utils xinit xdotool openbox onboard dbus libnss3 \
     libx11-dev chromium-browser
 
 # nlohmann json v3 single-header -> /usr/local/include (GCC searches it before

@@ -60,8 +60,8 @@ Các gói nền cần cho chế độ bare-X:
 ```bash
 sudo apt update
 sudo apt install -y xinit xserver-xorg-video-all xserver-xorg-input-libinput \
-   x11-xkb-utils x11-xserver-utils openbox onboard dbus libnss3 libfuse2 \
-   libva2 alsa-utils
+   x11-xkb-utils x11-xserver-utils xdotool openbox onboard dbus libnss3 \
+   libfuse2 libva2 alsa-utils
 ```
 
 Trong màn hình thiết lập, launcher giữ con trỏ X hiện, chạy `openbox` để cửa
@@ -70,6 +70,12 @@ khi không phát hiện bàn phím USB. Có thể cưỡng bức bàn phím ảo
 `PS_REMOTE_PLAY_ONSCREEN_KEYBOARD: "1"`, hoặc tắt bằng `"0"`. Trình duyệt PSN
 chạy dưới user sandbox `jetson-kiosk`, dùng cùng profile đăng nhập với Chromium
 kiosk; đổi user bằng `PS_REMOTE_PLAY_BROWSER_USER` nếu cần.
+
+Sau khi Sony trả về URL `remoteplay/redirect`, launcher mặc định tự chuyển URL
+đó vào dialog Chiaki và đóng Chromium. Có thể tắt hành vi này bằng
+`PS_REMOTE_PLAY_PSN_REDIRECT_AUTO: "0"` để quay lại quy trình copy/paste thủ
+công. URL chứa mã đăng nhập chỉ được giữ trong bộ nhớ trong lúc chuyển tiếp,
+không được ghi vào log hoặc file.
 
 `chiaki-ng` hiện phát hành AppImage ARM64 và yêu cầu Vulkan 1.2, `libva` cùng
 PipeWire. JetPack 4.6.1 có Vulkan 1.2, nhưng Ubuntu 18.04/glibc cũ và backend
