@@ -61,6 +61,62 @@ if [ "$PSRP_APPIMAGE_EXTRACT" -eq 1 ]; then
     export APPIMAGE_EXTRACT_AND_RUN=1
 fi
 
+psrp_prepend_env_path()
+{
+    local var="$1" dir="$2" current
+    [ -d "$dir" ] || return 0
+    eval "current=\${$var:-}"
+    case ":$current:" in
+        *":$dir:"*) return 0 ;;
+    esac
+    if [ -n "$current" ]; then
+        export "$var=$dir:$current"
+    else
+        export "$var=$dir"
+    fi
+}
+
+psrp_configure_chiaki_runtime()
+{
+    local bin dir probe appdir nss_dir
+    bin="${PSRP_CHIAKI[0]}"
+    dir="$(cd "$(dirname "$bin")" && pwd -P)" || return 0
+    appdir=""
+    probe="$dir"
+    while [ "$probe" != "/" ]; do
+        if [ -d "$probe/squashfs-root/usr" ]; then
+            appdir="$probe/squashfs-root"
+            break
+        fi
+        if [ -d "$probe/usr" ] && [ -d "$probe/usr/libexec" ]; then
+            appdir="$probe"
+            break
+        fi
+        probe="$(dirname "$probe")"
+    done
+
+    if [ -n "$appdir" ]; then
+        export APPDIR="${APPDIR:-$appdir}"
+        psrp_prepend_env_path LD_LIBRARY_PATH "$appdir/usr/lib"
+        psrp_prepend_env_path LD_LIBRARY_PATH "$appdir/usr/lib/aarch64-linux-gnu"
+        psrp_prepend_env_path LD_LIBRARY_PATH "$appdir/usr/lib/aarch64-linux-gnu/nss"
+        psrp_prepend_env_path LD_LIBRARY_PATH "$appdir/usr/lib/nss"
+        if [ -x "$appdir/usr/libexec/QtWebEngineProcess" ]; then
+            export QTWEBENGINEPROCESS_PATH="${QTWEBENGINEPROCESS_PATH:-$appdir/usr/libexec/QtWebEngineProcess}"
+        fi
+    fi
+
+    for nss_dir in \
+        /usr/lib/aarch64-linux-gnu/nss \
+        /usr/lib/arm-linux-gnueabihf/nss \
+        /usr/lib/x86_64-linux-gnu/nss \
+        /usr/lib/nss; do
+        psrp_prepend_env_path LD_LIBRARY_PATH "$nss_dir"
+    done
+}
+
+psrp_configure_chiaki_runtime
+
 psrp_load_state
 if ! psrp_apply_preset "$PSRP_PRESET"; then
     echo "launch_ps_remote_play: failed to apply the $PSRP_PRESET preset" >&2
