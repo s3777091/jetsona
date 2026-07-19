@@ -3,7 +3,10 @@
 
 /* Bundled decoders, driven directly for LvglImageFromFileFit: TJPGD for a
  * one-shot full-frame JPEG decode (LVGL's patched copy already emits the
- * B,G,R byte order LV_COLOR_FORMAT_RGB888 expects) and lodepng for PNG. */
+ * B,G,R byte order LV_COLOR_FORMAT_RGB888 expects) and lodepng for PNG.
+ * This file uses lodepng's C API only; keep its optional C++ wrapper out of
+ * lodepng.h's extern "C" block. */
+#define LODEPNG_NO_COMPILE_CPP 1
 #include <src/libs/lodepng/lodepng.h>
 #include <src/libs/tjpgd/tjpgd.h>
 
