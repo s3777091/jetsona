@@ -1,3 +1,4 @@
 # Shell scripts run on the Jetson Linux target. Keep their shebangs and Bash
 # syntax free of Windows CRLF characters regardless of the checkout platform.
 *.sh text eol=lf
+*.py text eol=lf

@@ -1,18 +1,60 @@
 #!/bin/bash
 # Install the built firmware as a boot service on the Jetson.
 # Run after a successful build:  sudo ./scripts/install.sh
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JETSON_DIR="$(dirname "$SCRIPT_DIR")"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/config_loader.sh"
+jetson_load_config "${JETSON_CONFIG_FILE:-$JETSON_DIR/config.yaml}"
 BUILD_DIR="${JETSON_BUILD_DIR:-$JETSON_DIR/build}"
 case "$BUILD_DIR" in
     /*) ;;
     *) BUILD_DIR="$JETSON_DIR/$BUILD_DIR" ;;
 esac
 
+source_tree_sha256() {
+    {
+        git -C "$JETSON_DIR" rev-parse HEAD
+        git -C "$JETSON_DIR" diff --no-ext-diff --binary --submodule=diff HEAD --
+        git -C "$JETSON_DIR" ls-files --others --exclude-standard -z |
+            while IFS= read -r -d '' rel; do
+                [ -f "$JETSON_DIR/$rel" ] || continue
+                printf 'untracked:%s\n' "$rel"
+                sha256sum "$JETSON_DIR/$rel"
+            done
+        if [ -d "$JETSON_DIR/assets" ]; then
+            find "$JETSON_DIR/assets" -type f -print0 | LC_ALL=C sort -z |
+                xargs -0 -r sha256sum
+        fi
+    } | sha256sum | awk '{print $1}'
+}
+
 if [ ! -f "$BUILD_DIR/jetson_fw" ]; then
     echo "Build $BUILD_DIR/jetson_fw not found. Run cmake/make first." >&2
+    exit 1
+fi
+
+RECEIPT="$BUILD_DIR/.jetsona-build-receipt"
+if [ ! -f "$RECEIPT" ]; then
+    echo "Build receipt not found: $RECEIPT" >&2
+    echo "Run bash scripts/build.sh successfully before installing." >&2
+    exit 1
+fi
+# shellcheck disable=SC1090
+. "$RECEIPT"
+: "${BUILD_GIT_HEAD:?Invalid build receipt: BUILD_GIT_HEAD is missing}"
+: "${BUILD_SOURCE_SHA256:?Invalid build receipt: BUILD_SOURCE_SHA256 is missing}"
+: "${BUILD_BINARY_SHA256:?Invalid build receipt: BUILD_BINARY_SHA256 is missing}"
+CURRENT_GIT_HEAD="$(git -C "$JETSON_DIR" rev-parse HEAD 2>/dev/null || printf unknown)"
+CURRENT_SOURCE_SHA256="$(source_tree_sha256)"
+CURRENT_BINARY_SHA256="$(sha256sum "$BUILD_DIR/jetson_fw" | awk '{print $1}')"
+if [ "$BUILD_GIT_HEAD" != "$CURRENT_GIT_HEAD" ] ||
+   [ "$BUILD_SOURCE_SHA256" != "$CURRENT_SOURCE_SHA256" ] ||
+   [ "$BUILD_BINARY_SHA256" != "$CURRENT_BINARY_SHA256" ]; then
+    echo "Build receipt does not match the current source/binary." >&2
+    echo "Run bash scripts/build.sh again; refusing to install a stale build." >&2
     exit 1
 fi
 
@@ -32,7 +74,6 @@ sudo systemctl stop jetson-fw 2>/dev/null || true
 
 echo "==> Installing to /opt/jetson-fw"
 echo "==> Binary: $BUILD_DIR/jetson_fw"
-sudo mkdir -p /opt/jetson-fw
 
 # Keep Chromium out of the root service account. Xorg/firmware still need root
 # for the physical display, but the browser can then retain its normal process
@@ -73,7 +114,12 @@ if [ ! -f /var/lib/jetson-fw/settings.kv ]; then
     fi
 fi
 
-sudo cp "$BUILD_DIR/jetson_fw" /opt/jetson-fw/
+# /opt contains deployed files only; runtime settings/profiles live in
+# /var/lib/jetson-fw. Recreate it so deleted scripts/assets cannot survive an
+# upgrade and masquerade as part of the new version. No binary backup is kept.
+sudo rm -rf -- /opt/jetson-fw
+sudo install -d -m 0755 /opt/jetson-fw
+sudo install -m 0755 "$BUILD_DIR/jetson_fw" /opt/jetson-fw/jetson_fw
 # Chromium kiosk Dynamic Island + keyboard-focus micro-WM.
 # Optional: only built when libx11-dev was present at cmake time.
 if [ -f "$BUILD_DIR/jetson_kiosk_bar" ]; then
@@ -82,8 +128,8 @@ if [ -f "$BUILD_DIR/jetson_kiosk_bar" ]; then
 else
     echo "==> jetson_kiosk_bar not built (libx11-dev missing?); Chromium keeps full-screen kiosk mode" >&2
 fi
-sudo mkdir -p /opt/jetson-fw/assets
-sudo cp -r "$JETSON_DIR/assets/." /opt/jetson-fw/assets/
+sudo install -d -m 0755 /opt/jetson-fw/assets
+sudo cp -a "$JETSON_DIR/assets/." /opt/jetson-fw/assets/
 sudo cp "$JETSON_DIR/config.yaml" /opt/jetson-fw/
 sudo mkdir -p /opt/jetson-fw/scripts
 sudo cp "$JETSON_DIR/scripts/s3_assets.py" /opt/jetson-fw/scripts/

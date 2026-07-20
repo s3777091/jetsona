@@ -103,11 +103,22 @@ Cấu hình MinIO cho máy này / Jetson: chỉnh endpoint/bucket/region trong
 (bucket mặc định `jetsona-assets`, region `us-east-1`). Lần đầu tải assets
 về Jetson cần mạng; các lần sau dùng cache nên build được cả khi offline.
 
-Seed lại bucket (chỉ khi thêm/sửa asset rồi đẩy lên MinIO):
+Upload/sync bucket bằng `uv` trên máy phát triển (build trên Jetson không cần
+`uv`):
 
 ```bash
-python3 scripts/s3_assets.py upload   # đẩy ./assets -> bucket
-python3 scripts/s3_assets.py list     # liệt kê object trong bucket
+uv run --script scripts/s3_assets.py upload
+uv run --script scripts/s3_assets.py upload-file icons/drawer/my-icon.png
+uv run --script scripts/s3_assets.py delete-file icons/drawer/old-icon.png
+uv run --script scripts/s3_assets.py list
+```
+
+Tren Jetson, cap nhat va cai dat bang mot chuoi fail-fast (install chi chay khi
+pull, S3 sync va build deu thanh cong):
+
+```bash
+cd ~/jetsona
+git pull --ff-only && bash scripts/build.sh && sudo bash scripts/install.sh
 ```
 
 ### Font tải theo nhu cầu trong Cài đặt chung

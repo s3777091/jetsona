@@ -7,15 +7,14 @@
 # so a plain `cmake --build` / `make` also pulls assets.
 #
 # This is the "bo kiem tra" (checker): for every object in the bucket, download
-# only if the local file is missing or its size differs. Rebuilds after the
-# first download just re-check and touch nothing (instant, no re-download).
+# only if the local file is missing or its S3 ETag/MD5 differs. Rebuilds after
+# the first download just verify local content and avoid unnecessary downloads.
 #
 # MinIO setup comes from config.yaml; credentials come from .env (gitignored).
 # Explicit environment variables still take priority over both files.
 #
-# Offline-tolerant: if the fetch fails (no network / server down) but assets
-# are already present locally, we warn and exit 0 so a cached rebuild works
-# without connectivity. If assets are missing entirely we fail loudly.
+# Direct/CMake fetches tolerate an existing offline cache. scripts/build.sh
+# enables strict mode so a normal release build cannot silently use stale icons.
 
 set -euo pipefail
 
@@ -61,7 +60,15 @@ if [ "$RC" -eq 0 ]; then
     exit 0
 fi
 
-# Fetch failed. Tolerate it only if we already have assets cached locally.
+# A normal build sets strict mode: failing to contact S3 must not silently
+# produce firmware with old icons. Cached/offline builds remain available only
+# when explicitly requested with JETSON_SKIP_ASSET_FETCH=1.
+if [ "${JETSON_ASSET_FETCH_STRICT:-0}" = "1" ]; then
+    echo "fetch_assets.sh: strict S3 sync failed (rc=$RC); refusing stale assets." >&2
+    exit "$RC"
+fi
+
+# Non-strict direct/CMake fetch: tolerate failure only with an existing cache.
 AFTER="$(count_local)"
 if [ "$AFTER" -gt 0 ]; then
     echo "fetch_assets.sh: WARNING -- asset fetch failed (rc=$RC) but $AFTER file(s)" >&2

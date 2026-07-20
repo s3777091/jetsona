@@ -7,19 +7,20 @@ Jetson (Ubuntu 18.04, python3.6) without extra installs.
 Usage
 -----
   python3 scripts/s3_assets.py fetch     # build-time: download missing assets
-  python3 scripts/s3_assets.py upload     # one-time seed: push ./assets -> bucket
-  python3 scripts/s3_assets.py upload-file icons/app/reload.png
+  uv run --script scripts/s3_assets.py upload
+                                         # sync changed ./assets -> bucket
+  uv run --script scripts/s3_assets.py upload-file icons/app/reload.png
                                          # upload one changed local asset
-  python3 scripts/s3_assets.py delete-file icons/app/old.png
+  uv run --script scripts/s3_assets.py delete-file icons/app/old.png
                                          # delete selected local/S3 asset keys
   python3 scripts/s3_assets.py list      # debug: list objects in the bucket
   python3 scripts/s3_assets.py fetch-file fonts/cloud/Example.ttf
                                          # runtime: fetch exactly one asset
 
 `fetch` is the "bo kiem tra" (checker): it lists every object in the bucket and
-downloads ONLY objects whose local file is missing or whose size differs from
-the remote. Files already present and matching in size are skipped, so a
-rebuild after the first download just re-checks and touches nothing.
+downloads ONLY objects whose local file is missing or whose ETag/MD5 differs
+from the remote. This detects a changed icon even when its byte size is
+unchanged. Multipart objects without a simple MD5 ETag fall back to size.
 
 Clock-skew safe: MinIO rejects SigV4 requests when the client clock is more
 than ~15 minutes off. Instead of trusting the local clock we ask the server for
@@ -293,7 +294,7 @@ def _path_quote(s):
 # --------------------------------------------------------------------------- #
 
 def list_objects(s3, bucket, prefix=""):
-    """Return list of (key, size) for every object under prefix (ListObjectsV2)."""
+    """Return (key, size, etag) for every object under prefix."""
     objects = []
     continuation = None
     while True:
@@ -314,13 +315,37 @@ def list_objects(s3, bucket, prefix=""):
         for c in root.findall("s3:Contents", ns):
             key = c.findtext("s3:Key", default="", namespaces=ns)
             size = int(c.findtext("s3:Size", default="0", namespaces=ns))
-            objects.append((key, size))
+            etag = c.findtext("s3:ETag", default="", namespaces=ns).strip('"')
+            objects.append((key, size, etag))
         ct = root.findtext("s3:NextContinuationToken", default=None, namespaces=ns)
         is_trunc = root.findtext("s3:IsTruncated", default="false", namespaces=ns)
         if is_trunc != "true" or not ct:
             break
         continuation = ct
     return objects
+
+
+def file_md5(path):
+    digest = hashlib.md5()
+    with open(path, "rb") as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def local_object_matches(path, expected_size, etag):
+    if not os.path.isfile(path) or os.path.getsize(path) != expected_size:
+        return False
+    # A normal single-part S3/MinIO ETag is the object's MD5. Multipart ETags
+    # contain a dash and cannot be reproduced without knowing part boundaries.
+    normalized = etag.lower()
+    if (len(normalized) == 32 and
+            all(ch in "0123456789abcdef" for ch in normalized)):
+        return file_md5(path) == normalized
+    return True
 
 
 def download_object(s3, bucket, key, dest_path, expected_size):
@@ -394,7 +419,7 @@ def cmd_list(c):
     s3 = _make_s3(c)
     objs = list_objects(s3, c["bucket"], c["prefix"])
     print("bucket '{}' : {} objects".format(c["bucket"], len(objs)))
-    for key, size in objs:
+    for key, size, _etag in objs:
         print("  {:>10}  {}".format(size, key))
 
 
@@ -437,7 +462,7 @@ def cmd_fetch(c):
         len(objs), c["bucket"], assets_dir))
     trashed_paths = _trashed_asset_paths(assets_dir)
     downloaded = skipped = 0
-    for key, size in objs:
+    for key, size, etag in objs:
         rel = key[len(prefix):] if prefix and key.startswith(prefix) else key
         rel = rel.lstrip("/")
         if not rel or rel.endswith("/"):
@@ -457,7 +482,7 @@ def cmd_fetch(c):
             log("  trash   {}".format(rel))
             continue
         dest = os.path.join(assets_dir, rel.replace("/", os.sep))
-        if os.path.isfile(dest) and os.path.getsize(dest) == size:
+        if local_object_matches(dest, size, etag):
             skipped += 1
             log("  skip    {}".format(rel))
             continue
@@ -483,16 +508,17 @@ def cmd_fetch_file(c, rel):
         die("fetch-file requires a safe relative object key.", code=2)
     s3 = _make_s3(c)
     key = (c["prefix"] + rel) if c["prefix"] else rel
-    matches = [(obj_key, size) for obj_key, size in list_objects(s3, c["bucket"], key)
+    matches = [(obj_key, size, etag)
+               for obj_key, size, etag in list_objects(s3, c["bucket"], key)
                if obj_key == key]
     if not matches:
         die("object '{}' was not found in bucket '{}'.".format(key, c["bucket"]), code=2)
-    _, size = matches[0]
+    _, size, etag = matches[0]
     dest = os.path.join(c["assets_dir"], *rel.split("/"))
     # Catalog refreshes are tiny and should see same-size content changes;
     # immutable font binaries can use the normal size-based cache.
     force = rel.lower().endswith("catalog.tsv")
-    if not force and os.path.isfile(dest) and os.path.getsize(dest) == size:
+    if not force and local_object_matches(dest, size, etag):
         print("==> fetch-file: cached {}".format(rel))
         return
     download_object(s3, c["bucket"], key, dest, size)
@@ -533,13 +559,13 @@ def cmd_delete_files(c, paths):
     s3 = _make_s3(c)
     for rel in rels:
         key = (c["prefix"] + rel) if c["prefix"] else rel
-        matches = [obj_key for obj_key, _ in list_objects(s3, c["bucket"], key)
+        matches = [obj_key for obj_key, _, _ in list_objects(s3, c["bucket"], key)
                    if obj_key == key]
         if not matches:
             print("==> delete-file: already absent {}".format(key))
             continue
         delete_object(s3, c["bucket"], key)
-        remaining = [obj_key for obj_key, _ in list_objects(s3, c["bucket"], key)
+        remaining = [obj_key for obj_key, _, _ in list_objects(s3, c["bucket"], key)
                      if obj_key == key]
         if remaining:
             die("object '{}' still exists after DELETE.".format(key))
@@ -568,15 +594,22 @@ def cmd_upload(c):
         (" region=" + c["region"]) if created else ""))
     prefix = c["prefix"]
     files = list(_iter_local_files(assets_dir))
+    remote = {key: (size, etag)
+              for key, size, etag in list_objects(s3, c["bucket"], prefix)}
     print("==> upload: {} files from '{}' -> '{}/{}'".format(
         len(files), assets_dir, c["bucket"], prefix))
-    uploaded = 0
+    uploaded = skipped = 0
     for rel, full in files:
         key = prefix + rel if prefix else rel
+        remote_info = remote.get(key)
+        if (remote_info and local_object_matches(full, remote_info[0], remote_info[1])):
+            skipped += 1
+            log("  skip    {}".format(rel))
+            continue
         put_object(s3, c["bucket"], key, full)
         uploaded += 1
         log("  put     {}".format(rel))
-    print("==> done: {} uploaded.".format(uploaded))
+    print("==> done: {} uploaded, {} unchanged.".format(uploaded, skipped))
 
 
 COMMANDS = {"fetch": cmd_fetch, "upload": cmd_upload, "list": cmd_list}
