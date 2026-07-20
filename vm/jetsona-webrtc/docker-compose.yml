@@ -1,0 +1,14 @@
+services:
+  jetsona-webrtc:
+    build: .
+    image: jetsona-webrtc:latest
+    container_name: jetsona-webrtc
+    # host networking is required: the WHEP (mediamtx 127.0.0.1:8889) and input
+    # (sshd tunnel 127.0.0.1:46001) upstreams bind to the host's loopback only,
+    # so the container must share the host network to reach them. The app itself
+    # binds 127.0.0.1:9100 (HOST/PORT in the env file) and Caddy fronts it.
+    network_mode: host
+    env_file: /etc/jetsona-webrtc.env
+    environment:
+      NODE_ENV: production
+    restart: unless-stopped

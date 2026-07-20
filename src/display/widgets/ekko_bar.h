@@ -1,17 +1,15 @@
 #pragma once
 
-/* The Ekko composer -- a chat strip that sits just above the dock and blooms
- * in and out with the Dynamic Island orbit.
+/* The Ekko chat surface mounted inside the expanded Dynamic Island.
  *
  * The device has no microphone yet, so this is how the agent is actually
  * driven: the user types, Conversation runs the tool loop on its worker
- * thread, and the reply lands back here. It deliberately shows only the last
- * few turns; the full transcript still lives in ChatView (dock -> Ekko app),
- * which shares the same Conversation object and therefore the same history.
+ * thread, and the reply lands back here. The entire transcript is replayed
+ * when the island opens and lives in an independently scrollable list; the
+ * composer remains fixed at the bottom.
  *
- * Lives on lv_layer_top() so it stays reachable while an app overlay is open,
- * matching the island it belongs to. Timing (360 ms, ease-in-out) is copied
- * from the quick-menu bloom so the strip and the island read as one motion.
+ * Its parent is StatusBar::AssistantContentHost(), a child of the island's
+ * clipped content host. Timing (360 ms, ease-in-out) matches the island bloom.
  *
  * Threading: Conversation invokes its callbacks on a worker thread. Those
  * callbacks marshal through Application::Schedule and then take lv_lock before
@@ -33,11 +31,7 @@ namespace home {
 
 class EkkoBar {
 public:
-    /* `bottom_margin` is the gap from the bottom of the screen to the bar's
-     * lower edge -- callers pass the dock's height plus its own margin so the
-     * strip lands directly above the dock. */
-    EkkoBar(lv_obj_t *parent, int screen_width, int bottom_margin,
-            std::shared_ptr<jetson::Conversation> conv);
+    EkkoBar(lv_obj_t *parent, std::shared_ptr<jetson::Conversation> conv);
     ~EkkoBar();
 
     EkkoBar(const EkkoBar &) = delete;
@@ -55,9 +49,9 @@ private:
     void InstallToolEventHook();
     void DoSend();
     void AddBubble(const std::string &role, const std::string &text);
+    void RebuildHistory();
     void SetStatus(const std::string &text);
     void SetBusy(bool busy);
-    void TrimBubbles();
 
     static void OnSendClicked(lv_event_t *e);
     static void OnInputReady(lv_event_t *e);
@@ -75,8 +69,6 @@ private:
     lv_obj_t *input_ = nullptr;
     lv_obj_t *send_btn_ = nullptr;
 
-    int width_ = 0;
-    int bottom_margin_ = 0;
     uint32_t accent_ = 0xffb24d;
     bool visible_ = false;
 };

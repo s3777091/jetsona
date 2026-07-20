@@ -20,20 +20,14 @@ using jetson::ui::Color;
 using jetson::ui::LvglLockGuard;
 
 namespace {
-// Matched to StatusBar's island bloom so the strip and the pill move together.
+// Matched to StatusBar's island bloom so the transcript and pill move together.
 constexpr uint32_t kBloomMs = 360;
-constexpr int kBarHeight = 168;
-constexpr int kMaxBubbles = 8;
-// How far below its resting place the strip starts when blooming in.
-constexpr int kSlidePx = 24;
 } // namespace
 
-EkkoBar::EkkoBar(lv_obj_t *parent, int screen_width, int bottom_margin,
+EkkoBar::EkkoBar(lv_obj_t *parent,
                  std::shared_ptr<jetson::Conversation> conv)
     : conv_(std::move(conv)),
-      alive_(std::make_shared<std::atomic<bool>>(true)),
-      width_(std::min(screen_width - 48, 620)),
-      bottom_margin_(bottom_margin) {
+      alive_(std::make_shared<std::atomic<bool>>(true)) {
     BuildUi(parent);
 }
 
@@ -52,19 +46,9 @@ void EkkoBar::BuildUi(lv_obj_t *parent) {
 
     root_ = lv_obj_create(parent);
     lv_obj_remove_style_all(root_);
-    lv_obj_set_size(root_, width_, kBarHeight);
-    lv_obj_align(root_, LV_ALIGN_BOTTOM_MID, 0, -bottom_margin_);
-    lv_obj_set_style_bg_color(root_, Color(0x1b1c20), 0);
-    lv_obj_set_style_bg_opa(root_, LV_OPA_90, 0);
-    lv_obj_set_style_radius(root_, 20, 0);
-    lv_obj_set_style_border_width(root_, 1, 0);
-    lv_obj_set_style_border_color(root_, Color(accent_), 0);
-    lv_obj_set_style_border_opa(root_, LV_OPA_60, 0);
-    lv_obj_set_style_shadow_color(root_, lv_color_black(), 0);
-    lv_obj_set_style_shadow_width(root_, 22, 0);
-    lv_obj_set_style_shadow_offset_y(root_, 6, 0);
-    lv_obj_set_style_shadow_opa(root_, LV_OPA_50, 0);
-    lv_obj_set_style_pad_all(root_, 12, 0);
+    lv_obj_set_size(root_, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_opa(root_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(root_, 0, 0);
     lv_obj_set_style_pad_row(root_, 6, 0);
     lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
@@ -72,16 +56,25 @@ void EkkoBar::BuildUi(lv_obj_t *parent) {
     lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_opa(root_, LV_OPA_0, 0);
 
-    // ---- Recent turns ----
+    // ---- Full transcript (the only vertically scrolling region) ----
     list_ = lv_obj_create(root_);
     lv_obj_remove_style_all(list_);
     lv_obj_set_width(list_, lv_pct(100));
     lv_obj_set_flex_grow(list_, 1);
     lv_obj_set_flex_flow(list_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(list_, 6, 0);
+    lv_obj_set_flex_align(list_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_color(list_, Color(0x111722), 0);
+    lv_obj_set_style_bg_opa(list_, LV_OPA_75, 0);
+    lv_obj_set_style_radius(list_, 16, 0);
+    lv_obj_set_style_pad_all(list_, 10, 0);
+    lv_obj_set_style_pad_row(list_, 8, 0);
     lv_obj_add_flag(list_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(list_, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(list_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scrollbar_mode(list_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_bg_color(list_, Color(accent_), LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(list_, LV_OPA_60, LV_PART_SCROLLBAR);
+    lv_obj_set_style_width(list_, 4, LV_PART_SCROLLBAR);
 
     // ---- Tool/status line ----
     status_ = lv_label_create(root_);
@@ -138,8 +131,8 @@ void EkkoBar::InstallToolEventHook() {
      *
      * Conversation holds a single tool-event callback, and ChatView installs
      * its own when the Ekko app opens. Re-installing on every Show() takes the
-     * hook back so the strip's status line does not go silent after a visit to
-     * the full-screen app. */
+     * hook back so the island's status line does not go silent after a visit
+     * to the legacy full-screen app. */
     if (!conv_) return;
     auto alive = alive_;
     EkkoBar *self = this;
@@ -155,8 +148,8 @@ void EkkoBar::InstallToolEventHook() {
 
 void EkkoBar::SetAccent(uint32_t accent) {
     accent_ = accent;
-    if (root_) lv_obj_set_style_border_color(root_, Color(accent_), 0);
     if (send_btn_) lv_obj_set_style_bg_color(send_btn_, Color(accent_), 0);
+    if (list_) lv_obj_set_style_bg_color(list_, Color(accent_), LV_PART_SCROLLBAR);
 }
 
 // ---- show / hide ---------------------------------------------------------
@@ -165,9 +158,6 @@ void EkkoBar::OnShowAnim(void *var, int32_t v) {
     auto *self = static_cast<EkkoBar *>(var);
     if (!self->root_) return;
     lv_obj_set_style_opa(self->root_, (lv_opa_t)v, 0);
-    // Slide up as it fades in: v runs 0..255, so the offset closes to zero.
-    const int slide = kSlidePx - (kSlidePx * v) / 255;
-    lv_obj_align(self->root_, LV_ALIGN_BOTTOM_MID, 0, -self->bottom_margin_ + slide);
 }
 
 void EkkoBar::OnHideDone(lv_anim_t *a) {
@@ -184,6 +174,7 @@ void EkkoBar::Show() {
 
     lv_obj_clear_flag(root_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(root_);
+    RebuildHistory();
     InstallToolEventHook();
     if (conv_ && conv_->busy()) SetBusy(true);
 
@@ -198,7 +189,7 @@ void EkkoBar::Show() {
     lv_anim_start(&a);
 
     /* The USB keyboard types into whatever the keypad group has focused, so
-     * joining the group here (and leaving on hide) is what makes the strip
+     * joining the group here (and leaving on hide) is what makes the composer
      * usable without a touchscreen. Focus is set explicitly rather than from a
      * FOCUSED handler -- see the recursion note in chat_view.cc. */
     if (auto *g = jetson::LvglRuntime::Instance().keypad_group()) {
@@ -232,11 +223,17 @@ void EkkoBar::Hide() {
 
 // ---- transcript ----------------------------------------------------------
 
-void EkkoBar::TrimBubbles() {
-    // Only the tail is worth keeping on a strip this size; the Ekko app shows
-    // the full history from the same Conversation.
-    while (lv_obj_get_child_count(list_) > kMaxBubbles)
-        lv_obj_delete(lv_obj_get_child(list_, 0));
+void EkkoBar::RebuildHistory() {
+    if (!list_) return;
+    lv_obj_clean(list_);
+    if (!conv_) return;
+    for (const auto &message : conv_->History()) {
+        if ((message.role != "user" && message.role != "assistant") ||
+            message.content.empty()) {
+            continue;
+        }
+        AddBubble(message.role, message.content);
+    }
 }
 
 void EkkoBar::AddBubble(const std::string &role, const std::string &text) {
@@ -256,7 +253,7 @@ void EkkoBar::AddBubble(const std::string &role, const std::string &text) {
     auto *bubble = lv_label_create(row);
     lv_obj_set_style_text_font(bubble, jetson::BuiltinTextFaceAt(14), 0);
     lv_label_set_long_mode(bubble, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(bubble, width_ * 4 / 5);
+    lv_obj_set_width(bubble, lv_pct(82));
     lv_label_set_text(bubble, text.c_str());
     lv_obj_set_style_text_color(bubble, is_user ? lv_color_black() : lv_color_white(), 0);
     lv_obj_set_style_bg_color(bubble, is_user ? Color(accent_) : Color(0x2b2d33), 0);
@@ -264,7 +261,6 @@ void EkkoBar::AddBubble(const std::string &role, const std::string &text) {
     lv_obj_set_style_radius(bubble, 12, 0);
     lv_obj_set_style_pad_all(bubble, 8, 0);
 
-    TrimBubbles();
     lv_obj_scroll_to_view_recursive(row, LV_ANIM_OFF);
 }
 

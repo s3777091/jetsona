@@ -790,14 +790,13 @@ std::shared_ptr<jetson::Conversation> Ds02HomeDisplay::EnsureConversation() {
 }
 
 void Ds02HomeDisplay::CreateEkkoBar() {
-    /* Lives on lv_layer_top() beside the island rather than on root_, so it
-     * stays usable while an app overlay covers the dock -- the orbit it belongs
-     * to is drawn there too. Sits directly above the dock. */
-    ekko_bar_ = std::make_unique<EkkoBar>(lv_layer_top(), width_,
-                                          kDockBottomMargin + kDockHeight + 10,
-                                          EnsureConversation());
+    /* Mount the transcript directly inside the Dynamic Island. This keeps the
+     * full-screen assistant one clipped/animated surface instead of an orbit
+     * plus a detached composer above the dock. */
+    if (!status_bar_ || !status_bar_->AssistantContentHost()) return;
+    ekko_bar_ = std::make_unique<EkkoBar>(
+        status_bar_->AssistantContentHost(), EnsureConversation());
 
-    if (!status_bar_) return;
     status_bar_->SetOrbitVisibilityCb([this](bool visible, uint32_t accent) {
         // Already on the LVGL thread under the lock (StatusBar's contract).
         if (!ekko_bar_) return;
@@ -974,8 +973,7 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
     // Zing browser/player while Reminders keeps its own persistent task list;
     // Bluetooth remains available from the status bar and Settings. The
     // wallpaper gallery lives in the drawer's "Ảnh" tile. The siri icon
-    // toggles the Ekko Bot orbit inside the Dynamic Island instead of opening
-    // a full-screen app.
+    // blooms the Dynamic Island into the full-screen Ekko chat surface.
     switch (focused) {
     case kDockFinder: // finder -> toggle app drawer
         self->standby_state_ = (self->standby_state_ == StandbyState::Launcher)

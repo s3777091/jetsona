@@ -76,17 +76,21 @@ public:
     void ShowNotification(const char *text, int duration_ms = 3000);
     void ShowWelcome(int duration_ms = 3800);
 
-    /* Ekko Bot orbit: blooms the island into the animated assistant orb
+    /* Ekko Bot: blooms the island into a near-full-screen chat surface
      * (palette from Settings assistant/orbit_color). Toggles -- a second call
-     * collapses it, as does tapping the island or pressing anywhere outside
-     * it. Call on the LVGL handler thread under the LVGL lock, like the other
-     * island entry points. */
+     * collapses it. Call on the LVGL handler thread under the LVGL lock, like
+     * the other island entry points. */
     void ToggleAssistantOrbit();
 
-    /* Fired (already under the LVGL lock) whenever the orbit becomes visible or
-     * goes away, including the outside-press and island-tap close paths. The
-     * home screen uses it to bloom the Ekko composer above the dock in step
-     * with the orb. The uint32_t is the active palette's accent color. */
+    /* Parent reserved for the assistant transcript/composer. It is a child of
+     * the clipped Dynamic Island, so content placed here is revealed by the
+     * same bloom instead of floating in a separate overlay. */
+    lv_obj_t *AssistantContentHost() const { return assistant_content_host_; }
+
+    /* Fired (already under the LVGL lock) whenever the assistant becomes
+     * visible or goes away. The home screen uses it to reveal the transcript
+     * inside the island in step with the bloom. The uint32_t is the active
+     * palette's accent color. */
     void SetOrbitVisibilityCb(std::function<void(bool visible, uint32_t accent)> cb) {
         orbit_visibility_cb_ = std::move(cb);
     }
@@ -173,12 +177,14 @@ private:
     // clips/fades them while the island grows instead of drawing detached
     // popovers below the status bar.
     lv_obj_t *quick_host_ = nullptr;
-    // Ekko Bot orbit surface (assistant_orbit.cc). Lives with the quick menus
-    // inside quick_host_ and shares their bloom/collapse lifecycle, but has no
-    // auto-close timer: it stays until dismissed.
+    // Ekko Bot full-screen assistant surface. The compact animated orb lives
+    // in its header; the transcript/composer is mounted in
+    // assistant_content_host_ by Ds02HomeDisplay.
     lv_obj_t *orbit_menu_ = nullptr;
     lv_obj_t *orbit_orb_ = nullptr;
     lv_obj_t *orbit_label_ = nullptr;
+    lv_obj_t *assistant_content_host_ = nullptr;
+    lv_obj_t *assistant_close_btn_ = nullptr;
     uint32_t orbit_accent_ = 0xffb24d;
     std::function<void(bool, uint32_t)> orbit_visibility_cb_;
     // Deduped so the several close paths that all end in StopOrbitAnimation()
@@ -340,6 +346,7 @@ private:
     static void OnVolumeChanged(lv_event_t *e);
     static void OnMuteClick(lv_event_t *e);
     static void OnBrightnessChanged(lv_event_t *e);
+    static void OnAssistantClose(lv_event_t *e);
     static void OnIslandClick(lv_event_t *e);
     static void OnIslandLongPress(lv_event_t *e);
     // Pointer-indev press hook: closes the orbit on any press outside the

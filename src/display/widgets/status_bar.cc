@@ -55,6 +55,11 @@ constexpr int kDotD = 34;
 constexpr int kCompanionD = 34;
 constexpr int kCompanionGap = 8;
 constexpr int kCompanionY = kTopInset + (kMediaCompactH - kCompanionD) / 2;
+// The assistant keeps only a slim outer gutter so the expanded island reads
+// as full-screen while its rounded edge and origin remain visible.
+constexpr int kAssistantScreenGutter = 4;
+constexpr int kAssistantMenuPadX = 10;
+constexpr int kAssistantMenuPadY = 8;
 
 // Box size for the PNG status icons (assets/icons/app, 28x28 sources).
 constexpr int kStatusIconPx = 20;
@@ -102,7 +107,8 @@ StatusBar::StatusBar(lv_obj_t *parent) {
     lv_obj_clear_flag(left_cluster_,
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // Connectivity/actions followed by battery, power and clear-cache.
+    // Clear-cache leads the connectivity/actions row, followed by battery and
+    // power.  Keep the creation order in sync with the visual flex order.
     // 220 px fits the complete row while keeping it clear of the island.
     right_cluster_ = lv_obj_create(status_strip_);
     lv_obj_remove_style_all(right_cluster_);
@@ -276,6 +282,10 @@ StatusBar::StatusBar(lv_obj_t *parent) {
                       (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     lv_obj_add_flag(quick_host_, LV_OBJ_FLAG_HIDDEN);
 
+    optimize_widget_ = std::make_unique<OptimizeWidget>(right_cluster_, quick_host_);
+    optimize_widget_->SetBeforeOpenCb([this](lv_obj_t *content, lv_obj_t *icon) {
+        ShowQuickMenu(content, icon);
+    });
     add_icon(&bt_icon_, "bluetooth", OnBtClick);
     add_icon(&wifi_icon_, "wifi", OnWifiClick);
     add_icon(&sound_icon_, "speaker", OnSoundClick);
@@ -331,13 +341,9 @@ StatusBar::StatusBar(lv_obj_t *parent) {
         battery_icon_nub_,
         (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    // Requested tail order: battery -> power -> clear-cache. Charging is
-    // represented by a bolt inside the battery instead of a separate PNG.
+    // Requested tail order: battery -> power. Charging is represented by a
+    // bolt inside the battery instead of a separate PNG.
     add_icon(&power_icon_, "start", OnPowerClick);
-    optimize_widget_ = std::make_unique<OptimizeWidget>(right_cluster_, quick_host_);
-    optimize_widget_->SetBeforeOpenCb([this](lv_obj_t *content, lv_obj_t *icon) {
-        ShowQuickMenu(content, icon);
-    });
 
     // Build every quick surface only after the shared island host exists.
     BuildQuickMenus();
@@ -1233,8 +1239,19 @@ void StatusBar::ShowQuickMenu(lv_obj_t *menu, lv_obj_t *anchor) {
 void StatusBar::ResizeQuickIsland(lv_obj_t *menu, bool animated) {
     if (!menu || !pill_) return;
     lv_obj_update_layout(menu);
-    const int target_w = std::min(460, std::max(kPillW, lv_obj_get_width(menu) + 20));
-    const int target_h = std::min(350, std::max(kPillH, lv_obj_get_height(menu) + 16));
+    int target_w = std::min(460, std::max(kPillW, lv_obj_get_width(menu) + 20));
+    int target_h = std::min(350, std::max(kPillH, lv_obj_get_height(menu) + 16));
+    if (menu == orbit_menu_) {
+        auto *display = lv_obj_get_display(pill_);
+        const int screen_w = display ? lv_display_get_horizontal_resolution(display) : 800;
+        const int screen_h = display ? lv_display_get_vertical_resolution(display) : 480;
+        target_w = std::max(kPillW, screen_w - kAssistantScreenGutter * 2);
+        target_h = std::max(kPillH, screen_h - kTopInset * 2);
+        // The menu remains inset from the island border; quick_host_ clips it
+        // continuously while the outer pill blooms from the sensor cutout.
+        lv_obj_set_size(menu, target_w - kAssistantMenuPadX * 2,
+                        target_h - kAssistantMenuPadY * 2);
+    }
     lv_obj_center(menu);
     if (animated) {
         AnimateIslandSize(target_w, target_h, false);
@@ -1321,20 +1338,73 @@ void StatusBar::BuildPowerMenu() {
 }
 
 void StatusBar::BuildOrbitMenu() {
-    orbit_menu_ = CreateQuickMenu(150);
-    lv_obj_set_flex_align(orbit_menu_, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    auto *display = lv_obj_get_display(pill_);
+    const int screen_w = display ? lv_display_get_horizontal_resolution(display) : 800;
+    const int screen_h = display ? lv_display_get_vertical_resolution(display) : 480;
+    const int island_w = std::max(kPillW, screen_w - kAssistantScreenGutter * 2);
+    const int island_h = std::max(kPillH, screen_h - kTopInset * 2);
+
+    orbit_menu_ = CreateQuickMenu(island_w - kAssistantMenuPadX * 2);
+    lv_obj_set_height(orbit_menu_, island_h - kAssistantMenuPadY * 2);
+    lv_obj_set_style_pad_all(orbit_menu_, 10, 0);
     lv_obj_set_style_pad_row(orbit_menu_, 8, 0);
+    lv_obj_set_flex_align(orbit_menu_, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     const auto &palette = OrbitPaletteById(SelectedOrbitId());
     orbit_accent_ = palette.accent;
-    orbit_orb_ = CreateOrbitOrb(orbit_menu_, palette, 112);
 
-    orbit_label_ = lv_label_create(orbit_menu_);
+    auto *header = lv_obj_create(orbit_menu_);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 52);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(header, 10, 0);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+    orbit_orb_ = CreateOrbitOrb(header, palette, 46);
+
+    auto *titles = lv_obj_create(header);
+    lv_obj_remove_style_all(titles);
+    lv_obj_set_height(titles, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(titles, 1);
+    lv_obj_set_flex_flow(titles, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(titles, 1, 0);
+    lv_obj_clear_flag(titles,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    auto *title = lv_label_create(titles);
+    lv_obj_set_style_text_font(title, &BUILTIN_TEXT_FONT, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_label_set_text(title, "Ekko AI");
+
+    orbit_label_ = lv_label_create(titles);
     lv_obj_set_style_text_font(orbit_label_, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(orbit_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_opa(orbit_label_, LV_OPA_70, 0);
+    lv_obj_set_style_text_color(orbit_label_, Color(orbit_accent_), 0);
+    lv_obj_set_style_text_opa(orbit_label_, LV_OPA_80, 0);
     lv_label_set_text(orbit_label_, palette.name);
+
+    assistant_close_btn_ = lv_button_create(header);
+    lv_obj_set_size(assistant_close_btn_, 38, 38);
+    lv_obj_set_style_radius(assistant_close_btn_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(assistant_close_btn_, Color(0x252a34), 0);
+    lv_obj_set_style_bg_opa(assistant_close_btn_, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(assistant_close_btn_, 0, 0);
+    auto *close_label = lv_label_create(assistant_close_btn_);
+    lv_obj_set_style_text_font(close_label, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(close_label, lv_color_white(), 0);
+    lv_label_set_text(close_label, LV_SYMBOL_CLOSE);
+    lv_obj_center(close_label);
+    lv_obj_add_event_cb(assistant_close_btn_, OnAssistantClose,
+                        LV_EVENT_CLICKED, this);
+
+    assistant_content_host_ = lv_obj_create(orbit_menu_);
+    lv_obj_remove_style_all(assistant_content_host_);
+    lv_obj_set_width(assistant_content_host_, lv_pct(100));
+    lv_obj_set_flex_grow(assistant_content_host_, 1);
+    lv_obj_clear_flag(assistant_content_host_,
+                      (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 }
 
 void StatusBar::StopOrbitAnimation() {
@@ -1365,12 +1435,14 @@ void StatusBar::ToggleAssistantOrbit() {
     orbit_accent_ = palette.accent;
     if (orbit_orb_) SetOrbitPalette(orbit_orb_, palette);
     if (orbit_label_) lv_label_set_text(orbit_label_, palette.name);
+    if (orbit_label_)
+        lv_obj_set_style_text_color(orbit_label_, Color(orbit_accent_), 0);
 
     ShowQuickMenu(orbit_menu_, nullptr);
     if (orbit_orb_) SetOrbitAnimated(orbit_orb_, true);
     NotifyOrbitVisible(true);
-    // Unlike the quick menus the orbit has no auto-close: it stays until the
-    // island is tapped, the dock icon toggles it, or a press lands outside.
+    // Unlike the quick menus the assistant has no auto-close: it stays until
+    // its close button, the dock icon, or the narrow outside gutter is tapped.
     if (quick_menu_timer_) { lv_timer_del(quick_menu_timer_); quick_menu_timer_ = nullptr; }
 }
 
@@ -2074,6 +2146,16 @@ void StatusBar::OnBrightnessChanged(lv_event_t *e) {
     }
     if (self->brightness_action_) self->brightness_action_(value);
     self->ArmQuickMenuTimer();
+}
+
+void StatusBar::OnAssistantClose(lv_event_t *e) {
+    auto *self = static_cast<StatusBar *>(lv_event_get_user_data(e));
+    if (!self) return;
+    LvglLockGuard lock;
+    if (self->quick_island_open_ &&
+        self->active_quick_menu_ == self->orbit_menu_) {
+        self->CloseQuickIsland(true);
+    }
 }
 
 void StatusBar::OnIslandClick(lv_event_t *e) {

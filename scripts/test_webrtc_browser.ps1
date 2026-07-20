@@ -1,7 +1,7 @@
 param(
     [string]$VmHost = '36.50.27.142',
     [string]$VmKey = "$env:USERPROFILE\.ssh\dathuynh",
-    [string]$Url = 'https://ai.protexa.cloud/jetsona/',
+    [string]$Url = 'https://ai.protexa.cloud/',
     [int]$DevToolsPort = 9337,
     [string]$ScreenshotPath = ''
 )
