@@ -625,14 +625,28 @@ def cmd_upload(c):
 # icons/backgrounds (Gallery wallpapers) and fonts/ are intentionally not
 # audited -- they are dynamic / user content and stay as-is.
 #
-# Keep these sets in sync with the code: `grep -rhoE ... src` over the
-# CreateAppIcon/SetAppIcon/AppIconDsc call sites + the dock/drawer AppDef and
-# kIconFiles arrays in src/display/home/ds02_home_display.cc.
+# Keep these sets in sync with the code. Grepping only the direct
+# `CreateAppIcon(x, "name", n)` call sites is NOT enough and once cost us 11
+# live icons: names also reach the cache through a variable (`add_icon`,
+# `add_app_row`, the SettingsView sidebar Entry table, MakeIconButton's
+# png_icon) and through BtKindIconName() in src/net/bluetooth_manager.h. Before
+# editing this set, grep for the bare name in quotes across all of src/, not
+# just the call sites, and remember that a missing PNG only logs
+# "lvgl_image: image not found" at runtime -- nothing fails the build.
 
 REFERENCED_APP_ICONS = {
+    # direct CreateAppIcon/SetAppIcon/AppIconDsc call sites
     "airplans", "bluetooth", "clean", "dropdown", "empty-trash", "eye", "fan",
     "lock", "pin", "speaker", "speaker-mute", "sun", "unknow-device", "vpn",
     "wifi", "cursor", "logo",
+    # status bar: power button + the crossed-out / wired radio states
+    "start", "no-wifi", "no-bluetooh", "ethernet",
+    # BtKindIconName() device categories (src/net/bluetooth_manager.h)
+    "controller-mini", "headphones",
+    # SettingsView sidebar Entry table + Applications rows
+    "screen", "settings", "app", "ekko-bot",
+    # RemindersView composer button (MakeIconButton png_icon)
+    "add",
 }
 REFERENCED_DOCK_ICONS = {
     "calendar", "finder", "folder", "music", "nightowl", "reminders",
@@ -669,6 +683,7 @@ def cmd_audit(c, delete=False):
     s3 = _make_s3(c)
     objs = list_objects(s3, c["bucket"], c["prefix"] + "icons/")
     unused, missing, audited = [], [], 0
+    sizes = {}
     seen = {dirp: set() for dirp in AUDITED_ICON_DIRS}
     for key, _size, _etag in objs:
         rel = key[len(c["prefix"]):] if c["prefix"] and key.startswith(c["prefix"]) else key
@@ -682,6 +697,7 @@ def cmd_audit(c, delete=False):
                 seen[dirp].add(rel[len(dirp):-4])
         if verdict == "__unused__":
             unused.append(rel)
+            sizes[rel] = _size
 
     expected = {
         "icons/app/": REFERENCED_APP_ICONS,
@@ -712,10 +728,18 @@ def cmd_audit(c, delete=False):
     if not unused:
         print("==> nothing to delete.")
         return
+    # The bucket has no versioning, so a delete here is final. Keep a local
+    # copy of every object before removing it: if the referenced set above
+    # turns out to be wrong, the icon is one `upload-file` away instead of
+    # gone for good.
+    backup_dir = os.path.join(c["assets_dir"], ".audit-backup")
     for rel in unused:
         key = (c["prefix"] + rel) if c["prefix"] else rel
+        dest = os.path.join(backup_dir, rel.replace("/", os.sep))
+        download_object(s3, c["bucket"], key, dest, sizes[rel])
         delete_object(s3, c["bucket"], key)
-        print("==> deleted {}".format(rel))
+        print("==> deleted {} (backup: {})".format(rel, dest))
+    print("==> {} objects backed up under {}".format(len(unused), backup_dir))
 
 
 COMMANDS = {
