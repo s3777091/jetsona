@@ -1,12 +1,34 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+// WHEP video surface + input bridge for the Jetson.
+//
+// Unchanged from the original client in behaviour: ICE is gathered fully before
+// the single WHEP POST, and pointer/keyboard events are forwarded over the
+// /input WebSocket as compact JSON frames. What changed is ownership — the
+// component no longer paints its own chrome or wires toolbar buttons by DOM id.
+// It reports link health upward through `onLink` and exposes `reconnect()` /
+// `returnToFirmware()` on a ref, so the dock and status pill can be rendered by
+// the console shell.
+
+import { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
 import { KEY_CODES, MOUSE_CODES } from '@/lib/codes';
+import type { DeviceState } from '@/lib/devices';
+
+export type RemoteScreenHandle = {
+  reconnect: () => void;
+  returnToFirmware: () => void;
+};
+
+export type LinkStatus = { state: DeviceState; detail?: string };
 
 type Props = {
   // Server-injected token. When JETSONA_INPUT_TOKEN is unset this is the literal
   // __JETSONA_INPUT_TOKEN__ placeholder so an external proxy can substitute it.
   inputToken: string;
+  /** Tear the peer connection down when the tab is not showing this device. */
+  active: boolean;
+  onLink: (status: LinkStatus) => void;
+  ref?: Ref<RemoteScreenHandle>;
 };
 
 type InputMessage =
@@ -15,28 +37,44 @@ type InputMessage =
   | { t: 'k'; code: number; value: 0 | 1 | 2 }
   | { t: 'return' };
 
-export default function WebRtcClient({ inputToken }: Props) {
-  const stageRef = useRef<HTMLElement | null>(null);
+export default function RemoteScreen({ inputToken, active, onLink, ref }: Props) {
   const captureRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const statusRef = useRef<HTMLDivElement | null>(null);
+
+  // The effect below owns the live connection; these let the imperative handle
+  // reach into it without re-running the effect.
+  const commandRef = useRef<RemoteScreenHandle>({ reconnect: () => {}, returnToFirmware: () => {} });
+  useImperativeHandle(ref, () => ({
+    reconnect: () => commandRef.current.reconnect(),
+    returnToFirmware: () => commandRef.current.returnToFirmware(),
+  }));
+
+  // onLink is called from long-lived closures; keep the latest without
+  // retriggering the connection effect on every parent render.
+  const onLinkRef = useRef(onLink);
+  useEffect(() => {
+    onLinkRef.current = onLink;
+  }, [onLink]);
 
   useEffect(() => {
-    const stage = stageRef.current;
     const capture = captureRef.current;
     const video = videoRef.current;
-    const statusBox = statusRef.current;
-    if (!stage || !capture || !video || !statusBox) return;
+    if (!capture || !video) return;
+
+    if (!active) {
+      onLinkRef.current({ state: 'unknown', detail: 'đã tạm dừng' });
+      return;
+    }
 
     // This app serves both the page and the WHEP/input endpoints at root.
     const pathRoot = '/';
     let pc: RTCPeerConnection | null = null;
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
 
-    const setStatus = (text: string, state: 'ok' | 'warn' | 'bad' = 'warn') => {
-      statusBox.textContent = text;
-      statusBox.className = state;
+    const setStatus = (state: DeviceState, detail?: string) => {
+      if (!disposed) onLinkRef.current({ state, detail });
     };
 
     const send = (message: InputMessage) => {
@@ -44,6 +82,7 @@ export default function WebRtcClient({ inputToken }: Props) {
     };
 
     const connectInput = () => {
+      if (disposed) return;
       if (ws) {
         ws.onclose = null;
         ws.close();
@@ -53,9 +92,11 @@ export default function WebRtcClient({ inputToken }: Props) {
         `${scheme}//${location.host}${pathRoot}input?token=${encodeURIComponent(inputToken)}`,
       );
       ws.onopen = () => {
-        if (pc && pc.connectionState === 'connected') setStatus('Trực tuyến', 'ok');
+        if (pc && pc.connectionState === 'connected') setStatus('online');
       };
-      ws.onclose = () => setTimeout(connectInput, 1500);
+      ws.onclose = () => {
+        if (!disposed) setTimeout(connectInput, 1500);
+      };
     };
 
     const waitForIce = (peer: RTCPeerConnection) => {
@@ -73,11 +114,12 @@ export default function WebRtcClient({ inputToken }: Props) {
     };
 
     const connectVideo = async () => {
+      if (disposed) return;
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
-      setStatus('Đang kết nối video…');
+      setStatus('sleep', 'đang kết nối video…');
       if (pc) pc.close();
       pc = new RTCPeerConnection({ bundlePolicy: 'max-bundle' });
       pc.addTransceiver('video', { direction: 'recvonly' });
@@ -86,11 +128,14 @@ export default function WebRtcClient({ inputToken }: Props) {
         video.play().catch(() => {});
       };
       pc.onconnectionstatechange = () => {
-        const state = pc!.connectionState;
-        if (state === 'connected')
-          setStatus(ws && ws.readyState === 1 ? 'Trực tuyến' : 'Video OK · input đang nối', 'ok');
+        if (!pc) return;
+        const state = pc.connectionState;
+        if (state === 'connected') {
+          setStatus('online', ws && ws.readyState === 1 ? undefined : 'input đang nối');
+        }
         if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-          setStatus(`Mất kết nối (${state})`, 'bad');
+          if (disposed) return;
+          setStatus('offline', `mất kết nối (${state})`);
           if (state !== 'closed') reconnectTimer = setTimeout(connectVideo, 2000);
         }
       };
@@ -107,22 +152,33 @@ export default function WebRtcClient({ inputToken }: Props) {
         if (!response.ok) throw new Error(`WHEP ${response.status}`);
         await pc.setRemoteDescription({ type: 'answer', sdp: await response.text() });
       } catch (error) {
-        setStatus(`Chưa có stream · thử lại (${(error as Error).message})`, 'bad');
+        if (disposed) return;
+        setStatus('offline', `chưa có stream (${(error as Error).message})`);
         reconnectTimer = setTimeout(connectVideo, 2500);
       }
     };
 
+    commandRef.current = {
+      reconnect: () => {
+        void connectVideo();
+        connectInput();
+      },
+      returnToFirmware: () => {
+        if (document.pointerLockElement) document.exitPointerLock();
+        send({ t: 'return' });
+        setStatus('sleep', 'đang trở về firmware…');
+      },
+    };
+
     const onClickCapture = () => {
       if (document.pointerLockElement !== capture) capture.requestPointerLock();
-      stage.focus();
     };
     const onPointerLockChange = () => {
-      document.body.classList.toggle('locked', document.pointerLockElement === capture);
-      if (document.pointerLockElement === capture) stage.focus();
+      document.body.classList.toggle('pointer-locked', document.pointerLockElement === capture);
     };
     const onMouseMove = (event: MouseEvent) => {
       if (document.pointerLockElement !== capture) return;
-      const scale = 800 / Math.max(1, stage.clientWidth);
+      const scale = 800 / Math.max(1, capture.clientWidth);
       send({
         t: 'm',
         dx: Math.round(event.movementX * scale),
@@ -145,14 +201,21 @@ export default function WebRtcClient({ inputToken }: Props) {
       send({ t: 'w', v: event.deltaY < 0 ? 1 : -1 });
       event.preventDefault();
     };
+    // Reserved by the console shell for leaving fullscreen — swallowing it here
+    // keeps the chord from also reaching the remote as a real key sequence.
+    const isExitChord = (event: KeyboardEvent) =>
+      event.ctrlKey && event.shiftKey && event.code === 'Backspace';
+
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.pointerLockElement !== capture) return;
+      if (isExitChord(event)) return;
       const code = KEY_CODES[event.code];
       if (!code) return;
       send({ t: 'k', code, value: event.repeat ? 2 : 1 });
       event.preventDefault();
     };
     const onKeyUp = (event: KeyboardEvent) => {
+      if (isExitChord(event)) return;
       const code = KEY_CODES[event.code];
       if (!code) return;
       send({ t: 'k', code, value: 0 });
@@ -174,27 +237,11 @@ export default function WebRtcClient({ inputToken }: Props) {
     window.addEventListener('keyup', onKeyUp, true);
     window.addEventListener('blur', onBlur);
 
-    // Toolbar buttons (static in JSX below; wire handlers here by id).
-    const fullscreenBtn = document.getElementById('fullscreen');
-    const reconnectBtn = document.getElementById('reconnect');
-    const returnBtn = document.getElementById('return');
-    const onFullscreen = () => stage.requestFullscreen();
-    const onReconnect = () => connectVideo();
-    const onReturn = () => {
-      if (confirm('Đóng Chromium và trở về giao diện firmware?')) {
-        if (document.pointerLockElement) document.exitPointerLock();
-        send({ t: 'return' });
-        setStatus('Đang trở về firmware…');
-      }
-    };
-    fullscreenBtn?.addEventListener('click', onFullscreen);
-    reconnectBtn?.addEventListener('click', onReconnect);
-    returnBtn?.addEventListener('click', onReturn);
-
     connectInput();
-    connectVideo();
+    void connectVideo();
 
     return () => {
+      disposed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       capture.removeEventListener('click', onClickCapture);
       document.removeEventListener('pointerlockchange', onPointerLockChange);
@@ -206,28 +253,26 @@ export default function WebRtcClient({ inputToken }: Props) {
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('keyup', onKeyUp, true);
       window.removeEventListener('blur', onBlur);
-      fullscreenBtn?.removeEventListener('click', onFullscreen);
-      reconnectBtn?.removeEventListener('click', onReconnect);
-      returnBtn?.removeEventListener('click', onReturn);
+      document.body.classList.remove('pointer-locked');
       if (ws) {
         ws.onclose = null;
         ws.close();
       }
       if (pc) pc.close();
+      commandRef.current = { reconnect: () => {}, returnToFirmware: () => {} };
     };
-  }, [inputToken]);
+  }, [inputToken, active]);
 
   return (
-    <main id="stage" tabIndex={0} ref={stageRef}>
-      <video id="video" autoPlay muted playsInline ref={videoRef} />
-      <div id="capture" ref={captureRef} />
-      <div id="status" className="warn" ref={statusRef}>Đang kết nối…</div>
-      <div id="toolbar">
-        <button id="return" type="button">Về firmware</button>
-        <button id="reconnect" type="button">Kết nối lại</button>
-        <button id="fullscreen" type="button">Toàn màn hình</button>
-      </div>
-      <div id="hint">Bấm vào màn hình để giữ chuột · Esc để thả chuột</div>
-    </main>
+    <>
+      <video
+        ref={videoRef}
+        autoPlay
+        muted
+        playsInline
+        className="size-full object-contain"
+      />
+      <div ref={captureRef} className="capture-surface absolute inset-0 cursor-crosshair touch-none" />
+    </>
   );
 }

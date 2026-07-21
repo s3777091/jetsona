@@ -1,95 +1,188 @@
+@import 'tailwindcss';
+
+/* shadcn design tokens. The console is dark-only, so the dark palette lives on
+   :root directly rather than behind a `.dark` variant. */
 :root {
-  color-scheme: dark;
-  font-family: Inter, system-ui, sans-serif;
+  --background: #0a0912;
+  --foreground: #ececf1;
+  --card: #12111c;
+  --card-foreground: #ececf1;
+  --popover: #12111c;
+  --popover-foreground: #ececf1;
+  --primary: #7c5cff;
+  --primary-foreground: #0a0912;
+  --secondary: #1e1c2b;
+  --secondary-foreground: #ececf1;
+  --muted: #16151f;
+  --muted-foreground: #9b98ad;
+  --accent: #221f33;
+  --accent-foreground: #ececf1;
+  --destructive: #f87171;
+  --destructive-foreground: #1a0a0a;
+  --border: #2a2739;
+  --input: #2a2739;
+  --ring: #7c5cff;
+  --radius: 0.75rem;
 }
-* {
-  box-sizing: border-box;
+
+@theme inline {
+  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
 }
-html,
-body {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  overflow: hidden;
-  background: #05070a;
+
+@theme {
+  /* Device status palette, shared by the pill, the dock dot and the overlay. */
+  --color-state-online: #4ade80;
+  --color-state-sleep: #fbbf24;
+  --color-state-offline: #f87171;
 }
-body {
-  display: grid;
-  place-items: center;
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: #05070a;
+    color-scheme: dark;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* While the pointer is locked the OS cursor is meaningless — hide it over the
+     capture surface and fade the hint out. */
+  body.pointer-locked .capture-surface {
+    cursor: none;
+  }
+  body.pointer-locked .lock-hint {
+    opacity: 0;
+  }
 }
-#stage {
-  position: relative;
-  width: min(100vw, calc(100vh * 5 / 3));
-  aspect-ratio: 5 / 3;
-  background: #000;
-  box-shadow: 0 0 80px #000;
-  outline: none;
+
+@layer utilities {
+  /* Fullscreen enter/exit. The Fullscreen API resizes the element in a single
+     frame, so the scale-up is what actually sells the transition — a short,
+     overshoot-free ease-out that reads as the window "growing" into the
+     viewport. Mirrored on the way out. */
+  .animate-stage-zoom-in {
+    animation: stage-zoom-in 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .animate-stage-zoom-out {
+    animation: stage-zoom-out 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .animate-loading-dot {
+    animation: loading-dot 1.4s ease-in-out infinite both;
+  }
+  .animate-toast-in {
+    animation: toast-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .animate-fade-in {
+    animation: fade-in 220ms ease-out both;
+  }
+  .animate-card-in {
+    animation: card-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
 }
-video {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: contain;
-  image-rendering: auto;
+
+@keyframes stage-zoom-in {
+  from {
+    transform: scale(0.9);
+    opacity: 0.4;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
-#capture {
-  position: absolute;
-  inset: 0;
-  cursor: crosshair;
-  touch-action: none;
+
+@keyframes stage-zoom-out {
+  from {
+    transform: scale(1.06);
+    opacity: 0.5;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
-#status {
-  position: absolute;
-  left: 12px;
-  top: 12px;
-  padding: 7px 10px;
-  border-radius: 7px;
-  background: rgba(0, 0, 0, 0.7);
-  color: #fff;
-  font-size: 13px;
-  pointer-events: none;
+
+@keyframes loading-dot {
+  0%,
+  80%,
+  100% {
+    transform: scale(0.6);
+    opacity: 0.35;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
-#toolbar {
-  position: absolute;
-  right: 12px;
-  top: 12px;
-  display: flex;
-  gap: 7px;
+
+@keyframes toast-in {
+  from {
+    transform: translateY(10px) scale(0.97);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
 }
-button {
-  border: 1px solid #ffffff35;
-  border-radius: 7px;
-  padding: 7px 10px;
-  background: rgba(0, 0, 0, 0.7);
-  color: #fff;
-  cursor: pointer;
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
-#hint {
-  position: absolute;
-  left: 50%;
-  bottom: 18px;
-  transform: translateX(-50%);
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.72);
-  color: #fff;
-  font-size: 13px;
-  pointer-events: none;
-  transition: opacity 0.2s;
-  white-space: nowrap;
+
+@keyframes card-in {
+  from {
+    transform: translateY(14px) scale(0.98);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
 }
-.ok {
-  color: #7cf0a0;
-}
-.warn {
-  color: #ffd166;
-}
-.bad {
-  color: #ff7070;
-}
-body.locked #capture {
-  cursor: none;
-}
-body.locked #hint {
-  opacity: 0;
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-stage-zoom-in,
+  .animate-stage-zoom-out,
+  .animate-toast-in,
+  .animate-fade-in,
+  .animate-card-in {
+    animation: none;
+  }
 }

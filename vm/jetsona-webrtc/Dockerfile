@@ -10,7 +10,9 @@ FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY next.config.mjs tsconfig.json server.mjs ./
+# postcss.config.mjs is what wires Tailwind v4 into the Next build; without it
+# `next build` silently emits a stylesheet with no utilities in it.
+COPY next.config.mjs tsconfig.json postcss.config.mjs server.mjs ./
 COPY src ./src
 RUN npm run build
 
