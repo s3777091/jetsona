@@ -5,6 +5,8 @@
 // — the Jetson sits on its LAN and emits the magic packet — but has no capture
 // pipeline yet, so its tab renders a placeholder instead of a video surface.
 
+import { Cpu, Monitor, type LucideIcon } from 'lucide-react';
+
 export type DeviceId = 'pc' | 'jetson';
 
 /** Coarse health of a device, driving every colour in the UI. */
@@ -13,13 +15,17 @@ export type DeviceState = 'online' | 'sleep' | 'offline' | 'unknown';
 export type DeviceMeta = {
   id: DeviceId;
   label: string;
+  /** Shown in the switcher instead of the label, which made the pill lopsided. */
+  icon: LucideIcon;
   /** Whether this device has a WebRTC screen to attach to. */
   hasStream: boolean;
+  /** Whether the power button can act on it (only the PC answers Wake-on-LAN). */
+  canPower: boolean;
 };
 
 export const DEVICES: DeviceMeta[] = [
-  { id: 'pc', label: 'PC', hasStream: false },
-  { id: 'jetson', label: 'Jetson Nano', hasStream: true },
+  { id: 'pc', label: 'PC', icon: Monitor, hasStream: false, canPower: true },
+  { id: 'jetson', label: 'Jetson Nano', icon: Cpu, hasStream: true, canPower: false },
 ];
 
 export const STATE_LABEL: Record<DeviceState, string> = {

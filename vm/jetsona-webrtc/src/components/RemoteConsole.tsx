@@ -27,7 +27,7 @@ import PowerOverlay from '@/components/PowerOverlay';
 import RemoteScreen, { type LinkStatus, type RemoteScreenHandle } from '@/components/RemoteScreen';
 import StatusPill from '@/components/StatusPill';
 import { Toaster, useToasts } from '@/components/ui/toast';
-import { STATE_LABEL, type DeviceId, type DeviceState } from '@/lib/devices';
+import { DEVICES, STATE_LABEL, type DeviceId, type DeviceState } from '@/lib/devices';
 import { cn } from '@/lib/utils';
 
 /** How long to wait for the PC to answer pings before calling the boot failed. */
@@ -106,8 +106,10 @@ export default function RemoteConsole({ inputToken }: { inputToken: string }) {
     return () => clearTimeout(id);
   }, [waking, push]);
 
+  // Scoped to the PC deliberately: it is the only device that answers
+  // Wake-on-LAN, and the dock button is disabled on any other tab rather than
+  // yanking the user over to the PC.
   const onWake = useCallback(async () => {
-    setDevice('pc');
     if (waking) return;
     if (pcOnline) {
       push('info', 'PC đang bật', 'Không cần gửi Wake-on-LAN.');
@@ -189,6 +191,8 @@ export default function RemoteConsole({ inputToken }: { inputToken: string }) {
   const states: Record<DeviceId, DeviceState> = { pc: pcState, jetson: link.state };
   const current = device === 'pc' ? pcState : link.state;
   const currentDetail = device === 'pc' ? (pcError ?? undefined) : link.detail;
+  const currentDevice = DEVICES.find((entry) => entry.id === device)!;
+  const canPower = currentDevice.canPower;
 
   // The PC pill talks about power, the Jetson pill about the video link.
   const PC_LABEL: Record<DeviceState, string> = {
@@ -224,7 +228,14 @@ export default function RemoteConsole({ inputToken }: { inputToken: string }) {
   }, []);
 
   const actions: DockAction[] = [
-    { id: 'power', label: 'Bật máy (Wake on LAN)', icon: Power, onSelect: onWake, busy: waking },
+    {
+      id: 'power',
+      label: canPower ? 'Bật máy (Wake on LAN)' : `${currentDevice.label} không hỗ trợ bật từ xa`,
+      icon: Power,
+      onSelect: onWake,
+      busy: waking,
+      disabled: !canPower,
+    },
     {
       id: 'fullscreen',
       label: isFullscreen ? 'Thoát toàn màn hình' : 'Toàn màn hình',
@@ -240,8 +251,8 @@ export default function RemoteConsole({ inputToken }: { inputToken: string }) {
       onSelect: onReturnToFirmware,
       disabled: device !== 'jetson',
     },
-    { id: 'controller', label: 'Tay cầm', icon: Gamepad2, disabled: true },
-    { id: 'settings', label: 'Cài đặt', icon: Settings, disabled: true },
+    { id: 'controller', label: 'Tay cầm', icon: Gamepad2, disabled: true, placeholder: true },
+    { id: 'settings', label: 'Cài đặt', icon: Settings, disabled: true, placeholder: true },
     { id: 'logout', label: 'Đăng xuất', icon: LogOut, onSelect: onLogout },
   ];
 
@@ -270,7 +281,7 @@ export default function RemoteConsole({ inputToken }: { inputToken: string }) {
           {device === 'jetson' ? (
             <RemoteScreen ref={screenRef} inputToken={inputToken} active onLink={onLink} />
           ) : (
-            <PcPanel state={pcState} detail={pcError ?? undefined} onWake={onWake} waking={waking} />
+            <PcPanel state={pcState} detail={pcError ?? undefined} />
           )}
 
           <div className="absolute left-4 top-4 z-20">
