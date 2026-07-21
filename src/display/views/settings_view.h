@@ -309,6 +309,7 @@ private:
     static void OnNightShiftToggle(lv_event_t *e);
     static void OnNightWarmthChanged(lv_event_t *e);
     static void OnTouchWakeToggle(lv_event_t *e);
+    static void OnSleepModeToggle(lv_event_t *e);
     static void OnAlwaysOnToggle(lv_event_t *e);
     static void OnAlwaysOnWallpaperToggle(lv_event_t *e);
     static void OnAlwaysOnBlurToggle(lv_event_t *e);
