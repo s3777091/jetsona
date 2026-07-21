@@ -718,6 +718,12 @@ def cmd_audit(c, delete=False):
         print("==> deleted {}".format(rel))
 
 
+COMMANDS = {
+    "fetch": cmd_fetch,
+    "upload": cmd_upload,
+    "list": cmd_list,
+}
+
 
 def main(argv):
     _load_project_defaults()
