@@ -65,7 +65,7 @@ void EkkoBar::BuildUi(lv_obj_t *parent) {
     lv_obj_set_flex_align(list_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_bg_color(list_, Color(0x111722), 0);
-    lv_obj_set_style_bg_opa(list_, LV_OPA_75, 0);
+    lv_obj_set_style_bg_opa(list_, LV_OPA_80, 0);
     lv_obj_set_style_radius(list_, 16, 0);
     lv_obj_set_style_pad_all(list_, 10, 0);
     lv_obj_set_style_pad_row(list_, 8, 0);
