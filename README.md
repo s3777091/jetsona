@@ -208,12 +208,9 @@ token, password và credential. Biến môi trường truyền trực tiếp khi
 | `JETSON_KEYBOARD_DEVICE` | Ép thiết bị bàn phím evdev |
 | `JETSON_MOUSE_DEVICE` | Ép thiết bị chuột evdev |
 | `JETSON_CAPTIVE_PORTAL_PROBE_URL` | Endpoint HTTP `204` dùng để nhận biết portal đã xác thực xong |
-| `JETSON_CAPTIVE_PORTAL_ONSCREEN_KEYBOARD` | Bàn phím ảo của portal: `auto`, `1` hoặc `0` |
 | `JETSON_FILES_HOME` | Thư mục gốc của ứng dụng Tệp |
 | `JETSON_SETTINGS_FILE` | Đường dẫn file lưu cài đặt |
 | `JETSON_VPN_EXIT_NODE` | Tên máy/IP Tailscale của VM exit node (mặc định `jetsona-vpn`) |
-| `RUNPOD_API_KEY` | API key RunPod cho app **Pods**/**Studio** (thuê & quản lý GPU cloud) |
-| `JETSON_STUDIO_URL` | code-server trên VM — đích mặc định của tile **Studio** |
 | `JETSON_WEATHER_LAT/LON/NAME` | Toạ độ + tên hiển thị cho dòng thời tiết standby (open-meteo, mặc định TP.HCM) |
 
 Ví dụ ép touch và thư mục Home:
@@ -229,67 +226,10 @@ sudo env \
 ## Trang đăng nhập Wi-Fi (Captive Portal)
 
 Sau khi nối Wi-Fi, firmware kiểm tra quyền truy cập Internet. Nếu mạng chuyển
-hướng sang Captive Portal, mục **Trang đăng nhập Wi-Fi** mở Chromium trong phiên
-bare-X. Màn hình cảm ứng hoạt động như chuột; nếu không tìm thấy bàn phím USB,
-launcher tự mở bàn phím ảo Onboard để nhập mật khẩu, số điện thoại hoặc OTP.
-
-Sau khi đăng nhập, launcher yêu cầu endpoint kiểm tra trả về HTTP `204` hai lần
-liên tiếp rồi tự đóng Chromium. Supervisor sau đó khởi động lại firmware và trả
-về giao diện DS-02. Có thể ép luôn hiện bàn phím bằng
-`JETSON_CAPTIVE_PORTAL_ONSCREEN_KEYBOARD: "1"`, hoặc tắt bằng `"0"`.
-
-## PS5 Remote Play
-
-Icon **Trò chơi** mở bảng điều khiển PS5 cho panel 800×480. Màn chính chỉ giữ
-nút **Chơi ngay**; nút trạng thái PS5 trong bánh răng mở giao diện thiết lập
-chính thức của Chiaki. Tại đây có thể liên kết máy và nhập địa chỉ khi cần.
-Firmware tự đọc tên/trạng thái đăng ký từ Chiaki, đồng thời cho chọn `540p60`
-hoặc `720p30` trước khi kết nối fullscreen.
-Khi bắt đầu thiết lập/chơi, firmware dừng hoàn toàn rồi bàn giao framebuffer
-cho bare Xorg + `chiaki-ng`; thoát Chiaki sẽ tự quay lại giao diện DS-02.
-
-Xem flow, cách cài binary ARM64, cấu hình PS5 và chẩn đoán tại
-[docs/ps-remote-play.md](docs/ps-remote-play.md).
-
-## GPU cloud: Pods → Studio → GitHub
-
-Bộ ba icon trong drawer biến Jetson thành "thin client" code trên GPU thuê:
-
-- **Pods** — quản lý GPU pod trên [RunPod](https://www.runpod.io) qua REST API
-  (`https://rest.runpod.io/v1`): xem danh sách pod (trạng thái, GPU, $/giờ),
-  bật/tắt, xoá (nhấn thùng rác 2 lần), và **Thuê GPU** mới — chọn preset
-  workspace (*VS Code Studio* chạy `code-server`, hoặc *PyTorch + Jupyter*)
-  rồi chọn loại GPU với giá theo giờ lấy trực tiếp từ RunPod. Pod thuê từ app
-  mở sẵn cổng web IDE + SSH; mật khẩu web IDE mặc định là `jetsona` (xem
-  trong chi tiết pod).
-- **Studio** — luôn mở **code-server self-host trên VM** (miễn phí, CPU)
-  trong Chromium kiosk: deploy một lần bằng `python vm/code-server/deploy.py`
-  rồi điền `JETSON_STUDIO_URL` mà script in ra vào `config.yaml`. Đây là chỗ code
-  mặc định hằng ngày. Khi cần GPU: thuê pod trong **Pods**, rồi hoặc bấm
-  **Mở Studio** trên pod (IDE của pod, URL proxy
-  `https://{podId}-{port}.proxy.runpod.net`), hoặc ngay trong Studio VM mở
-  terminal và SSH vào pod (lệnh SSH hiện trong sheet chi tiết pod) — code
-  nằm một chỗ trên VM/GitHub, GPU chỉ là chỗ chạy.
-- **GitHub** — mở `github.com` trong Chromium kiosk. Đăng nhập một lần trong
-  kiosk (profile lưu bền ở `/var/lib/jetson-fw/chromium-profile`), sau đó trong Studio
-  dùng terminal của code-server để `git clone`/`push` repo của bạn — tức là
-  code trực tiếp trên GitHub bằng GPU thuê.
-
-Trong Chromium kiosk, trang web chiếm toàn màn hình và Dynamic Island nổi ở
-giữa cạnh trên, tự giãn theo số phiên tab. Chọn **Settings → Ứng dụng → Web
-View** để dùng chế độ **Cơ bản** (chỉ icon phiên tab) hoặc **Nâng cao** (thêm
-giờ và pin trong island). Chạm island để chuyển app, nhấn giữ để bung hàng
-icon app ngang; nhấn `Ctrl+Alt+Backspace` để đóng phiên bare-X và quay lại
-firmware. Bare-X cần `xserver-xorg-input-libinput` để nhận bàn phím/chuột,
-`x11-xkb-utils` để bật phím thoát và `x11-xserver-utils` để browser user kết nối
-an toàn tới Xorg; cài các gói theo
-[hướng dẫn PS Remote Play](docs/ps-remote-play.md#cài-runtime-chiaki).
-
-Cấu hình một lần: tạo API key (quyền đọc/ghi pods) tại RunPod Console →
-Settings → API Keys, điền `RUNPOD_API_KEY=` vào `.env` rồi cài lại firmware
-(service đọc `/opt/jetson-fw/.env`). Chưa có key thì các tile sẽ báo ngay
-trên Dynamic Island. Lưu ý: pod **Đã tắt** vẫn tính phí ổ đĩa; xoá pod mới
-hết phí hoàn toàn.
+hướng sang Captive Portal,Dynamic Island thông báo để bạn đăng nhập qua thiết
+bị khác (điện thoại/laptop) trên cùng mạng — bản lite không còn kiosk Chromium
+trên panel nữa. Endpoint kiểm tra trả về HTTP `204` xác nhận portal đã xác
+thực xong.
 
 ## VPN qua Tailscale exit node
 

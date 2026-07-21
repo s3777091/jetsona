@@ -33,10 +33,6 @@ const std::vector<AgentApp> kApps = {
     {"gallery",        "Hình nền",          "hinhnen wallpaper gallery anh photos"},
     {"wifi",           "Cài đặt Wi-Fi",     "wifi mang network wireless"},
     {"bluetooth",      "Cài đặt Bluetooth", "bluetooth bt tainghe"},
-    {"pods",           "Pods",              "pods runpod gpu"},
-    {"studio",         "Studio",            "studio code vscode ide"},
-    {"ps_remote_play", "PS Remote Play",    "ps5 playstation remoteplay chiaki game"},
-    {"browser",        "Trình duyệt",       "browser chromium chrome web trinhduyet internet"},
     {"lock_screen",    "Màn hình khoá",     "khoa lock lockscreen manhinhkhoa"},
 };
 

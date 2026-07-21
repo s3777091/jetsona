@@ -9,8 +9,6 @@
 #include "display/views/documents_view.h"
 #include "display/views/lock_screen_view.h"
 #include "display/views/music_view.h"
-#include "display/views/pods_view.h"
-#include "display/views/ps_remote_play_view.h"
 #include "display/views/reminders_view.h"
 #include "display/views/settings_view.h"
 #include "display/views/terminal_view.h"
@@ -84,31 +82,6 @@ int PngScaleToFit(const char *path, int target_px) {
     }
     return 256; // unknown size -> leave native (100%)
 }
-
-/* Chromium hand-off zoom: the collapse played here and the bloom played by
- * jetson_kiosk_bar are two halves of one motion, so this runs for half of the
- * bar's TRANS_MS (460). The card tucks into *this* process's island, which is
- * kPillW in status_bar.cc -- the kiosk island is a little wider (PILL_W 172),
- * and each half correctly targets the island the user is looking at. */
-constexpr int kHandoffBarH = 42;    // status_strip_ height in status_bar.cc
-constexpr int kHandoffPillW = 132;  // kPillW in status_bar.cc
-constexpr int kHandoffCollapseMs = 230;
-
-/* Launcher artwork for the hand-off card, matching icon_for_entry()'s URL
- * table in kiosk_bar.c so the card that tucks away and the card that blooms
- * back out are the same one. Unknown URLs get the plain Chromium mark. */
-struct HandoffApp { const char *frag; const char *icon; uint32_t color; };
-constexpr HandoffApp kHandoffApps[] = {
-    {"youtube.com",     "assets/icons/drawer/youtube.png",   0xff0033},
-    {"github.com",      "assets/icons/drawer/github.png",    0x24292f},
-    {"messenger.com",   "assets/icons/drawer/messenger.png", 0x0084ff},
-    {"facebook.com",    "assets/icons/drawer/facebook.png",  0x1877f2},
-    {"teams.microsoft", "assets/icons/drawer/team.png",      0x6264a7},
-    {"mail.google.com", "assets/icons/drawer/gmail.png",     0xea4335},
-    {"chatgpt.com",     "assets/icons/drawer/chat-gpt.png",  0x10a37f},
-    {"chat.openai.com", "assets/icons/drawer/chat-gpt.png",  0x10a37f},
-    {"runpod",          "assets/icons/drawer/pods.png",      0x7c3aed},
-};
 
 constexpr int kSystemBarHeight = 28;
 constexpr int kDockHeight = 74;
@@ -424,20 +397,9 @@ void Ds02HomeDisplay::CreateDrawerObjects() {
     struct AppDef { const char *icon; const char *label; int id; };
     static const AppDef kApps[kDrawerItemCount] = {
         {"assets/icons/drawer/calculator.png",  "Máy tính",   8},
-        {"assets/icons/drawer/chromium.png",    "Chromium",   1},
-        {"assets/icons/drawer/game.png",        "Trò chơi",   9},
-        {"assets/icons/drawer/github.png",      "GitHub",     2},
         {"assets/icons/drawer/agent.png",       "Agent",      3},
         {"assets/icons/drawer/photos.png",      "Ảnh",        5},
-        {"assets/icons/drawer/pods.png",        "Pods",      10},
         {"assets/icons/drawer/record.png",      "Ghi âm",    11},
-        {"assets/icons/drawer/studio.png",      "Studio",    12},
-        {"assets/icons/drawer/chat-gpt.png",    "ChatGPT",   13},
-        {"assets/icons/drawer/youtube.png",     "YouTube",   14},
-        {"assets/icons/drawer/messenger.png",   "Messenger", 15},
-        {"assets/icons/drawer/team.png",        "Teams",     16},
-        {"assets/icons/drawer/facebook.png",    "Facebook",  17},
-        {"assets/icons/drawer/gmail.png",       "Gmail",     18},
     };
     constexpr int kCols = 4;
     static const int32_t kGridCols[] = {
@@ -583,18 +545,7 @@ void Ds02HomeDisplay::OnAppButtonClicked(lv_event_t *e) {
     // wallpaper gallery, which moved here from the dock so the dock's folder
     // icon can open the drawer itself.
     switch (ctx->id) {
-    case 1: self->OpenChromium(); break;        // drawer "Chromium" -> Xorg kiosk
-    case 2: self->OpenChromium("https://github.com"); break; // GitHub in kiosk
     case 5: self->OpenBackgroundGallery(); break;
-    case 9: self->OpenPsRemotePlay(); break;    // drawer "Trò chơi" -> PS5 Remote Play
-    case 10: self->OpenPods(); break;           // RunPod GPU manager
-    case 12: self->OpenStudio(); break;         // running pod's web IDE
-    case 13: self->OpenChromium("https://chatgpt.com/"); break;
-    case 14: self->OpenChromium("https://www.youtube.com/"); break;
-    case 15: self->OpenChromium("https://www.messenger.com/"); break;
-    case 16: self->OpenChromium("https://teams.microsoft.com/"); break;
-    case 17: self->OpenChromium("https://www.facebook.com/"); break;
-    case 18: self->OpenChromium("https://mail.google.com/"); break;
     default: self->ShowNotification("Sắp ra mắt", 1500); break;
     }
 }
@@ -616,7 +567,10 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
     status_bar_ = std::make_unique<StatusBar>(lv_layer_top());
     status_bar_->SetWifiAction([this]() { OpenWifiSettings(); });
     status_bar_->SetCaptivePortalAction(
-        [this](const std::string &url) { OpenChromium(url, true); });
+        [this](const std::string &url) {
+            (void)url;
+            ShowNotification("Captive portal — đăng nhập qua thiết bị khác", 3000);
+        });
     status_bar_->SetBluetoothAction([this]() { OpenBluetoothSettings(); });
     status_bar_->SetVolumeAction([this](int volume, bool muted) {
         volume_muted_ = muted;
@@ -827,10 +781,6 @@ void Ds02HomeDisplay::RegisterAgentBridge() {
         else if (id == "gallery")        OpenBackgroundGallery();
         else if (id == "wifi")           OpenWifiSettings();
         else if (id == "bluetooth")      OpenBluetoothSettings();
-        else if (id == "pods")           OpenPods();
-        else if (id == "studio")         OpenStudio();
-        else if (id == "ps_remote_play") OpenPsRemotePlay();
-        else if (id == "browser")        OpenChromium();
         else if (id == "lock_screen")    OpenLockScreen();
         else ESP_LOGW(TAG, "agent asked for unknown app id '%s'", id.c_str());
     });
@@ -1114,7 +1064,10 @@ void Ds02HomeDisplay::OpenSettings() {
             ShowNotification(message, duration_ms);
         });
     settings_view_->SetCaptivePortalAction(
-        [this](const std::string &url) { OpenChromium(url, true); });
+        [this](const std::string &url) {
+            (void)url;
+            ShowNotification("Captive portal — đăng nhập qua thiết bị khác", 3000);
+        });
     settings_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppSettings); });
     settings_view_->Start();
     NoteAppOpened(kAppSettings);
@@ -1208,242 +1161,6 @@ void Ds02HomeDisplay::OpenTerminal() {
     NoteAppOpened(kAppTerminal);
 }
 
-void Ds02HomeDisplay::OpenPsRemotePlay() {
-    DisplayLockGuard lock(this);
-    if (ps_remote_play_view_) { RestoreApp(kAppPsRemotePlay); return; }
-    if (!root_) root_ = lv_screen_active();
-    ps_remote_play_view_ = std::make_shared<PsRemotePlayView>(
-        root_, width_, height_,
-        [this]() {
-            ps_remote_play_view_.reset();
-            OnAppClosed(kAppPsRemotePlay);
-        });
-    ps_remote_play_view_->SetLaunchRequest(
-        [this](bool configure) { LaunchPsRemotePlay(configure); });
-    ps_remote_play_view_->SetNotifyCb(
-        [this](const char *message) { ShowNotification(message, 2500); });
-    ps_remote_play_view_->SetOpenBluetoothCb(
-        [this]() { OpenBluetoothSettings(); });
-    ps_remote_play_view_->SetBackgroundRequest(
-        [this]() { BackgroundApp(kAppPsRemotePlay); });
-    ps_remote_play_view_->Start();
-    NoteAppOpened(kAppPsRemotePlay);
-}
-
-void Ds02HomeDisplay::LaunchPsRemotePlay(bool configure) {
-    ShowNotification(configure ? "Đang mở thiết lập máy PS5..."
-                               : "Đang kết nối PS5...", 1200);
-    std::thread([configure]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(400));
-        jetson::LvglRuntime::Instance().Stop();  // release /dev/fb0 completely
-        sync();
-        const int request_code = configure ? 43 : 44;
-        if (std::getenv("JETSON_FW_SUPERVISED"))
-            _exit(request_code);
-
-        const char *launcher = "/opt/jetson-fw/scripts/launch_ps_remote_play.sh";
-        if (::access(launcher, R_OK) != 0)
-            launcher = "scripts/launch_ps_remote_play.sh";
-        const char *mode = configure ? "configure" : "stream";
-        const std::string command = std::string("bash '") + launcher + "' " + mode;
-        const int launch_result = ::system(command.c_str());
-        if (launch_result != 0)
-            ESP_LOGW(TAG, "PS Remote Play launcher exited with status %d", launch_result);
-        ::execl("/proc/self/exe", "jetson_fw", (char *)nullptr);
-        _exit(1);
-    }).detach();
-}
-
-void Ds02HomeDisplay::OpenPods() {
-    DisplayLockGuard lock(this);
-    if (pods_view_) { RestoreApp(kAppPods); return; }
-    if (!root_) root_ = lv_screen_active();
-    pods_view_ = std::make_shared<PodsView>(
-        root_, width_, height_,
-        [this]() { pods_view_.reset(); OnAppClosed(kAppPods); });
-    pods_view_->SetNotifyCb([this](const char *msg) { ShowNotification(msg, 2500); });
-    pods_view_->SetOpenUrlCb([this](const std::string &url) { OpenChromium(url); });
-    pods_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppPods); });
-    pods_view_->Start();
-    NoteAppOpened(kAppPods);
-}
-
-void Ds02HomeDisplay::OpenStudio() {
-    /* Studio = the self-hosted code-server on the VM (JETSON_STUDIO_URL,
-     * deployed once by vm/code-server/deploy.py). Always. GPU pods are an
-     * explicit, paid choice: rent one in the Pods app and open its IDE from
-     * there ("Mở Studio" on the pod), or SSH into it from this VM studio's
-     * terminal (the SSH command is shown in the pod's detail sheet). No
-     * RunPod calls here — the tile must work instantly and offline from
-     * any GPU account state. */
-    const char *vm_studio = std::getenv("JETSON_STUDIO_URL");
-    if (!vm_studio || !vm_studio[0]) {
-        ShowNotification("Chưa cấu hình JETSON_STUDIO_URL — chạy vm/code-server/deploy.py", 3500);
-        return;
-    }
-    ShowNotification("Đang mở Studio trên VM...", 1500);
-    OpenChromium(vm_studio);
-}
-
-void Ds02HomeDisplay::OnHandoffCollapse(void *var, int32_t v) {
-    auto *self = static_cast<Ds02HomeDisplay *>(var);
-    if (!self->handoff_card_) return;
-    const double s = Clamp(static_cast<int>(v), 0, 1000) / 1000.0;
-
-    /* Same geometry as draw_transition() in kiosk_bar.c: centred and
-     * top-anchored, so the card visibly tucks up into the island rather than
-     * shrinking towards the middle of the panel. */
-    const int W = self->width_;
-    const int H = self->height_ - kHandoffBarH;
-    const int cw = kHandoffPillW, ch = 6;
-    int w = cw + static_cast<int>((W - cw) * s);
-    int h = ch + static_cast<int>((H - ch) * s);
-    if (w < 2) w = 2;
-    if (h < 2) h = 2;
-    int r = 6 + static_cast<int>(22.0 * s);   /* 28 full -> 6 collapsed */
-    if (r * 2 > h) r = h / 2;
-    if (r * 2 > w) r = w / 2;
-    lv_obj_set_size(self->handoff_card_, w, h);
-    lv_obj_align(self->handoff_card_, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_radius(self->handoff_card_, r, 0);
-
-    if (!self->handoff_icon_) return;
-    const int longer = std::max(self->handoff_icon_w_, self->handoff_icon_h_);
-    if (longer <= 0) return;
-    int box = (w < h ? w : h) * 42 / 100;     /* 42 %, as in kiosk_bar.c */
-    if (box < 8) box = 8;
-    const int scale = Clamp(box * 256 / longer, 1, 1024);
-    lv_obj_set_size(self->handoff_icon_,
-                    self->handoff_icon_w_ * scale / 256,
-                    self->handoff_icon_h_ * scale / 256);
-    lv_image_set_scale(self->handoff_icon_, static_cast<uint32_t>(scale));
-    lv_obj_center(self->handoff_icon_);
-}
-
-int Ds02HomeDisplay::PlayChromiumHandoff(const std::string &url) {
-    if (handoff_cover_) return kHandoffCollapseMs;   // already collapsing
-
-    const char *icon_path = "assets/icons/drawer/chromium.png";
-    uint32_t accent = 0x4285f4;
-    for (const auto &app : kHandoffApps) {
-        if (url.find(app.frag) != std::string::npos) {
-            icon_path = app.icon;
-            accent = app.color;
-            break;
-        }
-    }
-
-    /* Cover the app area only. The status bar and its island stay on screen
-     * for the whole motion, which is the anchor that makes the card look like
-     * it is being swallowed by the island. */
-    handoff_cover_ = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(handoff_cover_);
-    lv_obj_set_size(handoff_cover_, width_, height_ - kHandoffBarH);
-    lv_obj_set_pos(handoff_cover_, 0, kHandoffBarH);
-    lv_obj_set_style_bg_color(handoff_cover_, Color(0x000000), 0);
-    lv_obj_set_style_bg_opa(handoff_cover_, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(handoff_cover_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(handoff_cover_, LV_OBJ_FLAG_CLICKABLE);  // swallow taps
-
-    handoff_card_ = lv_obj_create(handoff_cover_);
-    lv_obj_remove_style_all(handoff_card_);
-    lv_obj_set_style_bg_color(handoff_card_, Color(0x1c1c1e), 0);
-    lv_obj_set_style_bg_opa(handoff_card_, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(handoff_card_, 2, 0);
-    lv_obj_set_style_border_color(handoff_card_, Color(accent), 0);
-    lv_obj_set_style_border_opa(handoff_card_, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(handoff_card_, LV_OBJ_FLAG_SCROLLABLE);
-
-    handoff_icon_image_ = LvglImageFromFile(icon_path);
-    if (handoff_icon_image_ &&
-        PngSize(icon_path, &handoff_icon_w_, &handoff_icon_h_)) {
-        handoff_icon_ = lv_image_create(handoff_card_);
-        lv_image_set_src(handoff_icon_, handoff_icon_image_->image_dsc());
-        lv_image_set_pivot(handoff_icon_, 0, 0);
-    }
-
-    OnHandoffCollapse(this, 1000);   // paint the full-panel frame first
-
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, this);
-    lv_anim_set_values(&a, 1000, 0);
-    lv_anim_set_time(&a, kHandoffCollapseMs);
-    lv_anim_set_exec_cb(&a, OnHandoffCollapse);
-    /* ease-in == kiosk_bar.c's 1 - p*p: the card lingers, then snaps away. */
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
-    lv_anim_start(&a);
-    return kHandoffCollapseMs;
-}
-
-void Ds02HomeDisplay::OpenChromium(const std::string &url,
-                                   bool captive_portal) {
-    /* Hand the panel to a Chromium kiosk. We can't run a browser inside the
-     * firmware (it owns /dev/fb0 via FBDEV with no display server), so the
-     * deal is: stop the LVGL render threads (no more writes to the framebuffer),
-     * then exit the process with code 42. The jetson-fw supervisor
-     * (scripts/jetson_fw_run.sh) sees 42, runs scripts/launch_chromium.sh to
-     * start Xorg + chromium --kiosk on the HDMI panel, and restarts this
-     * firmware once the browser closes -- re-acquiring /dev/fb0 fresh.
-     *
-     * Stop() joins the LVGL tick + handler threads, so it must NOT run on the
-     * LVGL handler thread (we're inside an event callback here). Sleep briefly
-     * so the click feedback paints, then stop + exit from a detached thread.
-     *
-     * The exit-42 contract only works under the supervisor (jetson-fw service /
-     * jetson_fw_run.sh, which sets JETSON_FW_SUPERVISED=1). When the firmware
-     * was started directly (sudo ./jetson_fw, run_fbdev.sh) exiting would just
-     * kill the UI, so in that case we run the kiosk ourselves and re-exec this
-     * binary afterwards to re-acquire /dev/fb0. */
-    if (::system("command -v chromium-browser >/dev/null 2>&1 || "
-                 "command -v chromium >/dev/null 2>&1") != 0) {
-        ShowNotification("Chromium chưa được cài: sudo apt install chromium-browser", 3500);
-        return;
-    }
-    // Hand the start URL to launch_chromium.sh through a file: the supervisor
-    // path (exit 42) can't inherit our environment.
-    if (!url.empty()) {
-        if (FILE *f = std::fopen("/tmp/jetson_chromium_url", "w")) {
-            std::fputs(url.c_str(), f);
-            std::fclose(f);
-        }
-    } else {
-        ::unlink("/tmp/jetson_chromium_url"); // stale URL from a previous run
-    }
-    // The URL alone cannot identify a captive portal: its redirect target is
-    // chosen by the venue and may look like any ordinary website. Keep a
-    // separate one-shot marker so launch_chromium.sh can enable portal-only
-    // input helpers and return to the firmware after Internet access opens.
-    if (captive_portal) {
-        if (FILE *f = std::fopen("/tmp/jetson_captive_portal_session", "w")) {
-            std::fputs("1\n", f);
-            std::fclose(f);
-        }
-    } else {
-        ::unlink("/tmp/jetson_captive_portal_session");
-    }
-    // The collapsing card replaces the old "Đang mở Chromium..." toast: it is
-    // the same feedback, but it also leaves the panel black, which is exactly
-    // the frame the framebuffer should hold while Xorg comes up.
-    const int collapse_ms = PlayChromiumHandoff(url);
-    std::thread([collapse_ms]() {
-        // Wait for the collapse to land before killing the renderer, or the
-        // hand-off freezes on a half-shrunk card.
-        std::this_thread::sleep_for(std::chrono::milliseconds(collapse_ms + 80));
-        jetson::LvglRuntime::Instance().Stop();  // release /dev/fb0 writes
-        sync();
-        if (std::getenv("JETSON_FW_SUPERVISED"))
-            _exit(42);  // 42 -> supervisor launches the kiosk, then restarts us
-        const char *kiosk = "/opt/jetson-fw/scripts/launch_chromium.sh";
-        if (::access(kiosk, R_OK) != 0) kiosk = "scripts/launch_chromium.sh";
-        const int launch_result = ::system((std::string("bash ") + kiosk).c_str());
-        if (launch_result != 0)
-            ESP_LOGW(TAG, "Chromium launcher exited with status %d", launch_result);
-        ::execl("/proc/self/exe", "jetson_fw", (char *)nullptr);
-        _exit(1);  // execl failed; nothing left to render with
-    }).detach();
-}
-
 void Ds02HomeDisplay::OpenTrash() {
     DisplayLockGuard lock(this);
     if (trash_view_) { RestoreApp(kAppTrash); return; }
@@ -1474,8 +1191,6 @@ OverlayView *Ds02HomeDisplay::GetAppView(AppId id) const {
     case kAppTerminal:  return terminal_view_.get();
     case kAppTrash:     return trash_view_.get();
     case kAppGallery:   return gallery_view_.get();
-    case kAppPsRemotePlay: return ps_remote_play_view_.get();
-    case kAppPods:      return pods_view_.get();
     default:            return nullptr;
     }
 }
@@ -1596,8 +1311,6 @@ void Ds02HomeDisplay::OpenAppSwitcher() {
         case kAppTerminal:  *path = "assets/icons/dock/terminal.png"; return dock_icon_cache_[kDockTerminal].get();
         case kAppTrash:     *path = "assets/icons/dock/trash.png";    return dock_icon_cache_[kDockTrash].get();
         case kAppGallery:   *path = "assets/icons/drawer/photos.png"; return drawer_icon_cache_[kGalleryDrawerIndex].get();
-        case kAppPsRemotePlay: *path = "assets/icons/drawer/game.png"; return drawer_icon_cache_[kPsRemotePlayDrawerIndex].get();
-        case kAppPods:      *path = "assets/icons/drawer/pods.png";   return drawer_icon_cache_[kPodsDrawerIndex].get();
         default:            *path = nullptr; return nullptr;
         }
     };

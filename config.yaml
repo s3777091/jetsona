@@ -14,10 +14,6 @@ OPENROUTER_MODEL: "google/gemini-2.5-flash"
 EXA_BASE_URL: "https://api.exa.ai"
 EXA_SEARCH_TYPE: "auto"
 
-RUNPOD_BASE_URL: "https://rest.runpod.io/v1"
-RUNPOD_GRAPHQL_URL: "https://api.runpod.io/graphql"
-JETSON_STUDIO_URL: "http://100.114.144.106:8443"
-
 # Native music browser. The checked-in version/key compatibility defaults are
 # not an availability guarantee: Zing can rotate signatures at any time. Put
 # key/secret overrides and optional account cookies only in .env; anonymous
@@ -52,9 +48,7 @@ JETSON_FILES_HOME: ""
 # theme and language -- looking like an older firmware build.
 JETSON_SETTINGS_FILE: "/var/lib/jetson-fw/settings.kv"
 # Captive Portal: HTTP endpoint must normally return an empty 204 response.
-# "auto" opens Onboard only when no physical USB keyboard is detected.
 JETSON_CAPTIVE_PORTAL_PROBE_URL: "http://connectivitycheck.gstatic.com/generate_204"
-JETSON_CAPTIVE_PORTAL_ONSCREEN_KEYBOARD: "auto"
 
 # Display/input overrides. Empty device paths keep auto-detection enabled.
 JETSON_DISPLAY_BACKEND: "FBDEV"
@@ -81,22 +75,3 @@ INA219_SHUNT: "0.1"
 #   journalctl -u jetson-fw | grep ina219
 INA219_CHARGE_SIGN: "1"
 INA219_CHARGE_MA: "50"
-
-# PS5 Remote Play (Chiaki).
-CHIAKI_BIN: "/home/ekkohuynh/chiaki-ng/chiaki-ng"
-PS_REMOTE_PLAY_HOME: "/var/lib/jetson-fw/chiaki"
-PS_REMOTE_PLAY_STATE_FILE: "/var/lib/jetson-fw/ps-remote-play.conf"
-# First-time registration and PS5 address entry are completed in chiaki-ng's
-# own GUI. The firmware UI stores the display preset and launches Chiaki for
-# setup or streaming; legacy saved addresses remain supported.
-PS_REMOTE_PLAY_AUDIO_DRIVER: "alsa"
-PS_REMOTE_PLAY_HW_DECODER: "software"
-PS_REMOTE_PLAY_RENDER_BACKEND: "vulkan"
-PS_REMOTE_PLAY_MAX_CLOCKS: "1"
-PS_REMOTE_PLAY_APPIMAGE_EXTRACT: "auto"
-PS_REMOTE_PLAY_PROBE_TIMEOUT: "5"
-PS_REMOTE_PLAY_WAKE_TIMEOUT: "25"
-PS_REMOTE_PLAY_WINDOW_MANAGER: "auto"
-PS_REMOTE_PLAY_ONSCREEN_KEYBOARD: "auto"
-PS_REMOTE_PLAY_BROWSER_USER: "jetson-kiosk"
-PS_REMOTE_PLAY_PSN_REDIRECT_AUTO: "1"

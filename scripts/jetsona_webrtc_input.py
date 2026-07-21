@@ -5,7 +5,6 @@ import asyncio
 import json
 import logging
 import os
-import signal
 from pathlib import Path
 
 import websockets
@@ -109,22 +108,6 @@ def bounded_int(value, minimum, maximum):
     return max(minimum, min(maximum, int(value)))
 
 
-def return_to_firmware():
-    """End the kiosk bar so its launcher cleans up Xorg and resumes firmware."""
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            command = (entry / "cmdline").read_bytes().split(b"\0")[0]
-            if command == b"/opt/jetson-fw/jetson_kiosk_bar":
-                os.kill(int(entry.name), signal.SIGTERM)
-                logging.info("requested return to firmware through kiosk bar pid %s", entry.name)
-                return
-        except (OSError, ValueError):
-            pass
-    logging.info("return to firmware requested, but no Chromium kiosk is active")
-
-
 async def handler(websocket, _path):
     client_pressed = set()
     logging.info("input client connected")
@@ -161,8 +144,6 @@ async def handler(websocket, _path):
                     else:
                         client_pressed.discard(code)
                         pressed.discard(code)
-                elif kind == "return":
-                    return_to_firmware()
             except (ValueError, TypeError, KeyError):
                 continue
     finally:

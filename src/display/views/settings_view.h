@@ -65,7 +65,7 @@ private:
     enum class Cat { Display, Sound, Wifi, Bluetooth, General, Applications };
 
     enum class DisplayPage { Main, TextSize, NightShift, AutoLock, AlwaysOn };
-    enum class ApplicationPage { Main, Terminal, WebView, EkkoBot };
+    enum class ApplicationPage { Main, Terminal, EkkoBot };
     enum class GeneralPage {
         Main,
         Keyboard,
@@ -231,7 +231,6 @@ private:
     void BuildApplications();
     void BuildApplicationsMain();
     void BuildTerminalSettings();
-    void BuildWebViewSettings();
     void BuildEkkoBotSettings();
     void ApplicationsPageHeader(const char *title);
     lv_obj_t *CreateTerminalThemePreview(lv_obj_t *parent,
@@ -326,10 +325,8 @@ private:
     static void OnVolChanged(lv_event_t *e);
     static void OnMuteToggle(lv_event_t *e);
     static void OnOpenTerminalSettings(lv_event_t *e);
-    static void OnOpenWebViewSettings(lv_event_t *e);
     static void OnOpenEkkoBotSettings(lv_event_t *e);
     static void OnApplicationsBack(lv_event_t *e);
-    static void OnWebViewModeSelected(lv_event_t *e);
     static void OnOrbitColorSelected(lv_event_t *e);
     static void OnTerminalTextSmaller(lv_event_t *e);
     static void OnTerminalTextLarger(lv_event_t *e);
