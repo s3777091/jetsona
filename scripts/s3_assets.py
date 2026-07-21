@@ -612,7 +612,111 @@ def cmd_upload(c):
     print("==> done: {} uploaded, {} unchanged.".format(uploaded, skipped))
 
 
-COMMANDS = {"fetch": cmd_fetch, "upload": cmd_upload, "list": cmd_list}
+# --------------------------------------------------------------------------- #
+# Icon audit (lite firmware trim)
+# --------------------------------------------------------------------------- #
+#
+# The lite firmware references a small, fixed set of icons. Anything else in
+# icons/app, icons/dock or icons/drawer on the bucket is left over from the
+# Chromium / PS5 / Pods / Terminal features and is dead weight (and, for
+# icons/app, decoded at boot by PreloadAppIcons). `audit` diffs the bucket
+# against the referenced sets below and reports the unused keys; `--delete`
+# removes them. icons/programming (Documents view, loaded by file extension),
+# icons/backgrounds (Gallery wallpapers) and fonts/ are intentionally not
+# audited -- they are dynamic / user content and stay as-is.
+#
+# Keep these sets in sync with the code: `grep -rhoE ... src` over the
+# CreateAppIcon/SetAppIcon/AppIconDsc call sites + the dock/drawer AppDef and
+# kIconFiles arrays in src/display/home/ds02_home_display.cc.
+
+REFERENCED_APP_ICONS = {
+    "airplans", "bluetooth", "clean", "dropdown", "empty-trash", "eye", "fan",
+    "lock", "pin", "speaker", "speaker-mute", "sun", "unknow-device", "vpn",
+    "wifi", "cursor", "logo",
+}
+REFERENCED_DOCK_ICONS = {
+    "calendar", "finder", "folder", "music", "nightowl", "reminders",
+    "settings", "siri", "translate", "trash",
+}
+REFERENCED_DRAWER_ICONS = {"agent", "calculator", "photos", "record"}
+
+# Bucket prefixes that are audited. Anything under icons/ not in one of these
+# (e.g. icons/programming, icons/backgrounds) is left alone.
+AUDITED_ICON_DIRS = ("icons/app/", "icons/dock/", "icons/drawer/")
+
+
+def _referenced_name_for(key):
+    """Return the referenced icon name if `key` is an audited, knowable icon,
+    else None (meaning: do not audit this key -- keep it)."""
+    rel = key.lstrip("/")
+    for prefix in AUDITED_ICON_DIRS:
+        if not rel.startswith(prefix):
+            continue
+        name = rel[len(prefix):]
+        if "/" in name or not name.lower().endswith(".png"):
+            return None  # nested file or non-png: leave alone
+        stem = name[:-4]
+        sets = {
+            "icons/app/": REFERENCED_APP_ICONS,
+            "icons/dock/": REFERENCED_DOCK_ICONS,
+            "icons/drawer/": REFERENCED_DRAWER_ICONS,
+        }[prefix]
+        return stem if stem in sets else "__unused__"
+    return None
+
+
+def cmd_audit(c, delete=False):
+    s3 = _make_s3(c)
+    objs = list_objects(s3, c["bucket"], c["prefix"] + "icons/")
+    unused, missing, audited = [], [], 0
+    seen = {dirp: set() for dirp in AUDITED_ICON_DIRS}
+    for key, _size, _etag in objs:
+        rel = key[len(c["prefix"]):] if c["prefix"] and key.startswith(c["prefix"]) else key
+        rel = rel.lstrip("/")
+        verdict = _referenced_name_for(rel)
+        if verdict is None:
+            continue  # not an audited icon dir
+        audited += 1
+        for dirp in AUDITED_ICON_DIRS:
+            if rel.startswith(dirp):
+                seen[dirp].add(rel[len(dirp):-4])
+        if verdict == "__unused__":
+            unused.append(rel)
+
+    expected = {
+        "icons/app/": REFERENCED_APP_ICONS,
+        "icons/dock/": REFERENCED_DOCK_ICONS,
+        "icons/drawer/": REFERENCED_DRAWER_ICONS,
+    }
+    for dirp, names in expected.items():
+        for name in sorted(names):
+            if name not in seen[dirp]:
+                missing.append(dirp + name + ".png")
+
+    print("==> audit: {} icon objects in '{}/icons'".format(audited, c["bucket"]))
+    if unused:
+        print("-- unused ({}): present on S3 but not referenced by lite code".format(len(unused)))
+        for rel in sorted(unused):
+            print("    {}".format(rel))
+    else:
+        print("-- unused: none")
+    if missing:
+        print("-- missing ({}): referenced by code but absent on S3".format(len(missing)))
+        for rel in sorted(missing):
+            print("    {}".format(rel))
+
+    if not delete:
+        if unused:
+            print("==> dry-run. Re-run with `audit --delete` to remove the unused icons.")
+        return
+    if not unused:
+        print("==> nothing to delete.")
+        return
+    for rel in unused:
+        key = (c["prefix"] + rel) if c["prefix"] else rel
+        delete_object(s3, c["bucket"], key)
+        print("==> deleted {}".format(rel))
+
 
 
 def main(argv):
@@ -632,12 +736,16 @@ def main(argv):
             die("usage: s3_assets.py delete-file <relative-asset-path> [...]", code=2)
         cmd_delete_files(cfg(), argv[2:])
         return
+    if len(argv) >= 2 and argv[1] == "audit":
+        cmd_audit(cfg(), delete=("--delete" in argv[2:]))
+        return
     if len(argv) < 2 or argv[1] not in COMMANDS:
-        die("usage: s3_assets.py <fetch|fetch-file|upload|upload-file|delete-file|list>\n"
+        die("usage: s3_assets.py <fetch|fetch-file|upload|upload-file|delete-file|audit|list>\n"
             "  fetch  - download missing/mismatched assets from MinIO\n"
             "  fetch-file <key> - download exactly one on-demand asset\n"
             "  upload-file <path> - upload exactly one local asset\n"
             "  delete-file <path> - delete selected objects from MinIO\n"
+            "  audit [--delete] - list (or remove) lite-unused icons in icons/{app,dock,drawer}\n"
             "  upload - seed ./assets into the MinIO bucket\n"
             "  list   - list objects in the bucket", code=2)
     COMMANDS[argv[1]](cfg())
