@@ -8,6 +8,8 @@ proxying that used to live in the VM's reverse proxy:
 | -------------------------- | ------------------------------------------ | ---------------- |
 | `GET /`                    | WebRTC client page (WHEP video + input)    | Next.js page     |
 | `POST /media/jetsona/whep` | WHEP SDP offer/answer proxy                | Next.js route    |
+| `POST /api/wol/wake`       | Wake-on-LAN: tell the Jetson to magic-packet the PC | Next.js route |
+| `GET /api/wol/status`      | WoL: is the PC online? (Jetson pings it)   | Next.js route    |
 | `WS /input?token=…`        | Raw WebSocket input (mouse/keyboard) proxy | `server.mjs` (ws)|
 
 The app runs at the site **root** (no `/jetsona` basePath).
@@ -20,6 +22,8 @@ Copy `.env.example` to `.env` and fill in:
 | -------------------- | -------- | -------------------------------- | -------------------------------------------------- |
 | `WHEP_UPSTREAM`      | yes      | `http://127.0.0.1:8889/jetsona/whep` | MediaMTX WHEP endpoint (Jetson, via tunnel)    |
 | `INPUT_UPSTREAM`     | yes      | `ws://127.0.0.1:46001`           | `jetsona_webrtc_input.py` (Jetson, via tunnel)     |
+| `WOL_UPSTREAM`       | no       | `http://127.0.0.1:46002`         | `jetsona_wol.py` on the Jetson (via tunnel). Drives the **Wake on LAN** button that powers on the PC on the Jetson's LAN. |
+| `WOL_TOKEN`          | no       | `s3cret`                         | Shared secret sent as `X-WoL-Token`; must match `JETSON_WOL_TOKEN` in `/etc/jetsona-wol.env` on the Jetson. |
 | `JETSONA_INPUT_TOKEN`| no       | `s3cret`                         | Token sent as `?token=` on `/input`. If unset, the page renders the literal `__JETSONA_INPUT_TOKEN__` placeholder (so an external proxy can still substitute it) and the WS upgrade skips token checks. |
 | `BASIC_USER` / `BASIC_PASS` | no  | `jetsona` / `…`                 | Optional HTTP Basic auth over the whole site (page + WHEP + WS upgrade). |
 | `PORT`               | no       | `3000`                           | Listen port.                                       |
