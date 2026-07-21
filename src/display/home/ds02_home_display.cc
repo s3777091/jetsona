@@ -11,7 +11,6 @@
 #include "display/views/music_view.h"
 #include "display/views/reminders_view.h"
 #include "display/views/settings_view.h"
-#include "display/views/terminal_view.h"
 #include "display/views/trash_view.h"
 #include "display/views/wifi_settings_view.h"
 #include "display/widgets/ekko_bar.h"
@@ -657,14 +656,14 @@ void Ds02HomeDisplay::CreateDockObjects() {
         "assets/icons/dock/finder.png", "assets/icons/dock/calendar.png",
         "assets/icons/dock/folder.png", "assets/icons/dock/music.png",
         "assets/icons/dock/reminders.png", "assets/icons/dock/settings.png",
-        "assets/icons/dock/siri.png", "assets/icons/dock/terminal.png",
+        "assets/icons/dock/siri.png",
         "assets/icons/dock/nightowl.png", "assets/icons/dock/translate.png",
         "assets/icons/dock/trash.png",
     };
     static const char *kFallbackIcons[kDockItemCount] = {
         FONT_AWESOME_FINDER, FONT_AWESOME_BOOK_OPEN, FONT_AWESOME_BOOK,
         FONT_AWESOME_MUSIC, FONT_AWESOME_MICROPHONE_LINES, FONT_AWESOME_GEAR,
-        FONT_AWESOME_MICROPHONE, FONT_AWESOME_TERMINAL,
+        FONT_AWESOME_MICROPHONE,
         LV_SYMBOL_EYE_OPEN, FONT_AWESOME_LANGUAGE, LV_SYMBOL_TRASH,
     };
 
@@ -775,7 +774,6 @@ void Ds02HomeDisplay::RegisterAgentBridge() {
         else if (id == "music")          OpenMusic();
         else if (id == "documents")      OpenDocuments();
         else if (id == "settings")       OpenSettings();
-        else if (id == "terminal")       OpenTerminal();
         else if (id == "trash")          OpenTrash();
         else if (id == "chat")           OpenChat();
         else if (id == "gallery")        OpenBackgroundGallery();
@@ -942,7 +940,6 @@ void Ds02HomeDisplay::OnDockButtonEvent(lv_event_t *e) {
             self->status_bar_->ToggleAssistantOrbit();
         }
         break;
-    case kDockTerminal: self->OpenTerminal(); break;
     case kDockNightOwl:
         self->ShowNotification("NightOwl: Sắp ra mắt", 1500);
         break;
@@ -1149,18 +1146,6 @@ void Ds02HomeDisplay::OpenChat() {
     NoteAppOpened(kAppChat);
 }
 
-void Ds02HomeDisplay::OpenTerminal() {
-    DisplayLockGuard lock(this);
-    if (terminal_view_) { RestoreApp(kAppTerminal); return; }
-    if (!root_) root_ = lv_screen_active();
-    terminal_view_ = std::make_shared<TerminalView>(
-        root_, width_, height_,
-        [this]() { terminal_view_.reset(); OnAppClosed(kAppTerminal); });
-    terminal_view_->SetBackgroundRequest([this]() { BackgroundApp(kAppTerminal); });
-    terminal_view_->Start();
-    NoteAppOpened(kAppTerminal);
-}
-
 void Ds02HomeDisplay::OpenTrash() {
     DisplayLockGuard lock(this);
     if (trash_view_) { RestoreApp(kAppTrash); return; }
@@ -1188,7 +1173,6 @@ OverlayView *Ds02HomeDisplay::GetAppView(AppId id) const {
     case kAppReminders: return reminders_view_.get();
     case kAppSettings:  return settings_view_.get();
     case kAppChat:      return chat_view_.get();
-    case kAppTerminal:  return terminal_view_.get();
     case kAppTrash:     return trash_view_.get();
     case kAppGallery:   return gallery_view_.get();
     default:            return nullptr;
@@ -1279,7 +1263,7 @@ void Ds02HomeDisplay::UpdateDockDots() {
         {kDockCalendar, kAppCalendar},   {kDockDocuments, kAppDocuments},
         {kDockMusic, kAppMusic},         {kDockReminders, kAppReminders},
         {kDockSettings, kAppSettings},   {kDockEkkoBot, kAppChat},
-        {kDockTerminal, kAppTerminal},   {kDockTrash, kAppTrash},
+        {kDockTrash, kAppTrash},
     };
     for (const auto &m : kDockApps) {
         if (!dock_indicators_[m.dock_index]) continue;
@@ -1308,7 +1292,6 @@ void Ds02HomeDisplay::OpenAppSwitcher() {
         case kAppReminders: *path = "assets/icons/dock/reminders.png"; return dock_icon_cache_[kDockReminders].get();
         case kAppSettings:  *path = "assets/icons/dock/settings.png"; return dock_icon_cache_[kDockSettings].get();
         case kAppChat:      *path = "assets/icons/dock/siri.png";     return dock_icon_cache_[kDockEkkoBot].get();
-        case kAppTerminal:  *path = "assets/icons/dock/terminal.png"; return dock_icon_cache_[kDockTerminal].get();
         case kAppTrash:     *path = "assets/icons/dock/trash.png";    return dock_icon_cache_[kDockTrash].get();
         case kAppGallery:   *path = "assets/icons/drawer/photos.png"; return drawer_icon_cache_[kGalleryDrawerIndex].get();
         default:            *path = nullptr; return nullptr;

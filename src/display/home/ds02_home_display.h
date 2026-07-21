@@ -33,7 +33,6 @@ class MusicView;
 class OverlayView;
 class RemindersView;
 class SettingsView;
-class TerminalView;
 class TrashView;
 class WifiSettingsView;
 
@@ -71,7 +70,6 @@ public:
     void OpenBackgroundGallery();
     void OpenSettings();
     void OpenChat();
-    void OpenTerminal();
     void OpenTrash();
     void OpenLockScreen();
     void SetBrightness(int pct);
@@ -99,7 +97,6 @@ private:
         kDockReminders,
         kDockSettings,
         kDockEkkoBot,
-        kDockTerminal,
         kDockNightOwl,
         kDockTranslate,
         kDockTrash,
@@ -126,7 +123,6 @@ private:
         kAppReminders,
         kAppSettings,
         kAppChat,
-        kAppTerminal,
         kAppTrash,
         kAppGallery, // drawer app: gets a temporary dock slot while running
     };
@@ -236,7 +232,6 @@ private:
     std::shared_ptr<BackgroundGalleryView> gallery_view_;
     std::shared_ptr<SettingsView> settings_view_;
     std::shared_ptr<ChatView> chat_view_;
-    std::shared_ptr<TerminalView> terminal_view_;
     std::shared_ptr<TrashView> trash_view_;
     std::shared_ptr<LockScreenView> lock_screen_view_;
     /* One Conversation shared by the Ekko Dynamic Island and the legacy chat

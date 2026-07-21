@@ -2,7 +2,7 @@
 
 Giao diện LVGL 9.2 cho Jetson Nano 4GB B01 và màn hình HDMI cảm ứng
 800×480. Chương trình hỗ trợ lịch, trình duyệt tệp, Wi-Fi, Bluetooth, cài đặt,
-chat và terminal trực tiếp trên màn hình.
+chat trực tiếp trên màn hình.
 
 ## Chạy ngay sau khi build
 

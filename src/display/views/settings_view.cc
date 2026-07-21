@@ -3,8 +3,6 @@
 #include "display/common/lvgl_utils.h"
 #include "display/common/signal_bars.h"
 #include "display/core/app_icons.h"
-#include "display/theme/terminal_theme.h"
-#include "display/views/terminal_view.h"
 #include "display/widgets/assistant_orbit.h"
 #include "fonts.h"
 #include "display/theme/ui_theme.h"
@@ -785,7 +783,6 @@ void SettingsView::ClearDetail() {
     bright_value_label_ = nullptr;
     text_size_slider_ = nullptr;
     text_size_value_label_ = nullptr;
-    terminal_size_value_label_ = nullptr;
     night_warmth_slider_ = nullptr;
     vol_slider_ = nullptr;
     mute_switch_ = nullptr;
@@ -1277,7 +1274,6 @@ void SettingsView::BuildSound() {
 void SettingsView::BuildApplications() {
     switch (application_page_) {
         case ApplicationPage::Main: BuildApplicationsMain(); break;
-        case ApplicationPage::Terminal: BuildTerminalSettings(); break;
         case ApplicationPage::EkkoBot: BuildEkkoBotSettings(); break;
     }
 }
@@ -1328,8 +1324,6 @@ void SettingsView::BuildApplicationsMain() {
         lv_obj_clear_flag(chevron, LV_OBJ_FLAG_CLICKABLE);
     };
 
-    add_app_row("Terminal", "Cài đặt theme", "terminal", OnOpenTerminalSettings);
-    DisplayDivider(card);
     add_app_row("Ekko Bot", "Màu orbit trong Dynamic Island", "ekko-bot",
                 OnOpenEkkoBotSettings);
 }
@@ -1404,130 +1398,6 @@ void SettingsView::ApplicationsPageHeader(const char *title) {
     lv_obj_set_style_text_color(label, Color(p.text), 0);
     lv_label_set_text(label, title);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 48, 0);
-}
-
-lv_obj_t *SettingsView::CreateTerminalThemePreview(
-    lv_obj_t *parent, const jetson::TerminalTheme &theme) {
-    auto *preview = lv_obj_create(parent);
-    lv_obj_remove_style_all(preview);
-    lv_obj_set_size(preview, 82, 48);
-    lv_obj_set_style_radius(preview, 8, 0);
-    lv_obj_set_style_bg_color(preview, Color(theme.background), 0);
-    lv_obj_set_style_bg_opa(preview, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(preview, 1, 0);
-    lv_obj_set_style_border_color(preview, Color(theme.muted), 0);
-    lv_obj_set_style_border_opa(preview, LV_OPA_80, 0);
-    lv_obj_clear_flag(preview, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
-                                               LV_OBJ_FLAG_CLICKABLE));
-
-    auto bar = [preview](int x, int y, int w, uint32_t color) {
-        auto *line = lv_obj_create(preview);
-        lv_obj_remove_style_all(line);
-        lv_obj_set_size(line, w, 5);
-        lv_obj_set_pos(line, x, y);
-        lv_obj_set_style_radius(line, 2, 0);
-        lv_obj_set_style_bg_color(line, Color(color), 0);
-        lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
-        lv_obj_clear_flag(line, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE |
-                                                LV_OBJ_FLAG_CLICKABLE));
-    };
-    bar(8, 8, 64, theme.foreground);
-    bar(8, 17, 54, theme.muted);
-    bar(8, 29, 19, theme.accent);
-    bar(31, 29, 16, theme.foreground);
-    bar(51, 29, 13, theme.muted);
-    bar(68, 29, 5, theme.cursor);
-    return preview;
-}
-
-void SettingsView::MakeTerminalThemeRow(lv_obj_t *card,
-                                        const jetson::TerminalTheme &theme,
-                                        bool selected) {
-    const auto &p = jetson::UiTheme::Instance().Palette();
-    auto *row = DisplayRow(card, "", nullptr, 66);
-    lv_obj_set_style_pad_left(row, 8, 0);
-    lv_obj_set_style_pad_right(row, 12, 0);
-    if (selected) {
-        lv_obj_set_style_bg_color(row, Color(p.accent), 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_10, 0);
-    }
-    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(row, 3);
-
-    CreateTerminalThemePreview(row, theme);
-
-    auto *name = lv_label_create(row);
-    lv_obj_set_width(name, 1);
-    lv_obj_set_flex_grow(name, 1);
-    lv_obj_set_style_text_font(name, &BUILTIN_SMALL_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(name, Color(selected ? p.accent : p.text), 0);
-    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-    lv_label_set_text(name, theme.name);
-    lv_obj_clear_flag(name, LV_OBJ_FLAG_CLICKABLE);
-
-    auto *check = lv_label_create(row);
-    lv_obj_set_width(check, 24);
-    lv_obj_set_style_text_align(check, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(check, &BUILTIN_ICON_FONT, 0);
-    lv_obj_set_style_text_color(check, Color(p.accent), 0);
-    lv_label_set_text(check, selected ? LV_SYMBOL_OK : "");
-    lv_obj_clear_flag(check, LV_OBJ_FLAG_CLICKABLE);
-
-    auto *ctx = new ThemeCtx{this, theme.id};
-    lv_obj_add_event_cb(row, OnTerminalThemeSelected, LV_EVENT_CLICKED, ctx);
-    lv_obj_add_event_cb(row, OnThemeDeleted, LV_EVENT_DELETE, ctx);
-}
-
-void SettingsView::BuildTerminalSettings() {
-    ApplicationsPageHeader("Terminal");
-
-    Settings terminal("terminal", false);
-    const int size = std::clamp(
-        terminal.GetInt("text_size", jetson::kDefaultTerminalTextSize),
-        jetson::kMinTerminalTextSize, jetson::kMaxTerminalTextSize);
-    const auto &selected_theme = jetson::FindTerminalTheme(terminal.GetString(
-        "theme", jetson::kDefaultTerminalTheme));
-
-    auto *appearance = DisplayCard();
-    auto *size_row = DisplayRow(appearance, "Text Size", nullptr, 58);
-
-    auto make_size_button = [this, size_row](const char *text, lv_event_cb_t cb) {
-        const auto &palette = jetson::UiTheme::Instance().Palette();
-        auto *button = lv_obj_create(size_row);
-        lv_obj_remove_style_all(button);
-        lv_obj_set_size(button, 44, 42);
-        lv_obj_set_style_radius(button, 10, 0);
-        lv_obj_set_style_bg_color(button, Color(palette.button), 0);
-        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
-        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, this);
-        auto *label = lv_label_create(button);
-        lv_obj_set_style_text_font(label, &BUILTIN_TEXT_FONT, 0);
-        lv_obj_set_style_text_color(label, Color(palette.text), 0);
-        lv_label_set_text(label, text);
-        lv_obj_center(label);
-    };
-    make_size_button("−", OnTerminalTextSmaller);
-
-    terminal_size_value_label_ = lv_label_create(size_row);
-    lv_obj_set_width(terminal_size_value_label_, 52);
-    lv_obj_set_style_text_align(terminal_size_value_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(terminal_size_value_label_, &BUILTIN_TEXT_FONT, 0);
-    lv_obj_set_style_text_color(terminal_size_value_label_,
-                                Color(jetson::UiTheme::Instance().Palette().text), 0);
-    lv_label_set_text_fmt(terminal_size_value_label_, "%d", size);
-
-    make_size_button("+", OnTerminalTextLarger);
-    DisplayDivider(appearance);
-    DisplayRow(appearance, "Font", jetson::BuiltinTerminalFontName().c_str(), 58);
-
-    DisplayCaption("THEME");
-    auto *themes = DisplayCard();
-    for (size_t i = 0; i < jetson::TerminalThemeCount(); ++i) {
-        const auto &theme = jetson::TerminalThemeAt(i);
-        MakeTerminalThemeRow(themes, theme, std::strcmp(selected_theme.id, theme.id) == 0);
-        if (i + 1 < jetson::TerminalThemeCount()) DisplayDivider(themes);
-    }
 }
 
 void SettingsView::BuildWifi() {
@@ -3546,9 +3416,6 @@ void SettingsView::OnBtRowDeleted(lv_event_t *e) {
 void SettingsView::OnOptDeleted(lv_event_t *e) {
     delete static_cast<OptCtx *>(lv_event_get_user_data(e));
 }
-void SettingsView::OnThemeDeleted(lv_event_t *e) {
-    delete static_cast<ThemeCtx *>(lv_event_get_user_data(e));
-}
 void SettingsView::OnFontDeleted(lv_event_t *e) {
     delete static_cast<FontCtx *>(lv_event_get_user_data(e));
 }
@@ -3717,14 +3584,6 @@ void SettingsView::OnMuteToggle(lv_event_t *e) {
     self->SetStatus(audible ? "Bật tiếng" : "Tắt tiếng");
 }
 
-void SettingsView::OnOpenTerminalSettings(lv_event_t *e) {
-    LvLockGuard lock;
-    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
-    if (!self) return;
-    self->application_page_ = ApplicationPage::Terminal;
-    self->ShowCategory(Cat::Applications);
-}
-
 void SettingsView::OnOpenEkkoBotSettings(lv_event_t *e) {
     LvLockGuard lock;
     auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
@@ -3753,53 +3612,6 @@ void SettingsView::OnOrbitColorSelected(lv_event_t *e) {
      * the page deletes the row and its OptCtx -- no references past here. */
     const std::string status = std::string("Orbit: ") + OrbitPaletteById(id).name;
     self->SetStatus(status.c_str());
-    self->ShowCategory(Cat::Applications);
-}
-
-void SettingsView::OnTerminalTextSmaller(lv_event_t *e) {
-    LvLockGuard lock;
-    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
-    if (!self) return;
-    Settings terminal("terminal", true);
-    const int current = std::clamp(
-        terminal.GetInt("text_size", jetson::kDefaultTerminalTextSize),
-        jetson::kMinTerminalTextSize, jetson::kMaxTerminalTextSize);
-    const int next = std::max(jetson::kMinTerminalTextSize,
-                              current - jetson::kTerminalTextSizeStep);
-    terminal.SetInt("text_size", next);
-    if (self->terminal_size_value_label_)
-        lv_label_set_text_fmt(self->terminal_size_value_label_, "%d", next);
-    TerminalView::RefreshOpenTerminals();
-    self->SetStatus(("Cỡ chữ Terminal: " + std::to_string(next)).c_str());
-}
-
-void SettingsView::OnTerminalTextLarger(lv_event_t *e) {
-    LvLockGuard lock;
-    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
-    if (!self) return;
-    Settings terminal("terminal", true);
-    const int current = std::clamp(
-        terminal.GetInt("text_size", jetson::kDefaultTerminalTextSize),
-        jetson::kMinTerminalTextSize, jetson::kMaxTerminalTextSize);
-    const int next = std::min(jetson::kMaxTerminalTextSize,
-                              current + jetson::kTerminalTextSizeStep);
-    terminal.SetInt("text_size", next);
-    if (self->terminal_size_value_label_)
-        lv_label_set_text_fmt(self->terminal_size_value_label_, "%d", next);
-    TerminalView::RefreshOpenTerminals();
-    self->SetStatus(("Cỡ chữ Terminal: " + std::to_string(next)).c_str());
-}
-
-void SettingsView::OnTerminalThemeSelected(lv_event_t *e) {
-    LvLockGuard lock;
-    auto *ctx = static_cast<ThemeCtx *>(lv_event_get_user_data(e));
-    if (!ctx || !ctx->self) return;
-    auto *self = ctx->self;
-    const std::string theme_id = ctx->theme_id;
-    const auto &theme = jetson::FindTerminalTheme(theme_id);
-    Settings("terminal", true).SetString("theme", theme_id);
-    TerminalView::RefreshOpenTerminals();
-    self->SetStatus((std::string("Terminal theme: ") + theme.name).c_str());
     self->ShowCategory(Cat::Applications);
 }
 

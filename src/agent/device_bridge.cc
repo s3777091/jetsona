@@ -27,7 +27,6 @@ const std::vector<AgentApp> kApps = {
     {"music",          "Nhạc",              "nhac music nhacso player bainhac"},
     {"documents",      "Tài liệu",          "tailieu documents files finder tep thumuc"},
     {"settings",       "Cài đặt",           "caidat settings preferences tuychinh"},
-    {"terminal",       "Terminal",          "terminal console shell dongolenh"},
     {"trash",          "Thùng rác",         "thungrac trash rac bin"},
     {"chat",           "Ekko",              "ekko chat assistant troly"},
     {"gallery",        "Hình nền",          "hinhnen wallpaper gallery anh photos"},
