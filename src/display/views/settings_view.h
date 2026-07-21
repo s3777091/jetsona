@@ -1,7 +1,6 @@
 #pragma once
 
 #include "display/views/overlay_view.h"
-#include "display/theme/terminal_theme.h"
 #include "display/widgets/telex_ime.h"
 #include "net/bluetooth_manager.h"
 #include "net/wifi_manager.h"
@@ -65,7 +64,7 @@ private:
     enum class Cat { Display, Sound, Wifi, Bluetooth, General, Applications };
 
     enum class DisplayPage { Main, TextSize, NightShift, AutoLock, AlwaysOn };
-    enum class ApplicationPage { Main, Terminal, WebView, EkkoBot };
+    enum class ApplicationPage { Main, EkkoBot };
     enum class GeneralPage {
         Main,
         Keyboard,
@@ -88,7 +87,6 @@ private:
     struct WifiRowCtx { SettingsView *self; jetson::WifiNetwork network; };
     struct BtRowCtx { SettingsView *self; jetson::BtDevice device; };
     struct OptCtx { SettingsView *self; std::string value; }; // timezone / sleep option
-    struct ThemeCtx { SettingsView *self; std::string theme_id; };
     struct FontCtx {
         SettingsView *self;
         std::string name;
@@ -146,7 +144,6 @@ private:
     lv_obj_t *bright_value_label_ = nullptr;
     lv_obj_t *text_size_slider_ = nullptr;
     lv_obj_t *text_size_value_label_ = nullptr;
-    lv_obj_t *terminal_size_value_label_ = nullptr;
     lv_obj_t *night_warmth_slider_ = nullptr;
     lv_obj_t *vol_slider_ = nullptr;
     lv_obj_t *mute_switch_ = nullptr;
@@ -230,14 +227,8 @@ private:
     void BuildGeneral();
     void BuildApplications();
     void BuildApplicationsMain();
-    void BuildTerminalSettings();
-    void BuildWebViewSettings();
     void BuildEkkoBotSettings();
     void ApplicationsPageHeader(const char *title);
-    lv_obj_t *CreateTerminalThemePreview(lv_obj_t *parent,
-                                         const jetson::TerminalTheme &theme);
-    void MakeTerminalThemeRow(lv_obj_t *card, const jetson::TerminalTheme &theme,
-                              bool selected);
     void BuildGeneralMain();
     void BuildGeneralKeyboard();
     void BuildLanguageRegion();
@@ -304,7 +295,6 @@ private:
     static void OnWifiRowDeleted(lv_event_t *e);
     static void OnBtRowDeleted(lv_event_t *e);
     static void OnOptDeleted(lv_event_t *e);
-    static void OnThemeDeleted(lv_event_t *e);
     static void OnFontDeleted(lv_event_t *e);
 
     static void OnBrightChanged(lv_event_t *e);
@@ -325,15 +315,9 @@ private:
     static void OnAlwaysOnNotificationsToggle(lv_event_t *e);
     static void OnVolChanged(lv_event_t *e);
     static void OnMuteToggle(lv_event_t *e);
-    static void OnOpenTerminalSettings(lv_event_t *e);
-    static void OnOpenWebViewSettings(lv_event_t *e);
     static void OnOpenEkkoBotSettings(lv_event_t *e);
     static void OnApplicationsBack(lv_event_t *e);
-    static void OnWebViewModeSelected(lv_event_t *e);
     static void OnOrbitColorSelected(lv_event_t *e);
-    static void OnTerminalTextSmaller(lv_event_t *e);
-    static void OnTerminalTextLarger(lv_event_t *e);
-    static void OnTerminalThemeSelected(lv_event_t *e);
     static void OnAirplaneSwitch(lv_event_t *e);
     static void OnVpnSwitch(lv_event_t *e);
 

@@ -15,8 +15,7 @@ Restart=on-failure
 RestartSec=3
 # DRM/KMS needs root or the 'video'/'render' groups.
 User=root
-# Chiaki stores Remote Play registration keys below its private runtime home.
-# Prevent any files created by the firmware/launchers from becoming group/world
+# Prevent any files created by the firmware from becoming group/world
 # readable even when a helper forgets to pass an explicit chmod mode.
 UMask=0077
 Environment=JETSON_FW_LOG=/var/log/jetson-fw.log

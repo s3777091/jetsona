@@ -27,16 +27,11 @@ const std::vector<AgentApp> kApps = {
     {"music",          "Nhạc",              "nhac music nhacso player bainhac"},
     {"documents",      "Tài liệu",          "tailieu documents files finder tep thumuc"},
     {"settings",       "Cài đặt",           "caidat settings preferences tuychinh"},
-    {"terminal",       "Terminal",          "terminal console shell dongolenh"},
     {"trash",          "Thùng rác",         "thungrac trash rac bin"},
     {"chat",           "Ekko",              "ekko chat assistant troly"},
     {"gallery",        "Hình nền",          "hinhnen wallpaper gallery anh photos"},
     {"wifi",           "Cài đặt Wi-Fi",     "wifi mang network wireless"},
     {"bluetooth",      "Cài đặt Bluetooth", "bluetooth bt tainghe"},
-    {"pods",           "Pods",              "pods runpod gpu"},
-    {"studio",         "Studio",            "studio code vscode ide"},
-    {"ps_remote_play", "PS Remote Play",    "ps5 playstation remoteplay chiaki game"},
-    {"browser",        "Trình duyệt",       "browser chromium chrome web trinhduyet internet"},
     {"lock_screen",    "Màn hình khoá",     "khoa lock lockscreen manhinhkhoa"},
 };
 

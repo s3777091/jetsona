@@ -31,11 +31,8 @@ class EkkoBar;
 class LockScreenView;
 class MusicView;
 class OverlayView;
-class PodsView;
-class PsRemotePlayView;
 class RemindersView;
 class SettingsView;
-class TerminalView;
 class TrashView;
 class WifiSettingsView;
 
@@ -73,27 +70,7 @@ public:
     void OpenBackgroundGallery();
     void OpenSettings();
     void OpenChat();
-    void OpenTerminal();
     void OpenTrash();
-    void OpenPsRemotePlay();
-    /* RunPod GPU pod manager (drawer "Pods"): rent, start/stop, delete pods
-     * and jump into a pod's web IDE. Needs RUNPOD_API_KEY in .env. */
-    void OpenPods();
-    /* Drawer "Studio": open the self-hosted code-server on the VM
-     * (JETSON_STUDIO_URL, vm/code-server/deploy.py) in the Chromium kiosk.
-     * GPU pods are opened explicitly from the Pods app instead. */
-    void OpenStudio();
-    /* Hand the HDMI panel to a Chromium kiosk: stops the FBDEV render loop,
-     * then either exits with code 42 (under the jetson-fw supervisor, which
-     * runs launch_chromium.sh and restarts us) or -- when started without a
-     * supervisor -- runs the kiosk in-process and re-execs this binary when
-     * the browser closes. Not an OverlayView app; the whole UI is suspended
-     * while the kiosk owns the panel. A non-empty `url` is handed to the
-     * kiosk via /tmp/jetson_chromium_url (read by launch_chromium.sh).
-     * `captive_portal` enables the launcher's touch keyboard and automatic
-     * return once unrestricted Internet access has been confirmed. */
-    void OpenChromium(const std::string &url = std::string(),
-                      bool captive_portal = false);
     void OpenLockScreen();
     void SetBrightness(int pct);
     void ApplyDisplayPreferences();
@@ -120,19 +97,16 @@ private:
         kDockReminders,
         kDockSettings,
         kDockEkkoBot,
-        kDockTerminal,
         kDockNightOwl,
         kDockTranslate,
         kDockTrash,
         kDockItemCount,
     };
-    static constexpr size_t kDrawerItemCount = 15;
+    static constexpr size_t kDrawerItemCount = 4;
     static constexpr size_t kDrawerItemsPerPage = 8;
     static constexpr size_t kDrawerPageCount =
         (kDrawerItemCount + kDrawerItemsPerPage - 1) / kDrawerItemsPerPage;
-    static constexpr size_t kGalleryDrawerIndex = 5;
-    static constexpr size_t kPodsDrawerIndex = 6;
-    static constexpr size_t kPsRemotePlayDrawerIndex = 2;
+    static constexpr size_t kGalleryDrawerIndex = 2;
 
     /* ---- Multitasking ----
      * Every OverlayView app that opens joins an LRU queue and stays alive when
@@ -149,11 +123,8 @@ private:
         kAppReminders,
         kAppSettings,
         kAppChat,
-        kAppTerminal,
         kAppTrash,
         kAppGallery, // drawer app: gets a temporary dock slot while running
-        kAppPsRemotePlay,
-        kAppPods,    // drawer app: RunPod GPU manager
     };
     static constexpr size_t kMaxRunningApps = 5;
 
@@ -201,23 +172,11 @@ private:
     void OpenAppSwitcher();
     void AddGalleryDockItem();
     void RemoveGalleryDockItem();
-    /* Release the framebuffer and hand the panel to chiaki-ng. `configure`
-     * opens chiaki-ng's official registration UI; stream mode starts the
-     * selected PS5 directly. The supervisor maps these to exit 43/44. */
-    void LaunchPsRemotePlay(bool configure);
     static void OnGalleryDockClicked(lv_event_t *e);
     void ToggleVolume();
     static void OnSplashOpa(void *var, int32_t v);
     static void OnSplashBar(void *var, int32_t v);
     static void OnSplashGone(lv_anim_t *a);
-
-    /* First half of the Chromium hand-off zoom: the app card collapses into
-     * the island and leaves the panel black, which is the frame the
-     * framebuffer keeps while Xorg starts. jetson_kiosk_bar then blooms the
-     * same card back out, so the two processes read as one animation.
-     * Returns the milliseconds to wait before tearing LVGL down. */
-    int PlayChromiumHandoff(const std::string &url);
-    static void OnHandoffCollapse(void *var, int32_t v);
 
     StandbyState standby_state_ = StandbyState::Awake;
     esp_timer_handle_t refresh_timer_ = nullptr;
@@ -273,10 +232,7 @@ private:
     std::shared_ptr<BackgroundGalleryView> gallery_view_;
     std::shared_ptr<SettingsView> settings_view_;
     std::shared_ptr<ChatView> chat_view_;
-    std::shared_ptr<TerminalView> terminal_view_;
     std::shared_ptr<TrashView> trash_view_;
-    std::shared_ptr<PsRemotePlayView> ps_remote_play_view_;
-    std::shared_ptr<PodsView> pods_view_;
     std::shared_ptr<LockScreenView> lock_screen_view_;
     /* One Conversation shared by the Ekko Dynamic Island and the legacy chat
      * overlay, so the same history and tool loop back both. */
@@ -293,13 +249,6 @@ private:
      * hands off to the welcome animation in the Dynamic Island. */
     lv_obj_t *splash_ = nullptr;
     std::unique_ptr<LvglImage> splash_logo_;
-    // Chromium hand-off card. Lives until the process exits, so nothing
-    // tears it down again.
-    lv_obj_t *handoff_cover_ = nullptr;
-    lv_obj_t *handoff_card_ = nullptr;
-    lv_obj_t *handoff_icon_ = nullptr;
-    std::unique_ptr<LvglImage> handoff_icon_image_;
-    int handoff_icon_w_ = 0, handoff_icon_h_ = 0;
 };
 
 } // namespace home
