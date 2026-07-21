@@ -899,8 +899,10 @@ void LvglRuntime::StartHandler() {
              * flushed in this same LVGL cycle. */
             if (mouse_) lv_indev_read(mouse_);
             uint32_t ms = lv_timer_handler();
-            /* Never let a large "next timer" value stall interactive input. */
-            if (ms == 0 || ms > 5) ms = 5;
+            /* Never let a large "next timer" value stall interactive input.
+             * Cap is runtime-tunable so the UI-sleep state can idle longer. */
+            uint32_t cap = max_sleep_ms_.load();
+            if (ms == 0 || ms > cap) ms = cap;
             std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         }
     });

@@ -582,12 +582,14 @@ void Ds02HomeDisplay::CreateSystemBarObjects() {
     status_bar_->SetBrightnessAction([this](int brightness) {
         SetBrightness(brightness);
     });
-    status_bar_->SetSleepAction([]() {
-        std::thread([]() {
-            sync();
-            int r = std::system("systemctl suspend");
-            (void)r;
-        }).detach();
+    status_bar_->SetSleepAction([this]() {
+        // Lite sleep is UI-only: hide the home tree and show the black scrim so
+        // LVGL stops drawing, drop the fan to Quiet and idle the handler loop.
+        // The device never suspends -- it must stay online 24/7 for Wake-on-LAN
+        // responsiveness and the (future) voice agent. systemctl suspend would
+        // freeze the OS and kill that, so it is intentionally not used here.
+        DisplayLockGuard lock(this);
+        EnterSleep();
     });
     status_bar_->SetLockAction([this]() { OpenLockScreen(); });
     // Reboot/shutdown shell out exactly like Settings > Power does (system()
@@ -864,6 +866,16 @@ void Ds02HomeDisplay::ApplyStandbyState() {
         if (status_bar_) status_bar_->Show();
         lv_obj_clear_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
         break;
+    case StandbyState::Sleep:
+        // UI-only "screen off": hide every home subtree so LVGL skips it (no
+        // redraw cost), and cover with the black scrim which owns tap-to-wake.
+        // The device itself stays fully on; only rendering/app display sleeps.
+        if (wallpaper_image_obj_) lv_obj_add_flag(wallpaper_image_obj_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_opa(dim_overlay_, 0, 0);
+        lv_obj_add_flag(launcher_layer_, LV_OBJ_FLAG_HIDDEN);
+        if (status_bar_) status_bar_->Hide();
+        if (screen_off_overlay_) lv_obj_clear_flag(screen_off_overlay_, LV_OBJ_FLAG_HIDDEN);
+        break;
     }
 }
 
@@ -873,6 +885,7 @@ void Ds02HomeDisplay::AdvanceStandbyButtonState() {
     case StandbyState::Dim: standby_state_ = StandbyState::Awake; break;
     case StandbyState::Awake: standby_state_ = StandbyState::Launcher; break;
     case StandbyState::Launcher: standby_state_ = StandbyState::Dim; break;
+    case StandbyState::Sleep: standby_state_ = StandbyState::Awake; break;
     }
     ApplyStandbyState();
 }
@@ -1106,9 +1119,7 @@ void Ds02HomeDisplay::OnScreenOffClicked(lv_event_t *e) {
     // this panel has no separate hardware wake key wired into the application.
     if (!touch_to_wake && lv_event_get_code(e) != LV_EVENT_LONG_PRESSED) return;
     DisplayLockGuard lock(self);
-    self->standby_state_ = StandbyState::Awake;
-    self->ApplyStandbyState();
-    lv_disp_trig_activity(nullptr);
+    self->WakeFromSleep();
 }
 
 void Ds02HomeDisplay::OpenLockScreen() {
@@ -1533,9 +1544,58 @@ void Ds02HomeDisplay::OnRefreshTimer(void *arg) {
 }
 
 void Ds02HomeDisplay::CheckIdleDim() {
-    // Disabled on this mouse-only panel. Repeated synthetic input activity can
-    // otherwise alternate Awake/Dim and make the wallpaper appear to flash.
-    // Manual launcher/app transitions remain available.
+    // Lite sleep watchdog, fired every 1s by OnRefreshTimer (ESP_TIMER_TASK, not
+    // the LVGL thread, so the guard is required -- lv_lock is recursive). LVGL's
+    // inactivity timer (lv_disp_get_inactive_time) is reset by every indev that
+    // feeds the display -- the local touch panel AND the webRTC-injected
+    // keyboard/mouse (WebSocket 46001 -> jetsona_webrtc_input.py ->
+    // /dev/input/jetsona-webrtc), so a web interaction wakes like a local tap.
+    // Dim stays manual-only; only the full UI-sleep state is auto-driven here.
+    DisplayLockGuard lock(this);
+    Settings display("display", false);
+    const bool sleep_mode = display.GetBool("sleep_mode", true);
+    const int timeout = display.GetInt("sleep_timeout", 30); // seconds; 0 = off
+
+    const uint32_t idle_ms = lv_disp_get_inactive_time(nullptr);
+
+    if (standby_state_ == StandbyState::Sleep) {
+        // Any recent activity (local tap or web input) -> wake.
+        if (idle_ms < 1500) WakeFromSleep();
+        return;
+    }
+
+    if (!sleep_mode || timeout <= 0) return;
+    // An open foreground app/overlay keeps the screen awake; only the empty
+    // home goes to sleep.
+    if (HasOpenOverlay()) return;
+    if (idle_ms >= static_cast<uint32_t>(timeout) * 1000u) EnterSleep();
+}
+
+void Ds02HomeDisplay::EnterSleep() {
+    // Fan -> Quiet, throttle the LVGL loop, then drop the UI. fan::SetProfile
+    // writes /etc/jetson-fan.conf which the jetson-fan-curve daemon reads ~2s.
+    jetson::fan::SetProfile(jetson::fan::Profile::Quiet);
+    jetson::LvglRuntime::Instance().SetIdleSleepMs(100);
+    standby_state_ = StandbyState::Sleep;
+    ApplyStandbyState();
+}
+
+void Ds02HomeDisplay::WakeFromSleep() {
+    // Undo EnterSleep: snappy handler loop, fan back to Balanced (the device is
+    // now in use), and restore the home UI. Works for both local tap (via
+    // OnScreenOffClicked) and web input (via CheckIdleDim seeing fresh activity).
+    if (standby_state_ != StandbyState::Sleep) {
+        // Not asleep -- just make sure we are in a normal awake state.
+        standby_state_ = StandbyState::Awake;
+        ApplyStandbyState();
+        lv_disp_trig_activity(nullptr);
+        return;
+    }
+    jetson::LvglRuntime::Instance().SetIdleSleepMs(5);
+    jetson::fan::SetProfile(jetson::fan::Profile::Balanced);
+    standby_state_ = StandbyState::Awake;
+    ApplyStandbyState();
+    lv_disp_trig_activity(nullptr);
 }
 
 bool Ds02HomeDisplay::HasOpenOverlay() const {
@@ -1555,6 +1615,11 @@ void Ds02HomeDisplay::SetStatus(const char *status) {
 }
 
 void Ds02HomeDisplay::ShowNotification(const char *notification, int duration_ms) {
+    if (standby_state_ == StandbyState::Sleep) {
+        // UI is asleep; do not wake or draw for a notification. The device stays
+        // online, so the next user tap/web interaction restores the UI.
+        return;
+    }
     if (standby_state_ == StandbyState::Dim) {
         Settings display("display", false);
         if (!display.GetBool("always_on", true) ||

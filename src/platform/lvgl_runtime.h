@@ -30,6 +30,12 @@ public:
     /* Stop everything and join threads (for clean shutdown). */
     void Stop();
 
+    /* Cap the handler loop's sleep between LVGL cycles. Default 5 ms keeps
+     * interactive input snappy; raising it (e.g. 100 ms) while the UI is
+     * asleep cuts CPU wakeups ~20x. Input is still read inside the handler
+     * loop, so wake latency is bounded by this value. */
+    void SetIdleSleepMs(uint32_t ms) { max_sleep_ms_.store(ms); }
+
     lv_display_t *display() const { return display_; }
     lv_indev_t *pointer() const { return pointer_; }
     lv_indev_t *keyboard() const { return keyboard_; }
@@ -74,6 +80,7 @@ private:
     std::thread handler_thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> keyboard_ctrl_pressed_{false};
+    std::atomic<uint32_t> max_sleep_ms_{5};
 };
 
 } // namespace jetson

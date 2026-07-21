@@ -3,6 +3,7 @@
 #include "display/core/lcd_display.h"
 #include "display/home/app_switcher.h"
 #include "display/widgets/status_bar.h"
+#include "platform/fan_control.h"
 
 #include <array>
 #include <chrono>
@@ -85,7 +86,7 @@ private:
     jetson::IWifiManager &wifi_;
     jetson::IBluetoothManager &bluetooth_;
 
-    enum class StandbyState { Dim, Awake, Launcher };
+    enum class StandbyState { Dim, Awake, Launcher, Sleep };
 
     // Keep Dock order in one place: click routing, running dots and switcher
     // artwork all use these names instead of duplicating fragile integers.
@@ -146,6 +147,12 @@ private:
     void SetDockActive(int index);
     void CheckIdleDim();
     void ApplyStandbyState();
+    /* Lite sleep: UI-only "screen off" that keeps the device + network awake
+     * (never systemctl suspend). EnterSleep/WakeFromSleep also nudge the fan
+     * profile (Quiet while asleep, Balanced while in use) and the LVGL handler
+     * loop cap. Both local tap and web input land on WakeFromSleep. */
+    void EnterSleep();
+    void WakeFromSleep();
     bool HasOpenOverlay() const;
     void RepaintForTheme();
     bool ApplyBackgroundFile(const std::string &file);

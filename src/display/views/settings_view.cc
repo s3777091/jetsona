@@ -1127,6 +1127,10 @@ void SettingsView::BuildDisplayMain() {
     auto *wake_row = DisplayRow(lock_card, "Chạm để bật", nullptr);
     MakeSwitch(wake_row, Settings("display", false).GetBool("touch_to_wake", true),
                OnTouchWakeToggle);
+    DisplayDivider(lock_card);
+    auto *sleep_mode_row = DisplayRow(lock_card, "Chế độ ngủ", nullptr);
+    MakeSwitch(sleep_mode_row, Settings("display", false).GetBool("sleep_mode", true),
+               OnSleepModeToggle);
 
     auto *always_card = DisplayCard();
     MakeDisplayNavigationRow(always_card, "Màn hình luôn bật",
@@ -3528,6 +3532,15 @@ void SettingsView::OnTouchWakeToggle(lv_event_t *e) {
     Settings("display", true).SetBool("touch_to_wake", on);
     if (self->display_preferences_cb_) self->display_preferences_cb_();
     self->SetStatus(on ? "Chạm để bật: Bật" : "Chạm để bật: Tắt");
+}
+
+void SettingsView::OnSleepModeToggle(lv_event_t *e) {
+    LvLockGuard lock;
+    auto *self = static_cast<SettingsView *>(lv_event_get_user_data(e));
+    const bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+    Settings("display", true).SetBool("sleep_mode", on);
+    if (self->display_preferences_cb_) self->display_preferences_cb_();
+    self->SetStatus(on ? "Chế độ ngủ: Bật" : "Chế độ ngủ: Tắt");
 }
 
 void SettingsView::OnAlwaysOnToggle(lv_event_t *e) {
