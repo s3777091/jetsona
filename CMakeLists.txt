@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.14)
 project(jetson_fw LANGUAGES C CXX VERSION 0.1.0)
 
 set(CMAKE_C_STANDARD 11)
@@ -16,12 +16,6 @@ add_compile_options(-Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused
 # ----------------------------------------------------------------------------
 # Options
 # ----------------------------------------------------------------------------
-set(JETSON_DISPLAY_BACKEND "DRM" CACHE STRING "Display backend: DRM (KMS, default), SDL (fallback), FBDEV (Linux framebuffer /dev/fb0), or WAYLAND (weston client)")
-set_property(CACHE JETSON_DISPLAY_BACKEND PROPERTY STRINGS DRM SDL FBDEV WAYLAND)
-
-set(JETSON_DISPLAY_WIDTH  800 CACHE STRING "HDMI panel width")
-set(JETSON_DISPLAY_HEIGHT 480 CACHE STRING "HDMI panel height")
-
 set(JETSON_ASSETS_DIR "assets" CACHE STRING "Runtime assets directory (relative to CWD or absolute)")
 
 # ----------------------------------------------------------------------------
@@ -34,114 +28,68 @@ find_package(Threads REQUIRED)
 # "no FindDL.cmake" warning and leaves the link line empty when not needed.
 find_library(DL_LIBRARY dl)
 
-# libcurl: HTTP client for the in-process LLM (Ollama cloud chat completions).
+# libcurl: HTTP client for the in-process LLM (Ollama cloud chat completions),
+# Exa web search, the open-meteo weather client and Zing artwork downloads.
 find_package(CURL REQUIRED)
 
 # SHA-256 + HMAC-SHA512 signatures for the native Zing music client.
 find_package(OpenSSL REQUIRED)
 
-# libdrm is always useful (DRM backend uses it; SDL/kmsdrm also benefits).
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(DRM IMPORTED_TARGET libdrm)
-endif()
-if(NOT DRM_FOUND)
-    # Fallback: assume system libdrm
-    set(DRM_FOUND TRUE)
-    set(DRM_LIBRARIES drm)
-    set(DRM_INCLUDE_DIRS "")
-endif()
-
-if(JETSON_DISPLAY_BACKEND STREQUAL "SDL")
-    if(PkgConfig_FOUND)
-        pkg_check_modules(SDL2 IMPORTED_TARGET sdl2)
-    endif()
-    if(NOT SDL2_FOUND)
-        message(WARNING "SDL2 not found via pkg-config; assuming libsdl2-dev is installed (libs: SDL2).")
-        set(SDL2_LIBRARIES SDL2)
-        set(SDL2_INCLUDE_DIRS "")
-    endif()
-endif()
-
-# WAYLAND backend: the firmware runs as a Wayland client under a compositor
-# (weston with the KMS/DRM backend). Needs libwayland-client, xkbcommon and the
-# wayland-protocols. weston itself is a runtime (not build) dependency.
-if(JETSON_DISPLAY_BACKEND STREQUAL "WAYLAND")
-    if(PkgConfig_FOUND)
-        pkg_check_modules(WAYLAND_CLIENT IMPORTED_TARGET wayland-client)
-        pkg_check_modules(XKBCOMMON    IMPORTED_TARGET xkbcommon)
-        pkg_check_modules(WAYLAND_PROTOCOLS IMPORTED_TARGET wayland-protocols)
-    endif()
-    if(NOT WAYLAND_CLIENT_FOUND)
-        message(WARNING "wayland-client not found via pkg-config; assuming libwayland-dev is installed.")
-        set(WAYLAND_CLIENT_LIBRARIES wayland-client)
-        set(WAYLAND_CLIENT_INCLUDE_DIRS "")
-    endif()
-    if(NOT XKBCOMMON_FOUND)
-        message(WARNING "xkbcommon not found via pkg-config; assuming libxkbcommon-dev is installed.")
-        set(XKBCOMMON_LIBRARIES xkbcommon)
-        set(XKBCOMMON_INCLUDE_DIRS "")
-    endif()
-    set(WAYLAND_LIBS ${WAYLAND_CLIENT_LIBRARIES} ${XKBCOMMON_LIBRARIES})
-    set(WAYLAND_INCS ${WAYLAND_CLIENT_INCLUDE_DIRS} ${XKBCOMMON_INCLUDE_DIRS})
+# ALSA: mic capture + TTS/ringtone playback on the reSpeaker USB v3 (UAC2).
+find_path(ALSA_INCLUDE_DIR alsa/asoundlib.h)
+find_library(ALSA_LIBRARY NAMES asound)
+if(NOT ALSA_LIBRARY)
+    message(FATAL_ERROR "ALSA (libasound2) not found. Run scripts/fetch_deps.sh (apt: libasound2-dev).")
 endif()
 
 # ----------------------------------------------------------------------------
-# LVGL (vendored)
+# sherpa-onnx: wake-word (KWS) + streaming STT + offline TTS.
+#
+# Two ways to link it, in priority order:
+#   1. JETSON_SHERPA_DIR set -> link a prebuilt install prefix
+#      (lib/libsherpa-onnx.* + include/sherpa-onnx/c-api/c-api.h). This is the
+#      path scripts/fetch_sherpa.sh produces: it builds sherpa-onnx once with
+#      GPU + onnxruntime 1.11 CUDA into a prefix, then every firmware rebuild
+#      reuses it without recompiling sherpa. Fastest inner loop.
+#   2. JETSON_BUILD_SHERPA=ON (default when JETSON_SHERPA_DIR is empty) ->
+#      FetchContent the pinned tag and add_subdirectory it. Slower (rebuilds
+#      sherpa with the firmware) but needs no prior step.
+# Either way JETSON_HAVE_SHERPA is defined so the code knows the C API is there.
 # ----------------------------------------------------------------------------
-set(LV_CONF_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lv_conf.h" CACHE PATH "" FORCE)
-set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
-set(LV_CONF_BUILD_DISABLE_DEMOS ON CACHE BOOL "" FORCE)
-set(LV_CONF_BUILD_DISABLE_THORVG_INTERNAL ON CACHE BOOL "" FORCE)
+set(JETSON_SHERPA_DIR "" CACHE PATH "Prebuilt sherpa-onnx install prefix")
+set(JETSON_SHERPA_TAG "v1.10.30" CACHE STRING "sherpa-onnx git tag (FetchContent path)")
+option(JETSON_BUILD_SHERPA "Build sherpa-onnx from source via FetchContent" ON)
 
-add_subdirectory(third_party/lvgl)
-
-# LVGL's custom.cmake globs every src/*.S unconditionally. The two blend
-# assembly files are 32-bit ARM only (helium = Cortex-M MVE, neon = armv7a)
-# and won't assemble on aarch64; they also #include a header before their
-# #if guard, leaking C `typedef` lines to the assembler. With
-# LV_DRAW_SW_ASM_NONE (set in lv_conf.h) neither is needed, so skip them.
-set_source_files_properties(
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl/src/draw/sw/blend/helium/lv_blend_helium.S
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl/src/draw/sw/blend/neon/lv_blend_neon.S
-    DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl
-    PROPERTIES HEADER_FILE_ONLY TRUE)
-
-# Link libdrm into LVGL (the DRM driver #includes <xf86drm.h>, <drm/drm.h>).
-if(DRM_FOUND)
-    target_include_directories(lvgl PRIVATE ${DRM_INCLUDE_DIRS})
-    target_link_libraries(lvgl PUBLIC ${DRM_LIBRARIES})
-endif()
-
-# Enable SDL driver inside LVGL when chosen.
-if(JETSON_DISPLAY_BACKEND STREQUAL "SDL")
-    target_compile_definitions(lvgl PUBLIC LV_USE_SDL=1)
-    target_include_directories(lvgl PRIVATE ${SDL2_INCLUDE_DIRS})
-    target_link_libraries(lvgl PUBLIC ${SDL2_LIBRARIES})
-
-    # Some Jetson/Ubuntu SDL packages expose pixel formats as SDL_PixelFormat
-    # (or only as the integer format code accepted by SDL_CreateTexture), while
-    # LVGL 9.2's window driver declares a local variable as
-    # SDL_PixelFormatEnum. Force-include a tiny compatibility header for this
-    # one LVGL source file. Keeping the workaround outside the LVGL submodule
-    # means `git submodule update` cannot silently remove it.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl/src/drivers/sdl/lv_sdl_window.c
-        DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl
-        PROPERTIES COMPILE_OPTIONS
-            "-include${CMAKE_CURRENT_SOURCE_DIR}/src/platform/lvgl_sdl_compat.h")
-endif()
-
-# Enable Wayland client driver inside LVGL when chosen. The driver registers its
-# own pointer + keyboard indev, so evdev is not used under WAYLAND.
-if(JETSON_DISPLAY_BACKEND STREQUAL "WAYLAND")
-    target_compile_definitions(lvgl PUBLIC LV_USE_WAYLAND=1)
-    target_include_directories(lvgl PRIVATE ${WAYLAND_INCS})
-    target_link_libraries(lvgl PUBLIC ${WAYLAND_LIBS})
+if(JETSON_SHERPA_DIR)
+    set(SHERPA_INCLUDE_DIR "${JETSON_SHERPA_DIR}/include")
+    set(SHERPA_LIBRARY "${JETSON_SHERPA_DIR}/lib/libsherpa-onnx.a")
+    if(NOT EXISTS "${SHERPA_LIBRARY}")
+        # Fall back to the shared lib if that's what the prefix built.
+        find_library(SHERPA_LIBRARY NAMES sherpa-onnx PATHS "${JETSON_SHERPA_DIR}/lib" NO_DEFAULT_PATH)
+    endif()
+    set(JETSON_HAVE_SHERPA ON)
+elseif(JETSON_BUILD_SHERPA)
+    include(FetchContent)
+    FetchContent_Declare(sherpa_onnx
+        GIT_REPOSITORY https://github.com/k2-fsa/sherpa-onnx.git
+        GIT_TAG ${JETSON_SHERPA_TAG}
+        GIT_SHALLOW TRUE)
+    FetchContent_GetProperties(sherpa_onnx)
+    if(NOT sherpa_onnx_POPULATED)
+        FetchContent_Populate(sherpa_onnx)
+    endif()
+    # GPU EP for STT (user asked for GPU). CUDA 10.2 / cuDNN 8 must be present
+    # on the Jetson (JetPack 4.6). sherpa's own CMake downloads a matching
+    # onnxruntime build for the platform.
+    set(SHERPA_ONNX_ENABLE_GPU ON CACHE BOOL "" FORCE)
+    add_subdirectory(${sherpa_onnx_SOURCE_DIR} ${sherpa_onnx_BINARY_DIR} EXCLUDE_FROM_ALL)
+    set(SHERPA_INCLUDE_DIR "${sherpa_onnx_SOURCE_DIR}")
+    set(SHERPA_LIBRARY sherpa-onnx)
+    set(JETSON_HAVE_SHERPA ON)
 endif()
 
 # ----------------------------------------------------------------------------
-# Our firmware
+# Firmware (headless "Ekko Lite" — no display, no LVGL)
 # ----------------------------------------------------------------------------
 file(GLOB_RECURSE FW_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc"
@@ -161,24 +109,35 @@ foreach(_d ${_fw_subdirs})
 endforeach()
 
 target_include_directories(jetson_fw PRIVATE ${FW_INCLUDE_DIRS}
-    "${CMAKE_CURRENT_SOURCE_DIR}")
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    ${ALSA_INCLUDE_DIR})
 
 target_compile_definitions(jetson_fw PRIVATE
-    JETSON_DISPLAY_BACKEND_${JETSON_DISPLAY_BACKEND}
-    JETSON_DISPLAY_BACKEND="${JETSON_DISPLAY_BACKEND}"
-    JETSON_DISPLAY_WIDTH=${JETSON_DISPLAY_WIDTH}
-    JETSON_DISPLAY_HEIGHT=${JETSON_DISPLAY_HEIGHT}
     JETSON_ASSETS_DIR="${JETSON_ASSETS_DIR}"
     JETSON_FW_VERSION="${PROJECT_VERSION}"
     BOARD_NAME="jetson-nano")
 
+if(JETSON_HAVE_SHERPA)
+    target_include_directories(jetson_fw PRIVATE ${SHERPA_INCLUDE_DIR})
+    target_compile_definitions(jetson_fw PRIVATE JETSON_HAVE_SHERPA=1)
+endif()
+
 target_link_libraries(jetson_fw PRIVATE
-    lvgl::lvgl
     Threads::Threads
     ${DL_LIBRARY}
-    ${DRM_LIBRARIES}
     CURL::libcurl
-    OpenSSL::Crypto)
+    OpenSSL::Crypto
+    ${ALSA_LIBRARY})
+
+if(JETSON_HAVE_SHERPA)
+    # sherpa-onnx static also needs onnxruntime (+ CUDA/cuDNN on the GPU path).
+    # Let the prebuilt prefix's pkg/lib carry those via JETSON_SHERPA_EXTRA_LIBS,
+    # or let the FetchContent target pull them transitively.
+    target_link_libraries(jetson_fw PRIVATE ${SHERPA_LIBRARY})
+    if(JETSON_SHERPA_EXTRA_LIBS)
+        target_link_libraries(jetson_fw PRIVATE ${JETSON_SHERPA_EXTRA_LIBS})
+    endif()
+endif()
 
 # forkpty() lives in libutil on older glibc (e.g. JetPack 4.x / Ubuntu 18.04,
 # glibc 2.27). On glibc >= 2.34 it is part of libc, so the library is optional.
@@ -187,21 +146,14 @@ if(UTIL_LIBRARY)
     target_link_libraries(jetson_fw PRIVATE ${UTIL_LIBRARY})
 endif()
 
-if(JETSON_DISPLAY_BACKEND STREQUAL "SDL")
-    target_link_libraries(jetson_fw PRIVATE ${SDL2_LIBRARIES})
-endif()
-
-if(JETSON_DISPLAY_BACKEND STREQUAL "WAYLAND")
-    target_link_libraries(jetson_fw PRIVATE ${WAYLAND_LIBS})
-endif()
-
 # ----------------------------------------------------------------------------
 # Runtime assets: fetch from MinIO (S3) before the build, then copy next to
-# the binary. Assets are gitignored (large binaries / data), so a fresh clone
-# pulls them from MinIO at build time. fetch_assets.sh is idempotent -- it
-# skips files already present -- so rebuilds are cheap. It is also offline-
-# tolerant: if the server is unreachable but assets are already cached it keeps
-# them and lets the build proceed. See scripts/fetch_assets.sh + scripts/s3_assets.py.
+# the binary. Ekko Lite keeps the S3 sync so ringtones (and any other audio
+# assets) can be pushed to the bucket and land on the device at build time.
+# fetch_assets.sh is idempotent -- it skips files already present -- so
+# rebuilds are cheap. It is also offline-tolerant: if the server is unreachable
+# but assets are already cached it keeps them and lets the build proceed.
+# See scripts/fetch_assets.sh + scripts/s3_assets.py.
 find_program(PYTHON3_EXE NAMES python3 python)
 find_program(BASH_EXE NAMES bash)
 if(PYTHON3_EXE AND BASH_EXE)
@@ -211,8 +163,6 @@ if(PYTHON3_EXE AND BASH_EXE)
         COMMENT "Fetching runtime assets from MinIO (skipping files already present)"
         VERBATIM
         USES_TERMINAL)
-    # Run fetch before building jetson_fw, which guarantees assets/ exists
-    # before the POST_BUILD copy_directory below.
     add_dependencies(jetson_fw jetson_fetch_assets)
 else()
     message(WARNING "python3 or bash not found; skipping build-time asset fetch. "
@@ -221,8 +171,8 @@ endif()
 
 # Copy assets next to the binary on every build, including incremental builds
 # where jetson_fw does not need to be relinked. A POST_BUILD command alone
-# leaves newly-added assets (for example a launcher icon) out of an existing
-# build directory until some C/C++ source happens to change.
+# leaves newly-added assets out of an existing build directory until some C/C++
+# source happens to change.
 add_custom_target(jetson_copy_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets"
@@ -236,7 +186,6 @@ install(TARGETS jetson_fw RUNTIME DESTINATION /opt/jetson-fw)
 install(DIRECTORY assets DESTINATION /opt/jetson-fw)
 install(FILES config.yaml DESTINATION /opt/jetson-fw)
 install(PROGRAMS scripts/s3_assets.py scripts/config_loader.sh
-        scripts/setup-tailscale-client.sh
         DESTINATION /opt/jetson-fw/scripts)
 install(PROGRAMS scripts/jetson-fw.service DESTINATION /etc/systemd/system OPTIONAL)
-message(STATUS "jetson_fw: backend=${JETSON_DISPLAY_BACKEND} ${JETSON_DISPLAY_WIDTH}x${JETSON_DISPLAY_HEIGHT}")
+message(STATUS "jetson_fw: headless Ekko Lite build")

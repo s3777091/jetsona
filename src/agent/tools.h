@@ -61,8 +61,13 @@ public:
     std::string ListTasks() const;
     std::string CompleteTask(int id);
     std::string DeleteTask(int id);
-    std::string AddNote(const std::string &text);
+    std::string AddNote(const std::string &text, bool remind_morning = false);
     std::string ListNotes() const;
+    /* Notes the user asked to be reminded of "tomorrow morning" (remind_morning
+     * set, not yet spoken). The morning alarm briefing speaks these and then
+     * calls MarkMorningNotesSpoken so each is announced exactly once. */
+    std::vector<std::string> PendingMorningNotes();
+    void MarkMorningNotesSpoken();
 
 private:
     TaskStore();

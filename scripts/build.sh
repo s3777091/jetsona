@@ -12,7 +12,6 @@ JETSON_DIR="$(dirname "$SCRIPT_DIR")"
 jetson_load_config "${JETSON_CONFIG_FILE:-$JETSON_DIR/config.yaml}"
 
 BUILD_DIR="${JETSON_BUILD_DIR:-$JETSON_DIR/build}"
-BACKEND="${JETSON_DISPLAY_BACKEND:-DRM}"
 BUILD_JOBS="${BUILD_JOBS:-4}"
 
 source_tree_sha256() {
@@ -40,7 +39,7 @@ fi
 
 echo "==> Source:  $JETSON_DIR"
 echo "==> Build:   $BUILD_DIR"
-echo "==> Backend: $BACKEND"
+echo "==> Profile: headless Ekko Lite"
 
 # Fetch runtime assets from MinIO (S3) before building. ETag checks make this
 # cheap after the first download while still detecting same-size icon changes.
@@ -50,8 +49,21 @@ if [ "${JETSON_SKIP_ASSET_FETCH:-0}" != "1" ]; then
     JETSON_ASSET_FETCH_STRICT=1 bash "$SCRIPT_DIR/fetch_assets.sh"
 fi
 
-cmake -S "$JETSON_DIR" -B "$BUILD_DIR" \
-    -DJETSON_DISPLAY_BACKEND="$BACKEND" "$@"
+# If sherpa-onnx was built into a prefix (scripts/fetch_sherpa.sh), link that
+# instead of FetchContent-rebuilding it every time. JETSON_SHERPA_DIR env wins;
+# the default prefix the fetch script uses is the fallback.
+SHERPA_PREFIX="${JETSON_SHERPA_DIR:-}"
+if [ -z "$SHERPA_PREFIX" ] && [ -d "$JETSON_DIR/third_party/sherpa-prefix/lib" ]; then
+    SHERPA_PREFIX="$JETSON_DIR/third_party/sherpa-prefix"
+fi
+CMAKE_ARGS=()
+if [ -n "$SHERPA_PREFIX" ]; then
+    echo "==> sherpa-onnx prefix: $SHERPA_PREFIX"
+    CMAKE_ARGS+=("-DJETSON_SHERPA_DIR=$SHERPA_PREFIX")
+    [ -n "${JETSON_SHERPA_EXTRA_LIBS:-}" ] && CMAKE_ARGS+=("-DJETSON_SHERPA_EXTRA_LIBS=$JETSON_SHERPA_EXTRA_LIBS")
+fi
+
+cmake -S "$JETSON_DIR" -B "$BUILD_DIR" "${CMAKE_ARGS[@]}" "$@"
 cmake --build "$BUILD_DIR" --parallel "$BUILD_JOBS"
 
 # Receipt prevents install.sh from accidentally installing a binary left by a

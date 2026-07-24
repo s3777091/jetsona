@@ -20,7 +20,6 @@ EXA_SEARCH_TYPE: "auto"
 # requests bootstrap Zing's short-lived session cookie automatically.
 ZING_BASE_URL: "https://zingmp3.vn"
 ZING_API_VERSION: "1.19.3"
-ZING_ARTWORK_CACHE_DIR: ""
 JETSON_MUSIC_PLAYER: "mpv"
 
 MINIO_ENDPOINT: "https://s3.phuongdong.cloud"
@@ -28,35 +27,38 @@ MINIO_BUCKET: "jetsona-assets"
 MINIO_REGION: "us-east-1"
 ASSETS_S3_PREFIX: ""
 ASSETS_VERBOSE: "1"
-ASSETS_FETCH_CLOUD_FONTS: "1"
-JETSON_FONT_CATALOG_OBJECT: "fonts/cloud/catalog.tsv"
+ASSETS_FETCH_CLOUD_FONTS: "0"
 JETSON_S3_ASSET_HELPER: ""
 
-# Weather on the lock screen. Empty = detect the device's real location from
-# its public IP on every boot. Set all three to pin a fixed city instead.
-JETSON_WEATHER_LAT: ""
-JETSON_WEATHER_LON: ""
-JETSON_WEATHER_NAME: ""
+# Weather briefing for the morning alarm. Pinned to Da Nang so the alarm always
+# reports local conditions instead of geo-detecting from the public IP.
+JETSON_WEATHER_LAT: "16.0544"
+JETSON_WEATHER_LON: "108.2022"
+JETSON_WEATHER_NAME: "Đà Nẵng"
+
+# Wake-on-LAN to the home PC. The agent fires this from the Jetson itself (the
+# Jetson is the magic-packet firer), so the default endpoint is the local /wake
+# route exposed by jetson-fw on this same box. Point it at the jetsona-ui cloud
+# endpoint instead only if you want the request to round-trip through the
+# browser app first. JETSON_WOL_TOKEN (the matching X-WoL-Token) lives in .env.
+JETSON_WOL_URL: "http://127.0.0.1:8080/api/wol/wake"
+
+# Voice loop (reSpeaker USB v3 + sherpa-onnx). ALSA pcm names for the mic and
+# speaker; "default" works once the reSpeaker card is the system default
+# (aplay/arecord -l lists the card; e.g. "plughw:CARD=ReSpeaker,DEV=0").
+# Model files live under assets/models/{kws,stt,tts}/, fetched by
+# scripts/fetch_models.sh. Fine-tune model paths, providers (cpu/cuda) and
+# thresholds via the Settings("voice",...) KV store at runtime.
+JETSON_VOICE_MIC: "default"
+JETSON_VOICE_OUT: "default"
 
 # Network and local paths.
-JETSON_VPN_EXIT_NODE: "jetsona-vpn"
 JETSON_FILES_HOME: ""
 # Absolute path pins the settings store to one file. Left empty it falls back to
 # $HOME/.jetson-fw/settings.kv, and $HOME differs per launch path (systemd sets
-# /root, `sudo run_fbdev.sh` keeps /home/<user>), so boot and manual runs would
-# each read their own store and the panel would come up with stale wallpaper,
-# theme and language -- looking like an older firmware build.
+# /root, `sudo run_headless.sh` keeps /home/<user>), so boot and manual runs
+# would each read their own store. Pin it.
 JETSON_SETTINGS_FILE: "/var/lib/jetson-fw/settings.kv"
-# Captive Portal: HTTP endpoint must normally return an empty 204 response.
-JETSON_CAPTIVE_PORTAL_PROBE_URL: "http://connectivitycheck.gstatic.com/generate_204"
-
-# Display/input overrides. Empty device paths keep auto-detection enabled.
-JETSON_DISPLAY_BACKEND: "FBDEV"
-JETSON_DRM_CARD: "/dev/dri/card0"
-JETSON_FB_DEVICE: "/dev/fb0"
-JETSON_TOUCH_DEVICE: ""
-JETSON_KEYBOARD_DEVICE: "/dev/input/jetsona-webrtc"
-JETSON_MOUSE_DEVICE: ""
 
 # Build behavior.
 JETSON_BUILD_DIR: ""

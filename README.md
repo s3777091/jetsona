@@ -181,16 +181,12 @@ nên dừng service và chạy binary trực tiếp để xem log ngay trên ter
 
 ```bash
 sudo systemctl stop jetson-fw
-sudo env SDL_VIDEODRIVER=kmsdrm ./run.sh --sdl
+sudo bash scripts/run_headless.sh
 ```
 
-Với bản FBDEV, dùng script độc quyền display. Script tự dừng
-`display-manager` và `jetson-fw.service`, sau đó khôi phục đúng display owner
-trước đó khi nhấn Ctrl+C:
-
-```bash
-sudo bash scripts/run_fbdev.sh
-```
+Ekko Lite không có display: chỉ cần chạy binary, không cần dừng display-manager
+hay giành scanout. `run_headless.sh` nạp config/secrets rồi chạy binary ở
+foreground -- Ctrl+C để thoát.
 
 ## Cấu hình thường dùng
 
@@ -200,17 +196,11 @@ token, password và credential. Biến môi trường truyền trực tiếp khi
 
 | Biến | Công dụng |
 |---|---|
-| `JETSON_DISPLAY_BACKEND` | Backend lúc build: `SDL`, `DRM` hoặc `FBDEV` |
 | `JETSON_BUILD_DIR` | Thư mục build, mặc định là `build` |
-| `JETSON_DRM_CARD` | DRM card, mặc định `/dev/dri/card0` |
-| `JETSON_FB_DEVICE` | Framebuffer, mặc định `/dev/fb0` |
-| `JETSON_TOUCH_DEVICE` | Ép dùng một `/dev/input/eventN` cho touch |
-| `JETSON_KEYBOARD_DEVICE` | Ép thiết bị bàn phím evdev |
-| `JETSON_MOUSE_DEVICE` | Ép thiết bị chuột evdev |
-| `JETSON_CAPTIVE_PORTAL_PROBE_URL` | Endpoint HTTP `204` dùng để nhận biết portal đã xác thực xong |
-| `JETSON_FILES_HOME` | Thư mục gốc của ứng dụng Tệp |
 | `JETSON_SETTINGS_FILE` | Đường dẫn file lưu cài đặt |
-| `JETSON_VPN_EXIT_NODE` | Tên máy/IP Tailscale của VM exit node (mặc định `jetsona-vpn`) |
+| `JETSON_WEATHER_LAT` / `JETSON_WEATHER_LON` / `JETSON_WEATHER_NAME` | Cố định địa điểm thời tiết (Đà Nẵng). Để trống = tự đo theo IP |
+| `JETSON_MUSIC_PLAYER` | Binary phát nhạc, mặc định `mpv` |
+| `JETSON_MUSIC_ALBUMS_FILE` | File lưu album nhạc của người dùng |
 | `JETSON_WEATHER_LAT/LON/NAME` | Toạ độ + tên hiển thị cho dòng thời tiết standby (open-meteo, mặc định TP.HCM) |
 
 Ví dụ ép touch và thư mục Home:

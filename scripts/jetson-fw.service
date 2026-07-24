@@ -1,11 +1,7 @@
 [Unit]
-Description=Jetson Nano AI Firmware (DS-02 UI)
+Description=Jetson Nano Ekko Lite (headless voice AI)
 After=network-online.target
 Wants=network-online.target
-# The firmware and Xorg both own the physical scanout. On a graphical boot,
-# let display-manager win; on a multi-user kiosk boot, only the firmware runs.
-Conflicts=display-manager.service
-Before=display-manager.service
 
 [Service]
 Type=simple
@@ -13,16 +9,14 @@ WorkingDirectory=/opt/jetson-fw
 ExecStart=/opt/jetson-fw/scripts/jetson_fw_run.sh
 Restart=on-failure
 RestartSec=3
-# DRM/KMS needs root or the 'video'/'render' groups.
+# Headless appliance: no display to own, no DRM/video groups needed. Run as
+# root only because the INA219 UPS reads /dev/i2c-1 and the fan writes sysfs.
 User=root
-# Prevent any files created by the firmware from becoming group/world
-# readable even when a helper forgets to pass an explicit chmod mode.
+# Keep firmware-created files private.
 UMask=0077
 Environment=JETSON_FW_LOG=/var/log/jetson-fw.log
-# Pin the settings store here too, not just in config.yaml: systemd exports
-# HOME=/root for User=root, so without this the boot run reads a different
-# store than a manual `sudo run_fbdev.sh` (HOME=/home/<user>) and starts with
-# default wallpaper/theme. Explicit process env wins over config.yaml.
+# Pin the settings store: systemd exports HOME=/root for User=root, so without
+# this the boot run reads a different store than a manual launch.
 Environment=JETSON_SETTINGS_FILE=/var/lib/jetson-fw/settings.kv
 StandardOutput=append:/var/log/jetson-fw.log
 StandardError=append:/var/log/jetson-fw.log

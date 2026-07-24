@@ -69,9 +69,9 @@ echo "==> Binary: $BUILD_DIR/jetson_fw"
 # Settings store, shared by every launch path (see JETSON_SETTINGS_FILE in
 # config.yaml and the service unit). Older installs left it at
 # $HOME/.jetson-fw/settings.kv, which resolved differently for the systemd boot
-# (HOME=/root) than for a manual `sudo run_fbdev.sh` (HOME=/home/<user>), so the
-# panel booted with defaults while the hand-run kept the customized look. Adopt
-# the newest surviving store once; the originals are left untouched.
+# (HOME=/root) than for a manual `sudo run_headless.sh` (HOME=/home/<user>), so
+# the boot run and a hand-run would read different stores. Adopt the newest
+# surviving store once; the originals are left untouched.
 sudo install -d -m 755 /var/lib/jetson-fw
 if [ ! -f /var/lib/jetson-fw/settings.kv ]; then
     legacy_kv="$(sudo find /root/.jetson-fw /home/*/.jetson-fw -maxdepth 1 \
@@ -97,11 +97,9 @@ sudo cp "$JETSON_DIR/scripts/config_loader.sh" /opt/jetson-fw/scripts/
 sudo chmod +x /opt/jetson-fw/scripts/s3_assets.py
 # Supervisor: restarts the firmware if it ever exits.
 sudo cp "$JETSON_DIR/scripts/jetson_fw_run.sh" /opt/jetson-fw/scripts/
-sudo cp "$JETSON_DIR/scripts/setup-tailscale-client.sh" /opt/jetson-fw/scripts/
 sudo chmod +x \
     /opt/jetson-fw/scripts/jetson_fw_run.sh \
-    /opt/jetson-fw/scripts/config_loader.sh \
-    /opt/jetson-fw/scripts/setup-tailscale-client.sh
+    /opt/jetson-fw/scripts/config_loader.sh
 if [ -f "$JETSON_DIR/.env" ]; then
     sudo cp "$JETSON_DIR/.env" /opt/jetson-fw/.env
     sudo chmod 600 /opt/jetson-fw/.env
@@ -130,44 +128,9 @@ sudo chmod 0666 /etc/jetson-fan.conf
 echo "==> Enabling systemd service"
 sudo systemctl daemon-reload
 
-# Tailscale SSH is stored as a persistent tailscaled preference. When this
-# Jetson has already joined a tailnet, keep the daemon enabled at boot and turn
-# on browser-based SSH as part of the normal firmware installation. Do not make
-# a first-time Tailscale login block an otherwise valid firmware install; the
-# setup helper handles that interactive/auth-key flow separately.
-if command -v tailscale >/dev/null 2>&1; then
-    echo "==> Enabling Tailscale background service"
-    if sudo systemctl enable --now tailscaled; then
-        if sudo tailscale status --json 2>/dev/null |
-            grep -q '"BackendState": *"Running"'; then
-            echo "==> Enabling persistent Tailscale SSH"
-            if ! sudo tailscale set --ssh; then
-                echo "WARNING: Could not enable Tailscale SSH; run setup-tailscale-client.sh." >&2
-            fi
-        else
-            echo "WARNING: Tailscale is not logged in; run setup-tailscale-client.sh once." >&2
-        fi
-    else
-        echo "WARNING: Could not enable tailscaled; run setup-tailscale-client.sh." >&2
-    fi
-else
-    echo "==> Tailscale not installed; remote SSH setup skipped"
-    echo "    Run: sudo /opt/jetson-fw/scripts/setup-tailscale-client.sh" >&2
-fi
-
 sudo systemctl enable jetson-fw
 sudo systemctl restart jetson-fw
 sudo systemctl enable jetson-fan
 sudo systemctl restart jetson-fan
-
-# Optional: branded login banner on the HDMI console (replaces the bare
-# "jetson login:" prompt shown during boot / service restart). Backs up
-# /etc/issue to /etc/issue.orig first. Off by default — set to install:
-#   INSTALL_LOGIN_BANNER=1 sudo ./scripts/install.sh
-if [ "${INSTALL_LOGIN_BANNER:-0}" = "1" ]; then
-    bash "$SCRIPT_DIR/install-login-banner.sh"
-else
-    echo "==> Skipped login banner (set INSTALL_LOGIN_BANNER=1 to install it)"
-fi
 
 echo "==> Installed. Check:  sudo systemctl status jetson-fw ; tail -f /var/log/jetson-fw.log"

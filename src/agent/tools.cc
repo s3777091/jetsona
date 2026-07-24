@@ -211,7 +211,7 @@ std::string TaskStore::DeleteTask(int id) {
     return "Da xoa cong viec #" + std::to_string(id);
 }
 
-std::string TaskStore::AddNote(const std::string &text) {
+std::string TaskStore::AddNote(const std::string &text, bool remind_morning) {
     std::lock_guard<std::mutex> lk(mtx_);
     json j;
     try { j = json::parse(data_json_); } catch (...) { j = json::object(); }
@@ -220,11 +220,16 @@ std::string TaskStore::AddNote(const std::string &text) {
     int id = next_id_++;
     n["id"] = id;
     n["text"] = text;
+    // "ghi cai nay mai bao toi" -> the morning alarm briefing speaks these.
+    // `spoken` guards against announcing the same note twice.
+    n["remind_morning"] = remind_morning;
+    n["spoken"] = false;
     j["notes"].push_back(n);
     j["next_id"] = next_id_;
     data_json_ = j.dump();
     Save();
-    return "Da ghi chu #" + std::to_string(id);
+    return "Da ghi chu #" + std::to_string(id) +
+           (remind_morning ? " (se bao lai buoi sang)" : "");
 }
 
 std::string TaskStore::ListNotes() const {
@@ -235,9 +240,44 @@ std::string TaskStore::ListNotes() const {
     if (!arr.is_array() || arr.empty()) return "Chua co ghi chu nao.";
     std::string out = "Danh sach ghi chu:\n";
     for (auto &n : arr) {
-        out += "#" + std::to_string(n.value("id", 0)) + ": " + n.value("text", std::string()) + "\n";
+        out += "#" + std::to_string(n.value("id", 0)) + ": " + n.value("text", std::string());
+        if (n.value("remind_morning", false) && !n.value("spoken", false))
+            out += " [chua bao buoi sang]";
+        out += "\n";
     }
     return out;
+}
+
+std::vector<std::string> TaskStore::PendingMorningNotes() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    json j;
+    try { j = json::parse(data_json_); } catch (...) { j = json::object(); }
+    std::vector<std::string> out;
+    if (!j["notes"].is_array()) return out;
+    for (auto &n : j["notes"]) {
+        if (n.value("remind_morning", false) && !n.value("spoken", false))
+            out.push_back(n.value("text", std::string()));
+    }
+    return out;
+}
+
+void TaskStore::MarkMorningNotesSpoken() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    json j;
+    try { j = json::parse(data_json_); } catch (...) { j = json::object(); }
+    bool changed = false;
+    if (j["notes"].is_array()) {
+        for (auto &n : j["notes"]) {
+            if (n.value("remind_morning", false) && !n.value("spoken", false)) {
+                n["spoken"] = true;
+                changed = true;
+            }
+        }
+    }
+    if (changed) {
+        data_json_ = j.dump();
+        Save();
+    }
 }
 
 // ---- TaskTool / NoteTool -------------------------------------------------
@@ -272,8 +312,11 @@ std::string TaskTool::Execute(const std::string &args_json) {
 NoteTool::NoteTool(Op op)
     : Tool(
         op == Add ? "add_note" : "list_notes",
-        op == Add ? "Ghi lai mot ghi chu/note ngan." : "Liet ke tat ca ghi chu da luu.",
-        op == Add ? R"({"type":"object","properties":{"text":{"type":"string","description":"Noi dung ghi chu"}},"required":["text"]})"
+        op == Add ? "Ghi lai mot ghi chu/note ngan. Dat remind_morning=true khi nguoi "
+                    "dung bao 'mai bao toi' / 'nho buoi sang' -- buoi sang bao thuc "
+                    "se doc lai ghi chu do dung luc."
+                 : "Liet ke tat ca ghi chu da luu.",
+        op == Add ? R"({"type":"object","properties":{"text":{"type":"string","description":"Noi dung ghi chu"},"remind_morning":{"type":"boolean","description":"true de bao lai buoi sang (khi bao thuc chuong)"}},"required":["text"]})"
                   : R"({"type":"object","properties":{}})"),
       op_(op) {}
 
@@ -281,7 +324,8 @@ std::string NoteTool::Execute(const std::string &args_json) {
     json a;
     try { a = json::parse(args_json.empty() ? "{}" : args_json); } catch (...) { a = json::object(); }
     switch (op_) {
-    case Add:  return TaskStore::Instance().AddNote(Jstring(a, "text"));
+    case Add:  return TaskStore::Instance().AddNote(Jstring(a, "text"),
+                                                    a.value("remind_morning", false));
     case List: return TaskStore::Instance().ListNotes();
     }
     return "ERROR: op khong ro";
@@ -401,14 +445,17 @@ std::shared_ptr<ToolRegistry> BuildDefaultToolRegistry() {
 
     /* Device control first: these are what make Ekko an operator rather than a
      * chatbot, and listing them first also puts them earliest in the tool array
-     * the model sees. */
+     * the model sees. OpenApp/Brightness are display-only and omitted on the
+     * headless Lite build (no apps, no panel). */
     reg->Register(std::make_unique<DeviceStatusTool>());
-    reg->Register(std::make_unique<OpenAppTool>());
     reg->Register(std::make_unique<VolumeTool>());
-    reg->Register(std::make_unique<BrightnessTool>());
-    reg->Register(std::make_unique<WifiTool>());
+    reg->Register(std::make_unique<PcPowerTool>());
+    reg->Register(std::make_unique<WeatherTool>());
+    reg->Register(std::make_unique<RingtoneTool>());
     reg->Register(std::make_unique<MusicTool>());
     reg->Register(std::make_unique<MusicPlayTool>());
+    reg->Register(std::make_unique<MusicAlbumTool>());
+    reg->Register(std::make_unique<AlarmTool>());
 
     /* Scheduling. TaskTool's ~/.jetson-fw/tasks.json store is deliberately NOT
      * registered: it is invisible to every app on the device, so a task saved

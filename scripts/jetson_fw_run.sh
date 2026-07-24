@@ -1,10 +1,9 @@
 #!/bin/bash
-# Supervisor for the lite DS-02 firmware.
+# Supervisor for the Ekko Lite firmware (headless voice AI, no display).
 #
-# The firmware owns /dev/fb0 directly (FBDEV backend, no display server) and
-# runs as a 24/7 online server appliance. This supervisor simply keeps it
-# alive: if the firmware ever exits (crash or clean shutdown), back off briefly
-# and relaunch it. systemd's control-group kill stops this loop on stop.
+# The firmware is a 24/7 online voice appliance. This supervisor simply keeps
+# it alive: if the firmware ever exits (crash or clean shutdown), back off
+# briefly and relaunch it. systemd's control-group kill stops this loop on stop.
 #
 # SIGTERM/SIGINT (systemctl stop / restart): stop the loop cleanly.
 set -u

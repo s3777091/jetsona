@@ -1,11 +1,5 @@
 #include "board.h"
-#include "display/home/ds02_home_display.h"
-#include "net/bluetooth_manager.h"
-#include "net/wifi_manager.h"
-#include "lvgl_runtime.h"
-#include "fonts.h"
 #include "settings.h"
-#include "font_awesome.h"
 #include "ina219.h"
 #include "esp_log.h"
 
@@ -15,51 +9,21 @@
 #define TAG "Board"
 
 Board::Board()
-    : audio_codec_(16000, 16000),
-      backlight_(0, false),
-      led_(),
-      boot_button_(0) {
-    // Apply the persisted mixer state before constructing the display. Calling
-    // Board::GetInstance() from the display constructor would recursively
-    // enter this singleton while it is still being initialized.
+    : audio_codec_(16000, 16000) {
+    // Apply the persisted mixer state before anything else can touch the codec.
     Settings display_settings("display");
     audio_codec_.SetOutputState(display_settings.GetInt("volume", 50),
                                 display_settings.GetBool("muted", false));
-
-    int w = JETSON_DISPLAY_WIDTH;
-    int h = JETSON_DISPLAY_HEIGHT;
-
-    if (!jetson::LvglRuntime::Instance().Init(w, h)) {
-        ESP_LOGE(TAG, "LVGL runtime init failed");
-        return;
-    }
-    jetson::InitBuiltinFonts(JETSON_ASSETS_DIR);
-    jetson::LvglRuntime::Instance().StartHandler();
-
-    display_ = new home::Ds02HomeDisplay(
-        nullptr, nullptr, w, h, 0, 0, false, false, false,
-        jetson::WifiManager::Instance(), jetson::BluetoothManager::Instance());
-    ESP_LOGI(TAG, "DS-02 home display created %dx%d", w, h);
+    ESP_LOGI(TAG, "Ekko Lite board ready (headless, audio-only)");
 }
 
-Board::~Board() {
-    delete display_;
-}
-
-void Board::StartNetwork() {
-    /* On Jetson, networking is managed by the OS (NetworkManager/wpa_supplicant
-     * or Ethernet). Nothing to do here in phase 1. */
-}
-
-const char *Board::GetNetworkStateIcon() {
-    return FONT_AWESOME_WIFI;
-}
+Board::~Board() = default;
 
 bool Board::GetBatteryLevel(int &level, bool &charging, bool &discharging) {
     /* Reads the Waveshare UPS Power Module battery via the INA219 on I2C.
      * Lazy singleton so the I2C fd lives as long as the Board. If the read
      * fails (no /dev/i2c, wrong address, UPS disconnected) fall back to a full
-     * battery so the status-bar icon stays sensible instead of going blank. */
+     * battery so the low-battery alert path stays quiet instead of spamming. */
     static Ina219 ina;
     if (ina.Read(level, charging, discharging)) return true;
 

@@ -6,15 +6,22 @@
 #include "settings.h"
 #include "esp_log.h"
 #include "media/player_controller.h"
-#include "net/wifi_manager.h"
+#include "media/user_library.h"
+#include "net/weather_client.h"
 #include "net/zing_music_client.h"
+#include "platform/shell_command.h"
 
 #include <nlohmann/json.hpp>
+
+#include <curl/curl.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
+#include <dirent.h>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -248,8 +255,8 @@ std::string CreatedNow() {
 DeviceStatusTool::DeviceStatusTool()
     : Tool("device_status",
            "Doc trang thai thiet bi ngay luc nay: ngay gio hien tai, pin va "
-           "sac, Wi-Fi dang ket noi, am luong, bai nhac dang phat. Goi tool nay "
-           "truoc khi tra loi bat cu cau hoi nao ve ngay/gio, pin, mang hay nhac.",
+           "sac, am luong, bai nhac dang phat. Goi tool nay truoc khi tra loi "
+           "bat cu cau hoi nao ve ngay/gio, pin hay nhac.",
            R"({"type":"object","properties":{}})") {}
 
 std::string DeviceStatusTool::Execute(const std::string &) {
@@ -268,17 +275,6 @@ std::string DeviceStatusTool::Execute(const std::string &) {
             << (charging ? " (dang sac)" : discharging ? " (dang dung pin)" : "") << "\n";
     } else {
         out << "pin: khong doc duoc (khong co module UPS)\n";
-    }
-
-    auto &wifi = WifiManager::Instance();
-    if (!wifi.Available()) {
-        out << "wifi: khong co adapter\n";
-    } else if (!wifi.IsEnabled()) {
-        out << "wifi: dang tat\n";
-    } else {
-        const std::string ssid = wifi.ActiveSsid();
-        if (ssid.empty()) out << "wifi: bat nhung chua ket noi\n";
-        else out << "wifi: da ket noi '" << ssid << "' (song " << wifi.ActiveSignal() << "%)\n";
     }
 
     Settings disp("display", false);
@@ -303,49 +299,6 @@ std::string DeviceStatusTool::Execute(const std::string &) {
         out << "nhac: chua co bai nao trong hang doi\n";
     }
     return out.str();
-}
-
-// ---- open_app ------------------------------------------------------------
-
-namespace {
-std::string OpenAppSchema() {
-    // Enumerate the ids so the model picks from the real catalogue instead of
-    // inventing "spotify". The label goes in the description for the same reason.
-    json props;
-    json app;
-    app["type"] = "string";
-    json ids = json::array();
-    std::string desc = "Ung dung can mo. ";
-    for (const auto &a : DeviceBridge::Apps()) {
-        ids.push_back(a.id);
-        desc += std::string(a.id) + "=" + a.label + ", ";
-    }
-    if (desc.size() > 2) desc.erase(desc.size() - 2);
-    app["enum"] = ids;
-    app["description"] = desc;
-    props["app"] = app;
-
-    json schema;
-    schema["type"] = "object";
-    schema["properties"] = props;
-    schema["required"] = json::array({"app"});
-    return schema.dump();
-}
-} // namespace
-
-OpenAppTool::OpenAppTool()
-    : Tool("open_app",
-           "Mo mot ung dung tren man hinh thiet bi.",
-           OpenAppSchema()) {}
-
-std::string OpenAppTool::Execute(const std::string &arguments_json) {
-    const json args = ParseArgs(arguments_json);
-    const std::string name = Str(args, "app", Str(args, "name"));
-    if (name.empty()) return "ERROR: thieu tham so 'app'";
-
-    std::string label, err;
-    if (!DeviceBridge::Instance().OpenApp(name, label, err)) return "ERROR: " + err;
-    return "Da mo ung dung " + label + ".";
 }
 
 // ---- set_volume ----------------------------------------------------------
@@ -380,100 +333,6 @@ std::string VolumeTool::Execute(const std::string &arguments_json) {
 
     if (muted) return "Da tat tieng.";
     return "Da dat am luong " + std::to_string(level) + "%.";
-}
-
-// ---- set_brightness ------------------------------------------------------
-
-BrightnessTool::BrightnessTool()
-    : Tool("set_brightness",
-           "Chinh do sang man hinh (10-100).",
-           R"({"type":"object","properties":{
-                "percent":{"type":"integer","minimum":10,"maximum":100,
-                           "description":"Do sang 10-100."}
-              },"required":["percent"]})") {}
-
-std::string BrightnessTool::Execute(const std::string &arguments_json) {
-    const json args = ParseArgs(arguments_json);
-    if (!args.contains("percent")) return "ERROR: thieu tham so 'percent'";
-    const int pct = std::max(10, std::min(100, Int(args, "percent", 100)));
-    if (!DeviceBridge::Instance().SetBrightness(pct)) return "ERROR: giao dien chua san sang";
-    return "Da dat do sang " + std::to_string(pct) + "%.";
-}
-
-// ---- wifi ----------------------------------------------------------------
-
-WifiTool::WifiTool()
-    : Tool("wifi_control",
-           "Kiem tra va dieu khien Wi-Fi. 'status' xem trang thai, 'scan' liet ke "
-           "mang xung quanh, 'on'/'off' bat tat song, 'connect' ket noi lai mot "
-           "mang DA LUU truoc do (khong nhap duoc mat khau moi tu day - neu mang "
-           "chua luu, hay bao nguoi dung mo ung dung Cai dat Wi-Fi), "
-           "'disconnect' ngat ket noi.",
-           R"({"type":"object","properties":{
-                "action":{"type":"string","enum":["status","scan","on","off","connect","disconnect"],
-                          "description":"Hanh dong can thuc hien."},
-                "ssid":{"type":"string","description":"Ten mang, chi dung voi action=connect."}
-              },"required":["action"]})") {}
-
-std::string WifiTool::Execute(const std::string &arguments_json) {
-    const json args = ParseArgs(arguments_json);
-    const std::string action = Lower(Str(args, "action", "status"));
-    auto &wifi = WifiManager::Instance();
-
-    if (!wifi.Available()) return "ERROR: thiet bi khong co adapter Wi-Fi";
-
-    if (action == "status") {
-        if (!wifi.IsEnabled()) return "Wi-Fi dang tat.";
-        const std::string ssid = wifi.ActiveSsid();
-        if (ssid.empty()) return "Wi-Fi dang bat nhung chua ket noi mang nao.";
-        return "Dang ket noi '" + ssid + "', song " + std::to_string(wifi.ActiveSignal()) + "%.";
-    }
-
-    if (action == "on" || action == "off") {
-        const bool on = (action == "on");
-        if (!wifi.Enable(on)) return "ERROR: " + wifi.LastError();
-        return on ? "Da bat Wi-Fi." : "Da tat Wi-Fi.";
-    }
-
-    if (action == "scan") {
-        if (!wifi.IsEnabled()) return "ERROR: Wi-Fi dang tat, bat len truoc da";
-        auto nets = wifi.Scan();
-        if (nets.empty()) return "Khong thay mang nao.";
-        std::ostringstream out;
-        out << "Cac mang tim thay (ten | song | da luu):\n";
-        size_t shown = 0;
-        for (const auto &n : nets) {
-            if (n.ssid.empty()) continue;
-            out << "- " << n.ssid << " | " << n.signal << "% | "
-                << (n.known ? "da luu" : "chua luu")
-                << (n.in_use ? " | DANG DUNG" : "") << "\n";
-            if (++shown >= 12) break;   // keep the tool result inside a sane token budget
-        }
-        return out.str();
-    }
-
-    if (action == "disconnect") {
-        if (!wifi.Disconnect()) return "ERROR: " + wifi.LastError();
-        return "Da ngat ket noi Wi-Fi.";
-    }
-
-    if (action == "connect") {
-        const std::string ssid = Trim(Str(args, "ssid"));
-        if (ssid.empty()) return "ERROR: thieu 'ssid'";
-        // Only reconnect to a profile NetworkManager already stores. Handing a
-        // password through the model is not something this tool does.
-        bool known = false;
-        for (const auto &n : wifi.Scan()) {
-            if (n.ssid == ssid) { known = n.known; break; }
-        }
-        if (!known)
-            return "ERROR: mang '" + ssid + "' chua duoc luu tren may. Nguoi dung can "
-                   "mo ung dung Cai dat Wi-Fi de nhap mat khau lan dau.";
-        if (!wifi.Connect(ssid, "")) return "ERROR: " + wifi.LastError();
-        return "Da ket noi '" + ssid + "'.";
-    }
-
-    return "ERROR: action khong hop le: " + action;
 }
 
 // ---- music ---------------------------------------------------------------
@@ -544,28 +403,58 @@ std::string MusicPlayTool::Execute(const std::string &arguments_json) {
     ZingMusicClient client;
     std::vector<music::Track> found;
     std::string err;
-    // Ask for more than we keep: premium hits are dropped below and would
-    // otherwise leave the queue nearly empty.
+    // Ask for more than we keep: premium hits are handled separately below and
+    // would otherwise leave the queue nearly empty.
     if (!client.SearchSongs(query, 10, found, err) || found.empty())
         return "ERROR: " + (err.empty() ? "khong tim thay bai nao" : err);
 
-    /* Premium tracks have no playable stream without a Zing account, and
-     * MusicView refuses to queue them for the same reason. Dropping them here
-     * keeps the agent from announcing a song that will never make a sound. */
+    /* VIP flow: if the best match is premium (VIP), it has no playable stream
+     * without a Zing account, so we tell the user that and play the nearest
+     * non-premium result instead -- "nhac do la nhac VIP, mo bai khac". Only
+     * when *every* hit is premium do we give up and suggest names. */
+    const music::Track &best = found.front();
+    if (best.premium) {
+        std::vector<music::Track> alts;
+        for (auto &t : found) {
+            if (!t.premium) alts.push_back(std::move(t));
+            if (alts.size() >= 5) break;
+        }
+        std::ostringstream out;
+        out << "Bai \"" << best.title << "\""
+            << (best.artist.empty() ? "" : " - " + best.artist)
+            << " la ban VIP (Premium) nen khong phat duoc.";
+        if (alts.empty()) {
+            out << " Hay thu ten bai khac.";
+            return out.str();
+        }
+        // Play the first alternative; keep the rest in the queue behind it.
+        if (!alts.front().artwork_url.empty()) {
+            std::string path, art_err;
+            if (client.DownloadArtwork(alts.front().artwork_url, path, art_err))
+                alts.front().artwork_path = path;
+        }
+        const music::Track chosen = alts.front();
+        music::PlayerController::Instance().PlayQueue(alts, 0);
+        out << " Minh mo bai khac: " << chosen.title
+            << (chosen.artist.empty() ? "" : " - " + chosen.artist) << ".";
+        if (alts.size() > 1) {
+            out << " Con trong hang doi:";
+            for (size_t i = 1; i < alts.size(); ++i)
+                out << "\n- " << alts[i].title
+                    << (alts[i].artist.empty() ? "" : " - " + alts[i].artist);
+        }
+        return out.str();
+    }
+
+    /* Non-VIP: play the best match, with the remaining non-premium hits queued
+     * behind it so music_control action=next walks the alternatives. */
     std::vector<music::Track> results;
-    int skipped_premium = 0;
     for (auto &track : found) {
-        if (track.premium) { ++skipped_premium; continue; }
+        if (track.premium) continue;
         results.push_back(std::move(track));
         if (results.size() >= 5) break;
     }
-    if (results.empty())
-        return "ERROR: chi tim thay ban premium cua '" + query +
-               "', can tai khoan Zing MP3 Premium moi phat duoc. Thu ten bai khac.";
 
-    /* Fetch the winning cover here rather than letting the now-playing island
-     * render an empty frame: one extra request, and the artwork is on disk
-     * before PlayQueue makes the track current. */
     if (!results.front().artwork_url.empty()) {
         std::string path, art_err;
         if (client.DownloadArtwork(results.front().artwork_url, path, art_err))
@@ -580,8 +469,6 @@ std::string MusicPlayTool::Execute(const std::string &arguments_json) {
     std::ostringstream out;
     out << "Dang phat: " << chosen.title;
     if (!chosen.artist.empty()) out << " - " << chosen.artist;
-    if (skipped_premium > 0)
-        out << "\n(" << skipped_premium << " ban premium da bi bo qua)";
     if (results.size() > 1) {
         out << "\nKet qua khac trong hang doi:";
         for (size_t i = 1; i < results.size(); ++i)
@@ -732,6 +619,316 @@ std::string ReminderTool::Execute(const std::string &arguments_json) {
     SaveReminders(list);
     DeviceBridge::Instance().ReloadReminders();
     return "Da them nhac nho: " + title;
+}
+
+// ---- pc_power (WoL) ------------------------------------------------------
+
+PcPowerTool::PcPowerTool()
+    : Tool("pc_power",
+           "Bat PC o nha bang Wake-on-LAN. Goi tool nay khi nguoi dung muon bat "
+           "may tinh. PC se khoi dong trong vai giay sau khi lenh duoc gui.",
+           R"({"type":"object","properties":{}})") {}
+
+std::string PcPowerTool::Execute(const std::string & /*arguments_json*/) {
+    const char *url = std::getenv("JETSON_WOL_URL");
+    if (!url || !*url)
+        return "ERROR: chua cau hinh JETSON_WOL_URL (diem cuoi /wake cua Jetson "
+               "hoac /api/wol/wake cua jetsona-ui)";
+    const char *token = std::getenv("JETSON_WOL_TOKEN");
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return "ERROR: khoi tao curl that bai";
+
+    struct curl_slist *hdr = nullptr;
+    hdr = curl_slist_append(hdr, "Content-Type: application/json");
+    if (token && *token) {
+        std::string t = std::string("X-WoL-Token: ") + token;
+        hdr = curl_slist_append(hdr, t.c_str());
+    }
+
+    std::string resp;
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "{}");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdr);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,
+                     +[](char *p, size_t s, size_t n, void *u) {
+                         static_cast<std::string *>(u)->append(p, s * n);
+                         return s * n;
+                     });
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+
+    CURLcode rc = curl_easy_perform(curl);
+    long code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+    curl_slist_free_all(hdr);
+    curl_easy_cleanup(curl);
+
+    if (rc != CURLE_OK)
+        return "ERROR: khong ket noi duoc WoL: " + std::string(curl_easy_strerror(rc));
+    if (code >= 200 && code < 300)
+        return "Da gui lenh bat PC. PC se khoi dong trong vai giay.";
+    return "ERROR: WoL tra ma " + std::to_string(code) +
+           (resp.empty() ? "" : ": " + resp);
+}
+
+// ---- weather -------------------------------------------------------------
+
+WeatherTool::WeatherTool()
+    : Tool("weather",
+           "Lay thoi tiet hien tai tai vi tri cua thiet bi (Da Nang). Tra ve "
+           "nhiet do, trang thai va do am. Dung khi nguoi dung hoi thoi tiet, "
+           "hoac de bao thoi tiet buoi sang khi bao thuc.",
+           R"({"type":"object","properties":{}})") {}
+
+std::string WeatherTool::Execute(const std::string & /*arguments_json*/) {
+    WeatherInfo w;
+    std::string err;
+    if (!WeatherClient::Fetch(w, err))
+        return "ERROR: " + (err.empty() ? "khong lay duoc thoi tiet" : err);
+    return WeatherClient::FormatLine(w);
+}
+
+// ---- ringtone ------------------------------------------------------------
+
+namespace {
+std::string RingtoneDir() { return std::string(JETSON_ASSETS_DIR) + "/ringtones"; }
+
+bool HasAudioExt(const std::string &name) {
+    auto pos = name.rfind('.');
+    if (pos == std::string::npos) return false;
+    std::string ext = name.substr(pos);
+    for (auto &c : ext) c = (char)std::tolower((unsigned char)c);
+    return ext == ".mp3" || ext == ".wav" || ext == ".ogg" || ext == ".m4a";
+}
+
+std::vector<std::string> ListRingtones() {
+    std::vector<std::string> out;
+    DIR *d = opendir(RingtoneDir().c_str());
+    if (!d) return out;
+    while (struct dirent *e = readdir(d)) {
+        std::string name = e->d_name;
+        if (name == "." || name == "..") continue;
+        if (HasAudioExt(name)) out.push_back(name);
+    }
+    closedir(d);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+bool RingtoneExists(const std::string &name) {
+    const auto all = ListRingtones();
+    return std::find(all.begin(), all.end(), name) != all.end();
+}
+} // namespace
+
+RingtoneTool::RingtoneTool()
+    : Tool("ringtone",
+           "Chon nhac bao thuc: action 'list' de liet ke cac ringtone, 'set' de "
+           "dat ringtone active (can 'name'), 'preview' de phat thu (co the kem "
+           "'name', mac dinh la ringtone dang dung). Ringtone duoc sync tu S3.",
+           R"({"type":"object","properties":{
+                "action":{"type":"string","enum":["list","set","preview"],
+                          "description":"Hanh dong can thuc hien."},
+                "name":{"type":"string","description":"Ten file ringtone (tu list)."}
+              },"required":["action"]})") {}
+
+std::string RingtoneTool::Execute(const std::string &arguments_json) {
+    const json args = ParseArgs(arguments_json);
+    const std::string action = Lower(Str(args, "action", "list"));
+
+    if (action == "list") {
+        const auto tones = ListRingtones();
+        if (tones.empty()) return "Chua co ringtone nao (chua sync tu S3).";
+        const std::string active = Settings("alarm", false).GetString("ringtone", "");
+        std::ostringstream out;
+        out << "Cac ringtone:";
+        for (const auto &t : tones)
+            out << "\n- " << t << (t == active ? " [dang dung]" : "");
+        return out.str();
+    }
+
+    if (action == "set") {
+        std::string name = Trim(Str(args, "name"));
+        if (name.empty()) return "ERROR: thieu 'name'. Goi ringtone voi action=list truoc.";
+        if (!RingtoneExists(name))
+            return "ERROR: khong co ringtone '" + name + "'. Goi action=list de xem danh sach.";
+        Settings("alarm", true).SetString("ringtone", name);
+        return "Da dat ringtone bao thuc: " + name;
+    }
+
+    if (action == "preview") {
+        std::string name = Trim(Str(args, "name"));
+        if (name.empty()) name = Settings("alarm", false).GetString("ringtone", "");
+        if (name.empty() || !RingtoneExists(name))
+            return "ERROR: chua chon ringtone, hoac ten khong ton tai. Goi action=list.";
+        std::string path = RingtoneDir() + "/" + name;
+        // Fire-and-forget so the tool returns immediately while mpv plays.
+        std::string cmd = "mpv --no-video --really-quiet --no-terminal --force-window=no " +
+                          jetson::platform::QuoteShellArgument(path) + " >/dev/null 2>&1 &";
+        jetson::platform::RunShellCommand(cmd);
+        return "Dang phat thu: " + name;
+    }
+
+    return "ERROR: action khong hop le: " + action;
+}
+
+// ---- music_album ---------------------------------------------------------
+
+MusicAlbumTool::MusicAlbumTool()
+    : Tool("music_album",
+           "Quan ly album rieng cua nguoi dung (Album cua toi). action='save' de "
+           "luu bai dang phat vao album (co the kem 'name' de chi ro album, mac "
+           "dinh la 'Album cua toi'); 'list' de liet ke cac album va bai trong do; "
+           "'play' de phat mot album (kem 'name', mac dinh la album dau tien). "
+           "Dung sau music_play khi nguoi dung bao 'luu bai nay di' hoac 'choi "
+           "nhac trong album'.",
+           R"({"type":"object","properties":{
+                "action":{"type":"string","enum":["save","list","play"],
+                          "description":"Hanh dong voi album."},
+                "name":{"type":"string",
+                        "description":"Ten album (cho save/play). Bo trong = Album cua toi."}
+              },"required":["action"]})") {}
+
+namespace {
+/* Find an album by display name (case-insensitive), or return nullptr. The
+ * UserLibrary ids are opaque ints, but the user only ever names albums in
+ * speech, so we match on name here. */
+music::UserAlbum *FindAlbum(std::vector<music::UserAlbum> &albums,
+                            const std::string &name) {
+    std::string want = Lower(name);
+    for (auto &a : albums)
+        if (Lower(a.name) == want) return &a;
+    return nullptr;
+}
+} // namespace
+
+std::string MusicAlbumTool::Execute(const std::string &arguments_json) {
+    const json args = ParseArgs(arguments_json);
+    const std::string action = Lower(Str(args, "action"));
+    auto &lib = music::UserLibrary::Instance();
+
+    if (action == "save") {
+        const auto snap = music::PlayerController::Instance().Snapshot();
+        if (!snap.has_current)
+            return "ERROR: chua co bai nao dang phat. Dung music_play truoc, "
+                   "roi moi luu.";
+        std::string name = Trim(Str(args, "name"));
+        if (name.empty()) name = "Album của tôi";
+
+        // Reuse an existing album of the same name, else create one.
+        auto albums = lib.Albums();
+        std::string album_id;
+        if (music::UserAlbum *a = FindAlbum(albums, name))
+            album_id = a->id;
+        else
+            album_id = lib.CreateAlbum(name);
+
+        if (lib.Contains(album_id, snap.current.id))
+            return "Bai \"" + snap.current.title + "\" da co trong album \"" +
+                   name + "\" roi.";
+        if (!lib.AddTrack(album_id, snap.current))
+            return "ERROR: khong luu duoc (album khong con ton tai).";
+        return "Da luu bai \"" + snap.current.title + "\" vao album \"" + name +
+               "\".";
+    }
+
+    if (action == "list") {
+        auto albums = lib.Albums();
+        if (albums.empty()) return "Chua co album nao. Goi music_album action=save sau khi phat mot bai.";
+        std::ostringstream out;
+        out << "Cac album:";
+        for (const auto &a : albums) {
+            out << "\n- " << a.name << " (" << a.tracks.size() << " bai)";
+            for (const auto &t : a.tracks)
+                out << "\n   * " << t.title
+                    << (t.artist.empty() ? "" : " - " + t.artist);
+        }
+        return out.str();
+    }
+
+    if (action == "play") {
+        std::string name = Trim(Str(args, "name"));
+        auto albums = lib.Albums();
+        if (albums.empty())
+            return "ERROR: chua co album nao de phat. Luu bai truoc voi music_album action=save.";
+        music::UserAlbum *a = nullptr;
+        if (name.empty())
+            a = &albums.front();
+        else {
+            a = FindAlbum(albums, name);
+            if (!a)
+                return "ERROR: khong co album \"" + name + "\". Goi action=list de xem.";
+        }
+        if (a->tracks.empty())
+            return "ERROR: album \"" + a->name + "\" chua co bai nao.";
+        std::vector<music::Track> queue = a->tracks;
+        music::PlayerController::Instance().PlayQueue(queue, 0);
+        std::ostringstream out;
+        out << "Dang phat album \"" << a->name << "\" (" << queue.size()
+            << " bai), bat dau: " << queue.front().title
+            << (queue.front().artist.empty() ? "" : " - " + queue.front().artist);
+        return out.str();
+    }
+
+    return "ERROR: action khong hop le: " + action;
+}
+
+// ---- alarm ---------------------------------------------------------------
+
+AlarmTool::AlarmTool()
+    : Tool("alarm",
+           "Bao thuc buoi sang. action='set' (can 'time' HH:MM) de dat gio bao "
+           "thuc; 'cancel' de tat lich bao thuc; 'status' de xem; 'stop' de tat "
+           "tieng chuong dang reo. Luc reo, Ekko phat ringtone, doc thoi tiet Da "
+           "Nang va cac ghi chu 'mai bao toi'.",
+           R"({"type":"object","properties":{
+                "action":{"type":"string","enum":["set","cancel","status","stop"],
+                          "description":"Hanh dong voi bao thuc."},
+                "time":{"type":"string","description":"Gio bao thuc HH:MM (cho set)."}
+              },"required":["action"]})") {}
+
+std::string AlarmTool::Execute(const std::string &arguments_json) {
+    const json args = ParseArgs(arguments_json);
+    const std::string action = Lower(Str(args, "action"));
+
+    if (action == "set") {
+        std::string t = NormalizeTime(Str(args, "time"));
+        if (t.empty())
+            return "ERROR: 'time' phai theo dinh dang HH:MM (vi du 06:30).";
+        Settings("alarm", true).SetString("time", t);
+        Settings("alarm", true).SetString("enabled", "1");
+        return "Da dat bao thuc luc " + t +
+               ". Sang reo se phat ringtone va bao thoi tiet Da Nang.";
+    }
+    if (action == "cancel") {
+        Settings("alarm", true).SetString("enabled", "0");
+        return "Da tat lich bao thuc.";
+    }
+    if (action == "status") {
+        Settings a("alarm", false);
+        std::string t = a.GetString("time", "");
+        std::string e = a.GetString("enabled", "0");
+        if (t.empty()) return "Chua dat bao thuc.";
+        std::string ring = a.GetString("ringtone", "");
+        std::string out = "Bao thuc " + t + " (" + (e == "1" ? "bat" : "tat") + ")";
+        if (!ring.empty()) out += ", ringtone: " + ring;
+        return out + ".";
+    }
+    if (action == "stop") {
+        // Kill the ringing alarm ringtone (pidfile written by the scheduler).
+        const std::string pidfile = AlarmPidFile();
+        std::ifstream pf(pidfile);
+        std::string pid;
+        if (pf) std::getline(pf, pid);
+        if (!pid.empty()) {
+            jetson::platform::RunShellCommand("kill " + pid + " 2>/dev/null");
+            std::remove(pidfile.c_str());
+        }
+        return "Da tat bao thuc. Chuc ngay moi tot lanh.";
+    }
+    return "ERROR: action khong hop le: " + action;
 }
 
 } // namespace jetson

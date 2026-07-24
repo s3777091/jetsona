@@ -120,6 +120,16 @@ void Settings::SetInt(const std::string &key, int32_t value) {
     store().set(ns_, key, std::to_string(value));
     dirty_ = true;
 }
+float Settings::GetFloat(const std::string &key, float default_value) {
+    std::string v = store().get(ns_, key, "");
+    if (v.empty()) return default_value;
+    return (float)std::strtod(v.c_str(), nullptr);
+}
+void Settings::SetFloat(const std::string &key, float value) {
+    if (!read_write_) return;
+    store().set(ns_, key, std::to_string(value));
+    dirty_ = true;
+}
 bool Settings::GetBool(const std::string &key, bool default_value) {
     std::string v = store().get(ns_, key, "");
     if (v.empty()) return default_value;

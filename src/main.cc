@@ -1,6 +1,5 @@
 #include "application.h"
 #include "esp_log.h"
-#include "lvgl_runtime.h"
 #include "platform/perf_governor.h"
 
 #include <cstdlib>
@@ -14,7 +13,7 @@
 int main(int /*argc*/, char ** /*argv*/) {
     // Block termination signals before any worker threads are created. A
     // dedicated sigwait thread handles them synchronously, so logging and the
-    // application/LVGL shutdown path never run inside an async signal handler.
+    // application shutdown path never run inside an async signal handler.
     sigset_t termination_signals;
     sigemptyset(&termination_signals);
     sigaddset(&termination_signals, SIGINT);
@@ -25,8 +24,7 @@ int main(int /*argc*/, char ** /*argv*/) {
         return EXIT_FAILURE;
     }
 
-    ESP_LOGI(TAG, "Jetson Nano DS-02 firmware starting (display=%dx%d, backend=%s)",
-             JETSON_DISPLAY_WIDTH, JETSON_DISPLAY_HEIGHT, JETSON_DISPLAY_BACKEND);
+    ESP_LOGI(TAG, "Jetson Nano Ekko Lite starting (headless, audio-first AI)");
 
     // Replay a clock baseline left behind by a crash mid-boost, before any
     // new boost can be requested.
@@ -49,7 +47,6 @@ int main(int /*argc*/, char ** /*argv*/) {
 
     app.Run();
     signal_thread.join();
-    jetson::LvglRuntime::Instance().Stop();
     ESP_LOGI(TAG, "shutdown complete");
     return EXIT_SUCCESS;
 }
