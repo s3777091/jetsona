@@ -20,11 +20,12 @@ mkdir -p "$MODELS"
 WGET="wget -q --show-progress"
 
 # ---- KWS (wake word "Ekko") -----------------------------------------------
-# Open-vocabulary zipformer KWS transducer. The English model is small and
-# spots a custom keyword written to keywords.txt; a Vietnamese-accented "Ekko"
-# may need a vi-tuned KWS model if one ships later. keywords.txt format is
+# Open-vocabulary zipformer KWS transducer (zh-en 3M, GitHub-hosted). Spots a
+# custom keyword written to keywords.txt; a Vietnamese-accented "Ekko" may need
+# a vi-tuned KWS model if one ships later. keywords.txt format is
 # "<WORD> :<score>" per line (note the space around the colon).
-KWS_URL="${MODEL_KWS_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-en-2023-12-15.tar.bz2}"
+# GitHub releases are reachable from the Jetson LAN (verified).
+KWS_URL="${MODEL_KWS_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2}"
 KWS_DIR="$MODELS/kws"
 if [ ! -f "$KWS_DIR/encoder.onnx" ]; then
     echo "==> KWS: $KWS_URL"
@@ -48,7 +49,15 @@ echo "==> KWS ready in $KWS_DIR (wake word: EKKO)"
 # joiner + tokens.txt. If you switch to a zipformer2_ctc model, set
 # Settings("voice","stt_ctc_model") to its .onnx and leave the transducer paths
 # empty.
-STT_URL="${MODEL_STT_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-vi-2024-03-25.tar.bz2}"
+#
+# NOTE: Vietnamese ASR/TTS models are hosted on HuggingFace
+# (k2-fsa/sherpa-onnx-* HF repos), NOT on GitHub releases. HF has been observed
+# to return HTTP 401 from some networks (e.g. the Jetson LAN) even for public
+# repos, while GitHub releases work. If MODEL_STT_URL below 401s, download the
+# pack on a network with HF access and extract it into assets/models/stt/
+# (encoder.onnx / decoder.onnx / joiner.onnx / tokens.txt), or set MODEL_STT_URL
+# to a reachable mirror. The default URL is a best-fit and may need adjusting.
+STT_URL="${MODEL_STT_URL:-https://huggingface.co/k2-fsa/sherpa-onnx-streaming-asr-models/resolve/main/sherpa-onnx-streaming-zipformer-vi-2024-03-25/sherpa-onnx-streaming-zipformer-vi-2024-03-25.tar.bz2}"
 STT_DIR="$MODELS/stt"
 if [ ! -f "$STT_DIR/encoder.onnx" ]; then
     echo "==> STT: $STT_URL"
@@ -66,7 +75,11 @@ echo "==> STT ready in $STT_DIR"
 
 # ---- TTS (Piper VITS, Vietnamese) -----------------------------------------
 # vi_VN-vivos-x_low (16 kHz, small). Piper uses espeak-ng-data, not a lexicon.
-TTS_URL="${MODEL_TTS_URL:-https://huggingface.co/k2-fsa/sherpa-onnx-tts-models/resolve/main/vits/vi_VN-vivos-x_low.tar.bz2}"
+# Hosted on HuggingFace (k2-fsa/sherpa-onnx-tts-models) -- see the STT note
+# above about HF 401 on some networks; download manually + extract into
+# assets/models/tts/ (vi_VN-vivos-x_low.onnx / tokens.txt / espeak-ng-data/) if
+# the URL is unreachable. The onnx model lives in a subdir of the same name.
+TTS_URL="${MODEL_TTS_URL:-https://huggingface.co/k2-fsa/sherpa-onnx-tts-models/resolve/main/vits/vi_VN-vivos-x_low/vi_VN-vivos-x_low.tar.bz2}"
 TTS_DIR="$MODELS/tts"
 if [ ! -f "$TTS_DIR/vi_VN-vivos-x_low.onnx" ]; then
     echo "==> TTS: $TTS_URL"
