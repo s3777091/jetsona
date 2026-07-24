@@ -316,7 +316,7 @@ NoteTool::NoteTool(Op op)
                     "dung bao 'mai bao toi' / 'nho buoi sang' -- buoi sang bao thuc "
                     "se doc lai ghi chu do dung luc."
                  : "Liet ke tat ca ghi chu da luu.",
-        op == Add ? R"({"type":"object","properties":{"text":{"type":"string","description":"Noi dung ghi chu"},"remind_morning":{"type":"boolean","description":"true de bao lai buoi sang (khi bao thuc chuong)"}},"required":["text"]})"
+        op == Add ? R"json({"type":"object","properties":{"text":{"type":"string","description":"Noi dung ghi chu"},"remind_morning":{"type":"boolean","description":"true de bao lai buoi sang (khi bao thuc chuong)"}},"required":["text"]})json"
                   : R"({"type":"object","properties":{}})"),
       op_(op) {}
 

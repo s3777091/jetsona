@@ -249,11 +249,11 @@ void Application::FireAlarm() {
     }
 
     // 2) Da Nang weather briefing.
-    WeatherInfo w;
+    jetson::WeatherInfo w;
     std::string werr;
-    if (WeatherClient::Fetch(w, werr)) {
+    if (jetson::WeatherClient::Fetch(w, werr)) {
         Speak("Chao buoi sang. Thoi tiet Da Nang hom nay: " +
-              WeatherClient::FormatLine(w));
+              jetson::WeatherClient::FormatLine(w));
     } else {
         ESP_LOGW(TAG, "alarm weather fetch failed: %s", werr.c_str());
         Speak("Chao buoi sang. Khong lay duoc thoi tiet.");

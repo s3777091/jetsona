@@ -20,7 +20,7 @@ public:
      * so a missing/broken model only disables that one stage instead of
      * crashing boot. Returns true once at least the KWS is up. */
     bool Ready() const override;
-    bool Init();
+    bool Init() override;
 
     bool FeedWake(const int16_t *samples, size_t n) override;
     std::string Recognize(const int16_t *samples, size_t n) override;
@@ -35,7 +35,7 @@ private:
     // public header; cast back in the .cc).
     void *kws_ = nullptr;     // SherpaOnnxKeywordSpotter*
     void *kws_stream_ = nullptr; // SherpaOnnxOnlineStream*
-    void *stt_ = nullptr;     // SherpaOnnxOnlineRecognizer*
+    const void *stt_ = nullptr; // SherpaOnnxOnlineRecognizer* (API returns const)
     void *tts_ = nullptr;     // SherpaOnnxOfflineTts*
     bool kws_tried_ = false;
     bool stt_tried_ = false;

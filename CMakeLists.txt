@@ -51,21 +51,27 @@ endif()
 #      path scripts/fetch_sherpa.sh produces: it builds sherpa-onnx once with
 #      GPU + onnxruntime 1.11 CUDA into a prefix, then every firmware rebuild
 #      reuses it without recompiling sherpa. Fastest inner loop.
-#   2. JETSON_BUILD_SHERPA=ON (default when JETSON_SHERPA_DIR is empty) ->
-#      FetchContent the pinned tag and add_subdirectory it. Slower (rebuilds
-#      sherpa with the firmware) but needs no prior step.
+#   2. JETSON_BUILD_SHERPA=ON (opt-in; OFF by default) -> FetchContent the
+#      pinned tag and add_subdirectory it. Slower (rebuilds sherpa with the
+#      firmware) and pulls sherpa's own dep tree (onnxruntime/k2/asio/...), so
+#      it is NOT the default -- prefer the prebuilt prefix above, or leave both
+#      off to build a stub voice engine (loop inert, agent still fully usable).
 # Either way JETSON_HAVE_SHERPA is defined so the code knows the C API is there.
 # ----------------------------------------------------------------------------
 set(JETSON_SHERPA_DIR "" CACHE PATH "Prebuilt sherpa-onnx install prefix")
 set(JETSON_SHERPA_TAG "v1.10.30" CACHE STRING "sherpa-onnx git tag (FetchContent path)")
-option(JETSON_BUILD_SHERPA "Build sherpa-onnx from source via FetchContent" ON)
+option(JETSON_BUILD_SHERPA "Build sherpa-onnx from source via FetchContent" OFF)
 
 if(JETSON_SHERPA_DIR)
     set(SHERPA_INCLUDE_DIR "${JETSON_SHERPA_DIR}/include")
-    set(SHERPA_LIBRARY "${JETSON_SHERPA_DIR}/lib/libsherpa-onnx.a")
-    if(NOT EXISTS "${SHERPA_LIBRARY}")
-        # Fall back to the shared lib if that's what the prefix built.
-        find_library(SHERPA_LIBRARY NAMES sherpa-onnx PATHS "${JETSON_SHERPA_DIR}/lib" NO_DEFAULT_PATH)
+    # The prebuilt/shared prefix ships libsherpa-onnx-c-api.so (the C API); a
+    # from-source install may ship libsherpa-onnx.a. Accept either name/ext.
+    find_library(SHERPA_LIBRARY
+        NAMES sherpa-onnx-c-api sherpa-onnx
+        PATHS "${JETSON_SHERPA_DIR}/lib" NO_DEFAULT_PATH)
+    if(NOT SHERPA_LIBRARY)
+        message(FATAL_ERROR "JETSON_SHERPA_DIR set to ${JETSON_SHERPA_DIR} but no "
+            "libsherpa-onnx-c-api / libsherpa-onnx found under ${JETSON_SHERPA_DIR}/lib")
     endif()
     set(JETSON_HAVE_SHERPA ON)
 elseif(JETSON_BUILD_SHERPA)
@@ -84,7 +90,11 @@ elseif(JETSON_BUILD_SHERPA)
     set(SHERPA_ONNX_ENABLE_GPU ON CACHE BOOL "" FORCE)
     add_subdirectory(${sherpa_onnx_SOURCE_DIR} ${sherpa_onnx_BINARY_DIR} EXCLUDE_FROM_ALL)
     set(SHERPA_INCLUDE_DIR "${sherpa_onnx_SOURCE_DIR}")
-    set(SHERPA_LIBRARY sherpa-onnx)
+    # sherpa-onnx defines `sherpa-onnx` as an *executable* (the CLI), which CMake
+    # refuses to link into jetson_fw. The linkable C-API library target is
+    # `sherpa-onnx-c-api` (static); it transitively pulls sherpa-onnx-core +
+    # onnxruntime, so no extra link line is needed on this path.
+    set(SHERPA_LIBRARY sherpa-onnx-c-api)
     set(JETSON_HAVE_SHERPA ON)
 endif()
 
@@ -130,13 +140,20 @@ target_link_libraries(jetson_fw PRIVATE
     ${ALSA_LIBRARY})
 
 if(JETSON_HAVE_SHERPA)
-    # sherpa-onnx static also needs onnxruntime (+ CUDA/cuDNN on the GPU path).
-    # Let the prebuilt prefix's pkg/lib carry those via JETSON_SHERPA_EXTRA_LIBS,
-    # or let the FetchContent target pull them transitively.
+    # sherpa links (shared prebuilt or static from-source). The shared .so has
+    # NEEDED onnxruntime/cargs recorded, so linking the c-api lib alone suffices
+    # and the runtime loader pulls the rest from the same dir (via RPATH below).
+    # For a static build, add onnxruntime (+ CUDA/cuDNN) via JETSON_SHERPA_EXTRA_LIBS.
     target_link_libraries(jetson_fw PRIVATE ${SHERPA_LIBRARY})
     if(JETSON_SHERPA_EXTRA_LIBS)
         target_link_libraries(jetson_fw PRIVATE ${JETSON_SHERPA_EXTRA_LIBS})
     endif()
+    # Bake the prefix lib dir into RPATH so jetson_fw finds libsherpa-onnx-c-api /
+    # libonnxruntime at runtime without LD_LIBRARY_PATH.
+    get_filename_component(SHERPA_LIB_DIR "${SHERPA_LIBRARY}" DIRECTORY)
+    set_target_properties(jetson_fw PROPERTIES
+        BUILD_RPATH "${SHERPA_LIB_DIR}"
+        INSTALL_RPATH "${SHERPA_LIB_DIR}")
 endif()
 
 # forkpty() lives in libutil on older glibc (e.g. JetPack 4.x / Ubuntu 18.04,

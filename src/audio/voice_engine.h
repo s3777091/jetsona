@@ -19,6 +19,10 @@ class VoiceEngine {
 public:
     virtual ~VoiceEngine() = default;
 
+    /* Load whatever the wake-word stage needs so FeedWake can fire. Returns true
+     * if at least wake-word detection is usable; false leaves the loop inert. */
+    virtual bool Init() = 0;
+
     virtual bool Ready() const = 0;
 
     /* Feed a 16 kHz mono S16LE chunk to the wake-word detector. Returns true if

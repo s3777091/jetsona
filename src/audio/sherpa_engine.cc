@@ -116,7 +116,7 @@ bool SherpaVoiceEngine::EnsureKws() {
 #endif
 }
 
-bool SherpaVoiceEngine::FeedWake(const int16_t * /*samples*/, size_t /*n*/) {
+bool SherpaVoiceEngine::FeedWake(const int16_t *samples, size_t n) {
 #if JETSON_HAVE_SHERPA
     if (!EnsureKws()) return false;
     auto *spotter = reinterpret_cast<SherpaOnnxKeywordSpotter *>(kws_);
@@ -195,7 +195,7 @@ bool SherpaVoiceEngine::EnsureStt() {
 #endif
 }
 
-std::string SherpaVoiceEngine::Recognize(const int16_t * /*samples*/, size_t /*n*/) {
+std::string SherpaVoiceEngine::Recognize(const int16_t *samples, size_t n) {
 #if JETSON_HAVE_SHERPA
     if (!EnsureStt()) return "";
     auto *rec = reinterpret_cast<const SherpaOnnxOnlineRecognizer *>(stt_);
