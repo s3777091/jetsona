@@ -49,6 +49,9 @@ bool Application::Initialize() {
     conversation_->SetTools(jetson::BuildDefaultToolRegistry());
     conversation_->SetOnToolEvent([](std::string name, std::string status) {
         ESP_LOGI(TAG, "tool %s: %s", name.c_str(), status.c_str());
+        // A tool means this turn needs two LLM round trips; fill the silence.
+        if (status == "start")
+            jetson::audio::VoiceLoop::Instance().NotifyToolStarted();
     });
     conversation_->ReloadConfig();
 

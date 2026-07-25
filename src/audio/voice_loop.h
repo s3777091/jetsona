@@ -45,6 +45,11 @@ public:
      * enqueues to the speaker thread. No-op if the loop isn't running. */
     void Speak(const std::string &text);
 
+    /* Called when the agent starts a tool. Speaks a short "working on it" line,
+     * at most once per turn, so a tool-using turn does not answer the user with
+     * many seconds of silence. Thread-safe: runs on the agent worker. */
+    void NotifyToolStarted();
+
     bool running() const { return running_.load(); }
     bool speaking() const { return speaking_.load(); }
 
@@ -111,6 +116,10 @@ private:
     std::condition_variable speech_cv_;
     std::thread speaker_thread_;
     std::atomic<bool> speaking_{false};
+
+    // Cleared when a turn is handed to the agent; set by the first tool of that
+    // turn so only the first one speaks a filler.
+    std::atomic<bool> filler_spoken_{false};
 
     std::atomic<bool> running_{false};
 };

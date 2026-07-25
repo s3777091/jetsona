@@ -30,7 +30,7 @@ constexpr int kCalibrationChunks = 313;     // ~10 s robust startup calibration
 constexpr double kCalibrationRejectRms = 500.0;
 constexpr int kMinOnsetChunks = 3;          // reject short fan/mechanical spikes
 constexpr int kMinSpeechChunks = 2;         // 64 ms of speech to start an utterance
-constexpr int kSilenceToEndChunks = 28;     // ~900 ms trailing silence -> endpoint
+constexpr int kSilenceToEndChunks = 20;     // ~640 ms trailing silence -> endpoint
 constexpr int kMaxUtterChunks = 375;         // 12 s hard cap
 constexpr int kFalseWakeChunks = 78;         // 2.5 s with no speech -> abandon
 constexpr int kVadLogChunks = 313;           // ~10 s between idle diagnostics
@@ -54,6 +54,23 @@ const char *NextWakeAck() {
     static std::atomic<unsigned> turn{0};
     const unsigned n = sizeof(kWakeAcks) / sizeof(kWakeAcks[0]);
     return kWakeAcks[turn.fetch_add(1) % n];
+}
+
+/* Said once per turn when the agent reaches for a tool. A tool-using turn costs
+ * two LLM round trips plus the tool itself -- measured at roughly fifteen
+ * seconds of silence between the user finishing and Nova starting to speak,
+ * which reads as "it ignored me". This lands in that gap. It is short enough to
+ * finish well before the real answer is ready, so it costs no extra delay. */
+const char *const kWorkingFillers[] = {
+    "Để mình xem.",
+    "Chờ mình chút nhé.",
+    "Mình kiểm tra đã.",
+};
+
+const char *NextWorkingFiller() {
+    static std::atomic<unsigned> turn{0};
+    const unsigned n = sizeof(kWorkingFillers) / sizeof(kWorkingFillers[0]);
+    return kWorkingFillers[turn.fetch_add(1) % n];
 }
 
 // Cloud STT is prompted to preserve the proper name. Keep only the actual wake
@@ -190,6 +207,11 @@ void VoiceLoop::Speak(const std::string &text) {
         speech_.push(text);
     }
     speech_cv_.notify_one();
+}
+
+void VoiceLoop::NotifyToolStarted() {
+    if (filler_spoken_.exchange(true)) return;   // only the turn's first tool
+    Speak(NextWorkingFiller());
 }
 
 void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
@@ -588,6 +610,7 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance,
 
     auto *conv = Application::GetInstance().GetConversation();
     if (!conv) { go_idle(); return; }
+    filler_spoken_.store(false);
     conv->Send(cmd, [this](std::string reply, std::string err) {
         if (!err.empty()) ESP_LOGW(TAG, "agent error: %s", err.c_str());
         if (!reply.empty()) {
