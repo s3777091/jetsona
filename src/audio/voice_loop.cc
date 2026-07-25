@@ -45,7 +45,8 @@ constexpr int kAwakeWindowSec = 12;
 const char *const kWakePhrases[] = {
     "hey nova", "hey no va", "hey nô va", "hey nowa",
     "hey lewa", "hey leva", "hây nô va", "hãy nô va",
-    "ê nova", "ê nô va", "anh lô vào", "hai lô vào",
+    "ê nova", "ê nô va", "hello ba", "hello vào", "hello à",
+    "anh lô vào", "hai lô vào", "hay nôm vào",
     "nova", "no va", "nô va"
 };
 

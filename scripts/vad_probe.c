@@ -5,15 +5,16 @@
 #include "sherpa-onnx/c-api/c-api.h"
 
 int main(int argc, char **argv) {
-    if (argc < 3) {
-        fprintf(stderr, "usage: %s MODEL WAV...\n", argv[0]);
+    if (argc < 4) {
+        fprintf(stderr, "usage: %s MODEL THRESHOLD WAV...\n", argv[0]);
         return 2;
     }
+    const float threshold = strtof(argv[2], NULL);
 
     SherpaOnnxVadModelConfig config;
     memset(&config, 0, sizeof(config));
     config.silero_vad.model = argv[1];
-    config.silero_vad.threshold = 0.5f;
+    config.silero_vad.threshold = threshold;
     config.silero_vad.min_silence_duration = 0.3f;
     config.silero_vad.min_speech_duration = 0.15f;
     config.silero_vad.max_speech_duration = 20.0f;
@@ -22,7 +23,7 @@ int main(int argc, char **argv) {
     config.num_threads = 1;
     config.provider = "cpu";
 
-    for (int file_index = 2; file_index < argc; ++file_index) {
+    for (int file_index = 3; file_index < argc; ++file_index) {
         const SherpaOnnxWave *wave = SherpaOnnxReadWave(argv[file_index]);
         if (!wave || wave->sample_rate != 16000) {
             fprintf(stderr, "%s: invalid 16 kHz mono WAV\n", argv[file_index]);

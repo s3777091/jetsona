@@ -181,7 +181,7 @@ bool SherpaVoiceEngine::EnsureVad() {
 
     SherpaOnnxVadModelConfig cfg{};
     cfg.silero_vad.model = model.c_str();
-    cfg.silero_vad.threshold = F("vad_speech_threshold", 0.5f);
+    cfg.silero_vad.threshold = F("vad_speech_threshold", 0.3f);
     cfg.silero_vad.min_silence_duration =
         F("vad_min_silence_duration", 0.3f);
     cfg.silero_vad.min_speech_duration =
