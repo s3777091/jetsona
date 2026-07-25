@@ -19,60 +19,48 @@ mkdir -p "$MODELS"
 
 WGET="wget -q --show-progress"
 
-# ---- KWS (wake word "nova") -----------------------------------------------
-# Open-vocabulary zipformer KWS transducer (zh-en 3M, GitHub-hosted). It spots a
-# custom keyword, BUT keywords.txt must hold the keyword TOKENIZED into the
-# model's modelling units, not the raw word -- a raw "nova" line is silently
-# never matched. We tokenize with `sherpa-onnx-cli text2token` using the
-# bpe.model shipped inside the archive. A Vietnamese-accented "nova" is served
-# reasonably by this zh-en model; swap in a vi-tuned KWS model if one ships.
-# GitHub releases are reachable from the Jetson LAN (verified).
-WAKE_WORD="${JETSON_WAKE_WORD:-nova}"
-KWS_URL="${MODEL_KWS_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2}"
-KWS_DIR="$MODELS/kws"
+# ---- KWS (wake phrase "HEY NOVA") -----------------------------------------
+# Use the 2024 English GigaSpeech 3.3M KWS model. It is tiny, responds while
+# audio is still streaming, and is compatible with the older ONNX Runtime on
+# JetPack 4. The newer 2025 zh-en graph uses an Unsqueeze operator unsupported
+# by that runtime and panics during construction.
+WAKE_WORD="${JETSON_WAKE_WORD:-HEY NOVA}"
+KWS_URL="${MODEL_KWS_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2}"
+KWS_DIR="$MODELS/kws_gigaspeech"
 if [ ! -f "$KWS_DIR/encoder.onnx" ]; then
     echo "==> KWS: $KWS_URL"
     mkdir -p "$KWS_DIR"
     tmp="$(mktemp -d)"; $WGET -O "$tmp/kws.tar.bz2" "$KWS_URL"
     tar -xjf "$tmp/kws.tar.bz2" -C "$tmp"
-    # The archive unpacks a subdir; flatten model + tokens + bpe.model into kws/.
-    find "$tmp" -maxdepth 2 \( -name '*.onnx' -o -name 'tokens.txt' -o -name 'bpe.model' \) \
-        -exec cp -f {} "$KWS_DIR/" \;
+    pack="$(find "$tmp" -type f -name 'bpe.model' -printf '%h\n' -quit)"
+    cp -f "$pack/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx" \
+        "$KWS_DIR/encoder.onnx"
+    cp -f "$pack/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx" \
+        "$KWS_DIR/decoder.onnx"
+    cp -f "$pack/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx" \
+        "$KWS_DIR/joiner.onnx"
+    cp -f "$pack/tokens.txt" "$pack/bpe.model" "$KWS_DIR/"
     rm -rf "$tmp"
-    # Normalize the transducer file names the firmware defaults to.
-    [ -f "$KWS_DIR/encoder-epoch-99-avg-1.onnx" ] && mv "$KWS_DIR/encoder-epoch-99-avg-1.onnx" "$KWS_DIR/encoder.onnx"
-    [ -f "$KWS_DIR/decoder-epoch-99-avg-1.onnx" ] && mv "$KWS_DIR/decoder-epoch-99-avg-1.onnx" "$KWS_DIR/decoder.onnx"
-    [ -f "$KWS_DIR/joiner-epoch-99-avg-1.onnx" ] && mv "$KWS_DIR/joiner-epoch-99-avg-1.onnx" "$KWS_DIR/joiner.onnx"
 fi
 
-# keywords.txt holds the wake word in the KWS model's OWN units, not raw text:
-#   * BPE model (zh-en 3M)    -> tokenize with `sherpa-onnx-cli text2token`
-#                                (--tokens-type cjkchar+bpe, needs bpe.model).
-#   * phoneme model (ARPAbet) -> lines of CMU phonemes, e.g. "N OW1 V AH0".
-# A raw word line is silently never matched. We NEVER clobber an existing
-# keywords.txt (it may hold hand-tuned phoneme spellings for the deployed
-# model); only generate one when it is missing.
-if [ -f "$KWS_DIR/keywords.txt" ]; then
-    echo "==> KWS keywords.txt already present, keeping it:"
-    sed 's/^/      /' "$KWS_DIR/keywords.txt"
-elif command -v sherpa-onnx-cli >/dev/null 2>&1 && [ -f "$KWS_DIR/bpe.model" ]; then
+# The default has a stable BPE tokenization in this model. Per-keyword score
+# 2.0 and threshold 0.15 favor recall for a Vietnamese-accented English name.
+if [ "$WAKE_WORD" = "HEY NOVA" ]; then
+    printf '▁HE Y ▁NO V A :2.0 #0.15\n' > "$KWS_DIR/keywords.txt"
+elif command -v sherpa-onnx-cli >/dev/null 2>&1; then
     kw_raw="$(mktemp)"; echo "$WAKE_WORD" > "$kw_raw"
     sherpa-onnx-cli text2token \
         --tokens "$KWS_DIR/tokens.txt" \
-        --tokens-type cjkchar+bpe \
+        --tokens-type bpe \
         --bpe-model "$KWS_DIR/bpe.model" \
         "$kw_raw" "$KWS_DIR/keywords.txt"
-    sed -i 's/$/ :1.5/' "$KWS_DIR/keywords.txt"   # boost score per line
+    sed -i 's/$/ :2.0 #0.15/' "$KWS_DIR/keywords.txt"
     rm -f "$kw_raw"
-    echo "==> KWS ready in $KWS_DIR (wake word: $WAKE_WORD, BPE-tokenized)"
 else
-    echo "$WAKE_WORD :1.5" > "$KWS_DIR/keywords.txt"
-    echo "!!  No keywords.txt and cannot tokenize (BPE needs sherpa-onnx-cli +"
-    echo "!!  bpe.model; a phoneme model needs hand-written ARPAbet). Wrote RAW"
-    echo "!!  '$WAKE_WORD' as a placeholder -- KWS will NOT match it until replaced."
-    echo "!!  BPE: pip install sherpa-onnx then rerun. Phoneme model example:"
-    echo "!!  nova -> 'N OW1 V AH0 :1.5' (one line per pronunciation variant)."
+    echo "Custom JETSON_WAKE_WORD requires sherpa-onnx-cli for BPE tokenization." >&2
+    exit 1
 fi
+echo "==> KWS ready in $KWS_DIR (wake phrase: $WAKE_WORD)"
 
 # ---- Wake-language STT ("Hey Nova") ---------------------------------------
 # The command recognizer below is Vietnamese-only by design, and consistently

@@ -165,6 +165,25 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     for (size_t i = 0; i < n; ++i) sumsq += static_cast<double>(samples[i]) * samples[i];
     const double rms = std::sqrt(sumsq / std::max<size_t>(1, n));
 
+    // The tiny English KWS model listens continuously and fires before the
+    // slower utterance recognizers. It is the primary path for "Hey Nova".
+    // Clear any VAD capture already in progress because the wake phrase itself
+    // is not a command; the next utterance is handled inside the awake window.
+    if (engine_ && engine_->FeedWake(samples, n)) {
+        ESP_LOGI(TAG, "wake matched (KWS)");
+        utter_.clear();
+        pre_roll_.clear();
+        speech_chunks_ = silence_chunks_ = total_chunks_ = 0;
+        state_ = kIdle;
+        awake_until_ = std::chrono::steady_clock::now() +
+                       std::chrono::seconds(kAwakeWindowSec);
+        // Close the capture/speaker hand-off race: without this early flag, a
+        // new utterance can open while the speaker thread is waking up.
+        speaking_.store(true);
+        Speak("Dạ, Nova nghe đây.");
+        return;
+    }
+
     if (state_ == kIdle) {
         // Preserve audio before onset so a quiet initial "Hey" is not lost.
         pre_roll_.insert(pre_roll_.end(), samples, samples + n);
@@ -178,6 +197,18 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
                 static_cast<double>(calibration_chunks_ + 1);
             calibration_chunks_++;
             if (calibration_chunks_ == kCalibrationChunks) {
+                // A user may start speaking as soon as the service restarts.
+                // Do not let that first second become a permanently inflated
+                // "room noise" estimate. The known ReSpeaker idle floor is
+                // below half the conservative onset threshold; idle tracking
+                // will still adapt upward later when the room is truly noisy.
+                const double calibration_cap = vad_min_rms_ * 0.5;
+                if (noise_rms_ > calibration_cap) {
+                    ESP_LOGW(TAG,
+                             "VAD calibration contained speech (measured=%.1f, cap=%.1f)",
+                             noise_rms_, calibration_cap);
+                    noise_rms_ = calibration_cap;
+                }
                 ESP_LOGI(TAG, "VAD calibrated (noise=%.1f, threshold=%.1f)",
                          noise_rms_,
                          std::max(vad_min_rms_,
@@ -335,6 +366,7 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
 
     if (cmd.empty()) {
         // Bare "nova": greet and stay awake for the follow-up command.
+        speaking_.store(true);
         Speak("Dạ, Nova nghe đây.");
         std::lock_guard<std::mutex> lk(mtx_);
         awake_until_ = std::chrono::steady_clock::now() +
@@ -347,7 +379,10 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
     if (!conv) { go_idle(); return; }
     conv->Send(cmd, [this](std::string reply, std::string err) {
         if (!err.empty()) ESP_LOGW(TAG, "agent error: %s", err.c_str());
-        if (!reply.empty()) Speak(reply);
+        if (!reply.empty()) {
+            speaking_.store(true);
+            Speak(reply);
+        }
         std::lock_guard<std::mutex> lk(mtx_);
         awake_until_ = std::chrono::steady_clock::now() +
                        std::chrono::seconds(kAwakeWindowSec);
@@ -368,7 +403,12 @@ void VoiceLoop::SpeakerThread() {
         speaking_.store(true);
         SynthResult res;
         if (engine_ && engine_->Synthesize(text, res) && !res.samples.empty()) {
-            out_->Play(res.samples.data(), res.samples.size(), res.sample_rate, out_dev);
+            if (out_->Play(res.samples.data(), res.samples.size(), res.sample_rate,
+                           out_dev)) {
+                ESP_LOGI(TAG, "spoke: %s", text.c_str());
+            } else {
+                ESP_LOGE(TAG, "speaker playback failed");
+            }
         } else {
             // No TTS available: surface the text in the log so it isn't lost.
             ESP_LOGW(TAG, "(no TTS) %s", text.c_str());

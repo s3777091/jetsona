@@ -64,9 +64,12 @@ SherpaVoiceEngine::~SherpaVoiceEngine() {
 // place but unused by the loop.
 bool SherpaVoiceEngine::Init() {
     const bool stt_ok = EnsureStt();
-    // Preload this at boot. Lazy-loading it on the first "Hey Nova" would make
-    // that first wake appear dead for tens of seconds on a Nano.
-    EnsureWakeStt();
+    // KWS is only a few MB and runs continuously with sub-second latency.
+    // The much larger multilingual recognizer remains a lazy fallback.
+    EnsureKws();
+    // TTS session creation is slow on a Nano. Finish it before opening the mic
+    // so the first successful wake receives an immediate audible reply.
+    EnsureTts();
     return stt_ok;
 }
 bool SherpaVoiceEngine::Ready() const { return stt_ != nullptr; }
@@ -77,7 +80,7 @@ bool SherpaVoiceEngine::EnsureKws() {
 #if JETSON_HAVE_SHERPA
     if (kws_ || kws_tried_) return kws_ != nullptr;
     kws_tried_ = true;
-    const std::string base = ModelsDir() + "/kws/";
+    const std::string base = ModelsDir() + "/kws_gigaspeech/";
     // Hold the path strings for the whole call: the create function copies
     // them internally, but a .c_str() of a temporary S(...) would dangle first.
     std::string enc = S("kws_encoder", base + "encoder.onnx");
@@ -109,7 +112,15 @@ bool SherpaVoiceEngine::EnsureKws() {
         cfg.keywords_file = kwf.c_str();
     }
 
-    kws_ = SherpaOnnxCreateKeywordSpotter(&cfg);
+    try {
+        kws_ = SherpaOnnxCreateKeywordSpotter(&cfg);
+    } catch (const std::exception &e) {
+        ESP_LOGE(TAG, "KWS create failed: %s", e.what());
+        kws_ = nullptr;
+    } catch (...) {
+        ESP_LOGE(TAG, "KWS create failed with an unknown exception");
+        kws_ = nullptr;
+    }
     if (!kws_) {
         ESP_LOGE(TAG, "KWS create failed (encoder=%s)", enc.c_str());
         return false;
