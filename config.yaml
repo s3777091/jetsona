@@ -56,7 +56,15 @@ JETSON_VOICE_MIC: "plughw:CARD=Lite,DEV=0"
 # room: four "Hey Nova" clips played through tegrasndt210ref left the wake model
 # at its 0.002 noise floor, while the same clip through the Lite peaked at 0.861.
 # The speaker is wired to the Lite, so its own replies must go there too.
-JETSON_VOICE_OUT: "plughw:CARD=Lite,DEV=0"
+#
+# dmix rather than plughw: plughw grabs the card exclusively, so a reply spoken
+# while JETSON_MUSIC_PLAYER still holds the device fails outright with
+# "Device or resource busy" and the user simply hears nothing. dmix lets both
+# streams share it. The inner quotes are required -- ALSA parses plug:'s
+# arguments itself and rejects a bare plug:dmix:CARD=... -- and the config
+# loader passes a double-quoted value through with its inner quotes intact.
+# The plug: wrapper converts mono TTS up to the card's stereo 48 kHz.
+JETSON_VOICE_OUT: "plug:'dmix:CARD=Lite,DEV=0'"
 
 # Voice pipeline:
 #   XU316 DSP PCM -> openWakeWord (continuous, 80 ms frames) -> Silero confirms
