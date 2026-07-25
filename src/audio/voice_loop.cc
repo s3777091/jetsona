@@ -38,6 +38,24 @@ constexpr int kVadLogChunks = 313;           // ~10 s between idle diagnostics
 // Seconds to keep listening for a follow-up (no wake word needed) after a turn.
 constexpr int kAwakeWindowSec = 12;
 
+/* Spoken only when the wake word arrives with no command attached. Rotating
+ * through these keeps Nova from answering every activation with the identical
+ * canned line; a wake word followed by a command never reaches here at all,
+ * because that goes straight to the agent without an acknowledgement. */
+const char *const kWakeAcks[] = {
+    "Ừ, mình nghe đây.",
+    "Mình đây.",
+    "Có mình.",
+    "Bạn nói đi.",
+    "Sao thế?",
+};
+
+const char *NextWakeAck() {
+    static std::atomic<unsigned> turn{0};
+    const unsigned n = sizeof(kWakeAcks) / sizeof(kWakeAcks[0]);
+    return kWakeAcks[turn.fetch_add(1) % n];
+}
+
 // Cloud STT is prompted to preserve the proper name. Keep only the actual wake
 // phrase here; the old list of guessed STT aliases masked a broken KWS path.
 const char *const kWakePhrases[] = {
@@ -557,9 +575,9 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance,
     }
 
     if (cmd.empty()) {
-        // Bare "nova": greet and stay awake for the follow-up command.
+        // Bare "nova": acknowledge and stay awake for the follow-up command.
         speaking_.store(true);
-        Speak("Dạ, Nova nghe đây.");
+        Speak(NextWakeAck());
         std::lock_guard<std::mutex> lk(mtx_);
         awake_until_ = std::chrono::steady_clock::now() +
                        std::chrono::seconds(kAwakeWindowSec);
