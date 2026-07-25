@@ -35,7 +35,7 @@ private:
     // public header; cast back in the .cc).
     void *kws_ = nullptr;     // SherpaOnnxKeywordSpotter*
     void *kws_stream_ = nullptr; // SherpaOnnxOnlineStream*
-    const void *stt_ = nullptr; // SherpaOnnxOnlineRecognizer* (API returns const)
+    const void *stt_ = nullptr; // SherpaOnnxOfflineRecognizer* (API returns const)
     void *tts_ = nullptr;     // SherpaOnnxOfflineTts*
     bool kws_tried_ = false;
     bool stt_tried_ = false;

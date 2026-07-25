@@ -11,9 +11,12 @@
 #include "settings.h"
 
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -31,10 +34,34 @@ constexpr int kSilenceToEndChunks = 20;     // ~640 ms trailing silence -> endpo
 constexpr int kMaxUtterChunks = 375;         // 12 s hard cap
 constexpr int kFalseWakeChunks = 78;         // 2.5 s with no speech -> abandon
 
+// Seconds to keep listening for a follow-up (no wake word needed) after a turn.
+constexpr int kAwakeWindowSec = 12;
+
+// Wake words matched (case-insensitive) in the STT transcript. The Vietnamese
+// STT transcribes a spoken "nô va" as "NOVA"; the spaced spellings are kept as
+// defensive variants for other segmentations.
+const char *const kWakeWords[] = {"nova", "no va", "nô va"};
+
 // ALSA device: env (config.yaml) wins, then Settings("voice"), then "default".
 std::string AudioDevice(const char *env_key, const char *settings_key) {
     if (const char *e = std::getenv(env_key); e && *e) return e;
     return Settings("voice", false).GetString(settings_key, "default");
+}
+
+// Lower-case ASCII A-Z only; multi-byte UTF-8 (Vietnamese diacritics) is left
+// untouched, so byte offsets stay aligned with the original string.
+std::string LowerAscii(const std::string &s) {
+    std::string o = s;
+    for (char &c : o)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return o;
+}
+
+std::string TrimStr(const std::string &s) {
+    auto sp = s.find_first_not_of(" \t\r\n");
+    if (sp == std::string::npos) return "";
+    auto ep = s.find_last_not_of(" \t\r\n");
+    return s.substr(sp, ep - sp + 1);
 }
 } // namespace
 
@@ -89,19 +116,27 @@ void VoiceLoop::Speak(const std::string &text) {
 void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     if (!running_.load()) return;
     // While the speaker is active (or a turn is in flight) we ignore the mic:
-    // the device's own TTS output must not be heard back as a wake word, and
+    // the device's own TTS output must not be transcribed back as a command, and
     // we don't want to collect a second utterance mid-turn.
     if (speaking_.load()) return;
 
     std::lock_guard<std::mutex> lk(mtx_);
     if (state_ == kBusy) return;
 
+    // Energy of this chunk.
+    double sumsq = 0;
+    for (size_t i = 0; i < n; ++i) sumsq += static_cast<double>(samples[i]) * samples[i];
+    const double rms = std::sqrt(sumsq / std::max<size_t>(1, n));
+
     if (state_ == kIdle) {
-        if (engine_ && engine_->FeedWake(samples, n)) {
+        // Open-mic: start collecting on speech onset. The wake word ("nova") is
+        // matched later on the STT transcript, not here.
+        if (rms > kRmsThreshold) {
             state_ = kCollecting;
-            utter_.clear();
-            speech_chunks_ = silence_chunks_ = total_chunks_ = 0;
-            ESP_LOGI(TAG, "wake word detected, collecting utterance");
+            utter_.assign(samples, samples + n);
+            speech_chunks_ = 1;
+            silence_chunks_ = 0;
+            total_chunks_ = 1;
         }
         return;
     }
@@ -109,9 +144,6 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     // kCollecting: append + energy VAD.
     utter_.insert(utter_.end(), samples, samples + n);
     total_chunks_++;
-    double sumsq = 0;
-    for (size_t i = 0; i < n; ++i) sumsq += static_cast<double>(samples[i]) * samples[i];
-    const double rms = std::sqrt(sumsq / std::max<size_t>(1, n));
     if (rms > kRmsThreshold) {
         speech_chunks_++;
         silence_chunks_ = 0;
@@ -119,7 +151,7 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
         silence_chunks_++;
     }
 
-    // No speech shortly after the wake word -> false wake; re-arm KWS.
+    // Onset turned out to be a transient (no sustained speech) -> abandon.
     if (total_chunks_ >= kFalseWakeChunks && speech_chunks_ < kMinSpeechChunks) {
         state_ = kIdle;
         utter_.clear();
@@ -138,27 +170,61 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     std::thread(&VoiceLoop::RecognizeAndSend, this, std::move(u)).detach();
 }
 
+bool VoiceLoop::MatchWake(const std::string &text, std::string &cmd) {
+    const std::string low = LowerAscii(text);
+    size_t pos = std::string::npos, wlen = 0;
+    for (const char *w : kWakeWords) {
+        const size_t p = low.rfind(w);   // last occurrence wins ("nova nova ...")
+        if (p != std::string::npos && (pos == std::string::npos || p > pos)) {
+            pos = p;
+            wlen = std::string(w).size();
+        }
+    }
+    if (pos != std::string::npos) {
+        cmd = TrimStr(text.substr(pos + wlen));   // command follows the wake word
+        return true;
+    }
+    // No wake word: act only if we're still awake from a recent turn.
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (std::chrono::steady_clock::now() < awake_until_) {
+        cmd = TrimStr(text);
+        return true;
+    }
+    return false;
+}
+
 void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
     std::string text;
     if (engine_) text = engine_->Recognize(utterance.data(), utterance.size());
-    if (text.empty()) {
-        ESP_LOGW(TAG, "empty transcription, ignoring");
-        std::lock_guard<std::mutex> lk(mtx_);
-        state_ = kIdle;
-        return;
-    }
+    auto go_idle = [this] { std::lock_guard<std::mutex> lk(mtx_); state_ = kIdle; };
+    if (text.empty()) { go_idle(); return; }
     ESP_LOGI(TAG, "heard: %s", text.c_str());
 
-    auto *conv = Application::GetInstance().GetConversation();
-    if (!conv) {
+    std::string cmd;
+    if (!MatchWake(text, cmd)) {
+        // Ambient speech without the wake word while not awake -> ignore.
+        go_idle();
+        return;
+    }
+
+    if (cmd.empty()) {
+        // Bare "nova": greet and stay awake for the follow-up command.
+        Speak("Dạ, Nova nghe đây.");
         std::lock_guard<std::mutex> lk(mtx_);
+        awake_until_ = std::chrono::steady_clock::now() +
+                       std::chrono::seconds(kAwakeWindowSec);
         state_ = kIdle;
         return;
     }
-    conv->Send(text, [this](std::string reply, std::string err) {
+
+    auto *conv = Application::GetInstance().GetConversation();
+    if (!conv) { go_idle(); return; }
+    conv->Send(cmd, [this](std::string reply, std::string err) {
         if (!err.empty()) ESP_LOGW(TAG, "agent error: %s", err.c_str());
         if (!reply.empty()) Speak(reply);
         std::lock_guard<std::mutex> lk(mtx_);
+        awake_until_ = std::chrono::steady_clock::now() +
+                       std::chrono::seconds(kAwakeWindowSec);
         state_ = kIdle;
     });
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <memory>
@@ -16,13 +17,21 @@ class VoiceEngine;
 class MicCapture;
 class AudioOutput;
 
-/* The voice loop: mic -> wake word ("Ekko") -> capture utterance (energy VAD) ->
- * STT -> Conversation -> TTS -> speaker -> re-arm. One process-wide instance.
+/* The voice loop: mic -> capture utterance (energy VAD) -> STT -> wake-word
+ * match ("nova") -> Conversation -> TTS -> speaker -> re-arm. One process-wide
+ * instance.
+ *
+ * Wake detection is done on the STT transcript rather than a dedicated KWS
+ * spotter: the KWS models available here do not recognise a Vietnamese-accented
+ * "nova", but the Vietnamese STT transcribes it cleanly. Every voiced utterance
+ * is transcribed; it is acted on only if it contains the wake word, or if we are
+ * still inside a short "awake" window after the previous turn (so natural
+ * follow-ups don't need to repeat "nova").
  *
  * Mic chunks arrive on the capture thread; STT/agent run on a detached worker;
  * TTS playback runs on a dedicated speaker thread that also serves out-of-band
- * Speak() calls (battery/alarm). KWS is paused while the speaker is active so
- * the device's own voice output is not heard back as a wake word. */
+ * Speak() calls (battery/alarm). Capture is paused while the speaker is active so
+ * the device's own voice output is not transcribed back as a command. */
 class VoiceLoop {
 public:
     static VoiceLoop &Instance();
@@ -50,18 +59,28 @@ private:
     void SpeakerThread();
     void RecognizeAndSend(const std::vector<int16_t> &utterance);
 
+    // Decide whether a transcript should be acted on. Returns true when the
+    // wake word "nova" is present (cmd = text after it) or we are still awake
+    // from a recent turn (cmd = whole text). Reads awake_until_ under mtx_.
+    bool MatchWake(const std::string &text, std::string &cmd);
+
     std::unique_ptr<VoiceEngine> engine_;
     std::unique_ptr<MicCapture> mic_;
     std::unique_ptr<AudioOutput> out_;
 
-    // State machine (guarded by mtx_). kIdle feeds KWS; kCollecting accumulates
-    // the utterance; kBusy ignores the mic until the turn finishes + speaks.
+    // State machine (guarded by mtx_). kIdle waits for speech onset (energy);
+    // kCollecting accumulates the utterance; kBusy ignores the mic until the
+    // turn finishes + speaks.
     enum State { kIdle, kCollecting, kBusy };
     State state_ = kIdle;
     std::vector<int16_t> utter_;
     int speech_chunks_ = 0;
     int silence_chunks_ = 0;
     int total_chunks_ = 0;
+
+    // After a turn we stay "awake" briefly so a follow-up needn't repeat the
+    // wake word. Guarded by mtx_.
+    std::chrono::steady_clock::time_point awake_until_{};
 
     std::mutex mtx_;
 

@@ -49,15 +49,18 @@ SherpaVoiceEngine::~SherpaVoiceEngine() {
         reinterpret_cast<SherpaOnnxOnlineStream *>(kws_stream_));
     if (kws_) SherpaOnnxDestroyKeywordSpotter(
         reinterpret_cast<SherpaOnnxKeywordSpotter *>(kws_));
-    if (stt_) SherpaOnnxDestroyOnlineRecognizer(
-        reinterpret_cast<const SherpaOnnxOnlineRecognizer *>(stt_));
+    if (stt_) SherpaOnnxDestroyOfflineRecognizer(
+        reinterpret_cast<const SherpaOnnxOfflineRecognizer *>(stt_));
     if (tts_) SherpaOnnxDestroyOfflineTts(
         reinterpret_cast<SherpaOnnxOfflineTts *>(tts_));
 #endif
 }
 
-bool SherpaVoiceEngine::Init() { return EnsureKws(); }
-bool SherpaVoiceEngine::Ready() const { return kws_ != nullptr; }
+// Wake detection is done on the STT transcript now (see VoiceLoop), so warm the
+// STT recognizer at init instead of the KWS spotter. The KWS path is left in
+// place but unused by the loop.
+bool SherpaVoiceEngine::Init() { return EnsureStt(); }
+bool SherpaVoiceEngine::Ready() const { return stt_ != nullptr; }
 
 // ---- KWS -----------------------------------------------------------------
 
@@ -153,42 +156,35 @@ bool SherpaVoiceEngine::EnsureStt() {
     if (stt_ || stt_tried_) return stt_ != nullptr;
     stt_tried_ = true;
     const std::string base = ModelsDir() + "/stt/";
+    // Offline (non-streaming) transducer: the voice loop hands us a whole
+    // utterance already endpointed by its energy VAD, so a one-shot offline
+    // decode is both simpler and more accurate than the streaming recognizer.
     std::string enc = S("stt_encoder", base + "encoder.onnx");
     std::string dec = S("stt_decoder", base + "decoder.onnx");
     std::string joi = S("stt_joiner", base + "joiner.onnx");
-    std::string ctc = S("stt_ctc_model", "");  // set this to use zipformer2_ctc
     std::string tok = S("stt_tokens", base + "tokens.txt");
-    std::string prov = S("stt_provider", "cuda");
+    std::string prov = S("stt_provider", "cpu");
 
-    SherpaOnnxOnlineRecognizerConfig cfg{};
+    SherpaOnnxOfflineRecognizerConfig cfg{};
     cfg.feat_config.sample_rate = 16000;
     cfg.feat_config.feature_dim = 80;
-    if (ctc.empty()) {
-        cfg.model_config.transducer.encoder = enc.c_str();
-        cfg.model_config.transducer.decoder = dec.c_str();
-        cfg.model_config.transducer.joiner = joi.c_str();
-    } else {
-        cfg.model_config.zipformer2_ctc.model = ctc.c_str();
-    }
+    cfg.model_config.transducer.encoder = enc.c_str();
+    cfg.model_config.transducer.decoder = dec.c_str();
+    cfg.model_config.transducer.joiner = joi.c_str();
     cfg.model_config.tokens = tok.c_str();
     cfg.model_config.num_threads = I("stt_num_threads", 2);
     cfg.model_config.provider = prov.c_str();
     cfg.model_config.debug = 0;
     cfg.decoding_method = "greedy_search";
     cfg.max_active_paths = I("stt_max_active_paths", 4);
-    cfg.enable_endpoint = 1;
-    cfg.rule1_min_trailing_silence = F("stt_rule1_silence", 1.2f);
-    cfg.rule2_min_trailing_silence = F("stt_rule2_silence", 1.2f);
-    cfg.rule3_min_utterance_length = F("stt_rule3_len", 20.0f);
 
-    stt_ = SherpaOnnxCreateOnlineRecognizer(&cfg);
+    stt_ = SherpaOnnxCreateOfflineRecognizer(&cfg);
     if (!stt_) {
-        ESP_LOGE(TAG, "STT create failed (tokens=%s, provider=%s)", tok.c_str(),
+        ESP_LOGE(TAG, "STT create failed (encoder=%s, provider=%s)", enc.c_str(),
                  prov.c_str());
         return false;
     }
-    ESP_LOGI(TAG, "STT ready (provider=%s, mode=%s)", prov.c_str(),
-             ctc.empty() ? "transducer" : "zipformer2_ctc");
+    ESP_LOGI(TAG, "STT ready (offline transducer, provider=%s)", prov.c_str());
     return true;
 #else
     return false;
@@ -198,24 +194,18 @@ bool SherpaVoiceEngine::EnsureStt() {
 std::string SherpaVoiceEngine::Recognize(const int16_t *samples, size_t n) {
 #if JETSON_HAVE_SHERPA
     if (!EnsureStt()) return "";
-    auto *rec = reinterpret_cast<const SherpaOnnxOnlineRecognizer *>(stt_);
-    const SherpaOnnxOnlineStream *stream = SherpaOnnxCreateOnlineStream(rec);
+    auto *rec = reinterpret_cast<const SherpaOnnxOfflineRecognizer *>(stt_);
+    const SherpaOnnxOfflineStream *stream = SherpaOnnxCreateOfflineStream(rec);
     if (!stream) return "";
     std::vector<float> f = ToFloat(samples, n);
-    SherpaOnnxOnlineStreamAcceptWaveform(stream, 16000, f.data(),
-                                         static_cast<int32_t>(n));
-    SherpaOnnxOnlineStreamInputFinished(stream);
-
-    std::string text;
-    while (SherpaOnnxIsOnlineStreamReady(rec, stream)) {
-        SherpaOnnxDecodeOnlineStream(rec, stream);
-        const SherpaOnnxOnlineRecognizerResult *r =
-            SherpaOnnxGetOnlineStreamResult(rec, stream);
-        if (r && r->text) text = r->text;
-        if (r) SherpaOnnxDestroyOnlineRecognizerResult(r);
-        if (SherpaOnnxOnlineStreamIsEndpoint(rec, stream)) break;
-    }
-    SherpaOnnxDestroyOnlineStream(stream);
+    SherpaOnnxAcceptWaveformOffline(stream, 16000, f.data(),
+                                    static_cast<int32_t>(n));
+    SherpaOnnxDecodeOfflineStream(rec, stream);
+    const SherpaOnnxOfflineRecognizerResult *r =
+        SherpaOnnxGetOfflineStreamResult(stream);
+    std::string text = (r && r->text) ? r->text : "";
+    if (r) SherpaOnnxDestroyOfflineRecognizerResult(r);
+    SherpaOnnxDestroyOfflineStream(stream);
     return Trim(text);
 #else
     return "";
