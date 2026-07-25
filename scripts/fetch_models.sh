@@ -19,12 +19,15 @@ mkdir -p "$MODELS"
 
 WGET="wget -q --show-progress"
 
-# ---- KWS (wake word "Ekko") -----------------------------------------------
-# Open-vocabulary zipformer KWS transducer (zh-en 3M, GitHub-hosted). Spots a
-# custom keyword written to keywords.txt; a Vietnamese-accented "Ekko" may need
-# a vi-tuned KWS model if one ships later. keywords.txt format is
-# "<WORD> :<score>" per line (note the space around the colon).
+# ---- KWS (wake word "nova") -----------------------------------------------
+# Open-vocabulary zipformer KWS transducer (zh-en 3M, GitHub-hosted). It spots a
+# custom keyword, BUT keywords.txt must hold the keyword TOKENIZED into the
+# model's modelling units, not the raw word -- a raw "nova" line is silently
+# never matched. We tokenize with `sherpa-onnx-cli text2token` using the
+# bpe.model shipped inside the archive. A Vietnamese-accented "nova" is served
+# reasonably by this zh-en model; swap in a vi-tuned KWS model if one ships.
 # GitHub releases are reachable from the Jetson LAN (verified).
+WAKE_WORD="${JETSON_WAKE_WORD:-nova}"
 KWS_URL="${MODEL_KWS_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2}"
 KWS_DIR="$MODELS/kws"
 if [ ! -f "$KWS_DIR/encoder.onnx" ]; then
@@ -32,8 +35,8 @@ if [ ! -f "$KWS_DIR/encoder.onnx" ]; then
     mkdir -p "$KWS_DIR"
     tmp="$(mktemp -d)"; $WGET -O "$tmp/kws.tar.bz2" "$KWS_URL"
     tar -xjf "$tmp/kws.tar.bz2" -C "$tmp"
-    # The archive unpacks a subdir; flatten its contents into kws/.
-    find "$tmp" -maxdepth 2 \( -name '*.onnx' -o -name 'tokens.txt' \) \
+    # The archive unpacks a subdir; flatten model + tokens + bpe.model into kws/.
+    find "$tmp" -maxdepth 2 \( -name '*.onnx' -o -name 'tokens.txt' -o -name 'bpe.model' \) \
         -exec cp -f {} "$KWS_DIR/" \;
     rm -rf "$tmp"
     # Normalize the transducer file names the firmware defaults to.
@@ -41,8 +44,28 @@ if [ ! -f "$KWS_DIR/encoder.onnx" ]; then
     [ -f "$KWS_DIR/decoder-epoch-99-avg-1.onnx" ] && mv "$KWS_DIR/decoder-epoch-99-avg-1.onnx" "$KWS_DIR/decoder.onnx"
     [ -f "$KWS_DIR/joiner-epoch-99-avg-1.onnx" ] && mv "$KWS_DIR/joiner-epoch-99-avg-1.onnx" "$KWS_DIR/joiner.onnx"
 fi
-echo "EKKO :1.5" > "$KWS_DIR/keywords.txt"
-echo "==> KWS ready in $KWS_DIR (wake word: EKKO)"
+
+# keywords.txt = tokenized wake word + boost score. text2token needs the python
+# sherpa-onnx CLI; if it (or bpe.model) is missing we write the raw word AND warn
+# loudly, because the raw form is NOT detected until tokenized.
+kw_raw="$(mktemp)"; echo "$WAKE_WORD" > "$kw_raw"
+if command -v sherpa-onnx-cli >/dev/null 2>&1 && [ -f "$KWS_DIR/bpe.model" ]; then
+    sherpa-onnx-cli text2token \
+        --tokens "$KWS_DIR/tokens.txt" \
+        --tokens-type cjkchar+bpe \
+        --bpe-model "$KWS_DIR/bpe.model" \
+        "$kw_raw" "$KWS_DIR/keywords.txt"
+    # Append a boost score to each keyword line so the wake word triggers well.
+    sed -i 's/$/ :1.5/' "$KWS_DIR/keywords.txt"
+    echo "==> KWS ready in $KWS_DIR (wake word: $WAKE_WORD, tokenized)"
+else
+    echo "$WAKE_WORD :1.5" > "$KWS_DIR/keywords.txt"
+    echo "!!  sherpa-onnx-cli or bpe.model missing: wrote RAW keyword '$WAKE_WORD'."
+    echo "!!  KWS will NOT detect it until tokenized. Fix with:"
+    echo "!!      pip install sherpa-onnx   # provides sherpa-onnx-cli"
+    echo "!!  then rerun this script (bpe.model is inside the KWS archive)."
+fi
+rm -f "$kw_raw"
 
 # ---- STT (streaming Vietnamese) -------------------------------------------
 # Online zipformer transducer (Vietnamese). Transducer files: encoder/decoder/
