@@ -3,7 +3,9 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -21,12 +23,11 @@ class AudioOutput;
  * match ("nova") -> Conversation -> TTS -> speaker -> re-arm. One process-wide
  * instance.
  *
- * Wake detection is done on the STT transcript rather than a dedicated KWS
- * spotter: the KWS models available here do not recognise a Vietnamese-accented
- * "nova", but the Vietnamese STT transcribes it cleanly. Every voiced utterance
- * is transcribed; it is acted on only if it contains the wake word, or if we are
- * still inside a short "awake" window after the previous turn (so natural
- * follow-ups don't need to repeat "nova").
+ * Wake detection is done on the Vietnamese STT transcript rather than the
+ * dedicated KWS spotter, whose ONNX graph is incompatible with the old
+ * ONNX Runtime available on JetPack 4. Every voiced utterance is transcribed;
+ * it is acted on only if it contains the wake word, or if we are still inside
+ * a short "awake" window after the previous turn.
  *
  * Mic chunks arrive on the capture thread; STT/agent run on a detached worker;
  * TTS playback runs on a dedicated speaker thread that also serves out-of-band
@@ -74,9 +75,23 @@ private:
     enum State { kIdle, kCollecting, kBusy };
     State state_ = kIdle;
     std::vector<int16_t> utter_;
+    std::deque<int16_t> pre_roll_;
     int speech_chunks_ = 0;
     int silence_chunks_ = 0;
     int total_chunks_ = 0;
+
+    // Adaptive energy VAD. The first second calibrates the room/device noise
+    // floor; idle chunks keep it tracking slowly. Pre-roll preserves the start
+    // of softly spoken "Hey Nova" instead of cutting it off at onset.
+    double noise_rms_ = 0.0;
+    double vad_min_rms_ = 38.0;
+    double vad_noise_multiplier_ = 1.6;
+    double vad_noise_margin_ = 8.0;
+    double active_threshold_ = 38.0;
+    double idle_peak_rms_ = 0.0;
+    size_t pre_roll_samples_ = 10240;
+    uint64_t calibration_chunks_ = 0;
+    uint64_t idle_log_chunks_ = 0;
 
     // After a turn we stay "awake" briefly so a follow-up needn't repeat the
     // wake word. Guarded by mtx_.

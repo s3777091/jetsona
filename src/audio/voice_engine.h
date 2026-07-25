@@ -32,6 +32,11 @@ public:
     /* Recognize one complete utterance (16 kHz mono) -> Vietnamese text. */
     virtual std::string Recognize(const int16_t *samples, size_t n) = 0;
 
+    /* Recognize one complete utterance with the small/streaming wake-language
+     * model. This is intentionally separate from Vietnamese command STT:
+     * Vietnamese ASR commonly collapses the English name "Hey Nova" to "Ừ". */
+    virtual std::string RecognizeWake(const int16_t *samples, size_t n) = 0;
+
     /* Synthesize text -> audio. Returns false on failure. */
     virtual bool Synthesize(const std::string &text, SynthResult &out) = 0;
 };

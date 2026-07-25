@@ -74,34 +74,38 @@ else
     echo "!!  nova -> 'N OW1 V AH0 :1.5' (one line per pronunciation variant)."
 fi
 
-# ---- STT (streaming Vietnamese) -------------------------------------------
-# Online zipformer transducer (Vietnamese). Transducer files: encoder/decoder/
-# joiner + tokens.txt. If you switch to a zipformer2_ctc model, set
-# Settings("voice","stt_ctc_model") to its .onnx and leave the transducer paths
-# empty.
-#
-# NOTE: Vietnamese ASR/TTS models are hosted on HuggingFace
-# (k2-fsa/sherpa-onnx-* HF repos), NOT on GitHub releases. HF has been observed
-# to return HTTP 401 from some networks (e.g. the Jetson LAN) even for public
-# repos, while GitHub releases work. If MODEL_STT_URL below 401s, download the
-# pack on a network with HF access and extract it into assets/models/stt/
-# (encoder.onnx / decoder.onnx / joiner.onnx / tokens.txt), or set MODEL_STT_URL
-# to a reachable mirror. The default URL is a best-fit and may need adjusting.
-STT_URL="${MODEL_STT_URL:-https://huggingface.co/k2-fsa/sherpa-onnx-streaming-asr-models/resolve/main/sherpa-onnx-streaming-zipformer-vi-2024-03-25/sherpa-onnx-streaming-zipformer-vi-2024-03-25.tar.bz2}"
+# ---- STT (Vietnamese-only offline int8) -----------------------------------
+# Official sherpa-onnx Vietnamese model trained on roughly 70k hours. Do not
+# replace this with the multilingual ar/en/id/ja/ru/th/vi/zh model: on short
+# Vietnamese commands it frequently guesses Chinese/Thai and turns "Hey Nova"
+# into "HEY LEWA". This pack is only ~74 MB and is hosted on GitHub releases,
+# so it also avoids HuggingFace token/401 problems.
+STT_MODEL_ID="sherpa-onnx-zipformer-vi-int8-2025-04-20"
+STT_URL="${MODEL_STT_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$STT_MODEL_ID.tar.bz2}"
 STT_DIR="$MODELS/stt"
-if [ ! -f "$STT_DIR/encoder.onnx" ]; then
+STT_MARKER="$STT_DIR/model.id"
+if [ ! -f "$STT_MARKER" ] || [ "$(cat "$STT_MARKER")" != "$STT_MODEL_ID" ] ||
+   [ ! -f "$STT_DIR/encoder.onnx" ]; then
     echo "==> STT: $STT_URL"
     mkdir -p "$STT_DIR"
     tmp="$(mktemp -d)"; $WGET -O "$tmp/stt.tar.bz2" "$STT_URL"
     tar -xjf "$tmp/stt.tar.bz2" -C "$tmp"
-    find "$tmp" -maxdepth 2 \( -name '*.onnx' -o -name 'tokens.txt' \) \
-        -exec cp -f {} "$STT_DIR/" \;
+    pack="$(find "$tmp" -type f -name 'encoder-epoch-12-avg-8.int8.onnx' \
+        -printf '%h\n' -quit)"
+    if [ -z "$pack" ]; then
+        echo "STT archive does not contain the expected Vietnamese model." >&2
+        rm -rf "$tmp"
+        exit 1
+    fi
+    cp -f "$pack/encoder-epoch-12-avg-8.int8.onnx" "$STT_DIR/encoder.onnx"
+    cp -f "$pack/decoder-epoch-12-avg-8.onnx" "$STT_DIR/decoder.onnx"
+    cp -f "$pack/joiner-epoch-12-avg-8.int8.onnx" "$STT_DIR/joiner.onnx"
+    cp -f "$pack/tokens.txt" "$STT_DIR/tokens.txt"
+    [ ! -f "$pack/bpe.model" ] || cp -f "$pack/bpe.model" "$STT_DIR/bpe.model"
+    printf '%s\n' "$STT_MODEL_ID" > "$STT_MARKER"
     rm -rf "$tmp"
-    [ -f "$STT_DIR/encoder-epoch-99-avg-1.onnx" ] && mv "$STT_DIR/encoder-epoch-99-avg-1.onnx" "$STT_DIR/encoder.onnx"
-    [ -f "$STT_DIR/decoder-epoch-99-avg-1.onnx" ] && mv "$STT_DIR/decoder-epoch-99-avg-1.onnx" "$STT_DIR/decoder.onnx"
-    [ -f "$STT_DIR/joiner-epoch-99-avg-1.onnx" ] && mv "$STT_DIR/joiner-epoch-99-avg-1.onnx" "$STT_DIR/joiner.onnx"
 fi
-echo "==> STT ready in $STT_DIR"
+echo "==> STT ready in $STT_DIR ($STT_MODEL_ID)"
 
 # ---- TTS (Piper VITS, Vietnamese) -----------------------------------------
 # vi_VN-vivos-x_low (16 kHz, small). Piper uses espeak-ng-data, not a lexicon.

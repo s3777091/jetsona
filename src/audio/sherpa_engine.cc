@@ -50,8 +50,10 @@ SherpaVoiceEngine::~SherpaVoiceEngine() {
         reinterpret_cast<SherpaOnnxOnlineStream *>(kws_stream_));
     if (kws_) SherpaOnnxDestroyKeywordSpotter(
         reinterpret_cast<SherpaOnnxKeywordSpotter *>(kws_));
-    if (stt_) SherpaOnnxDestroyOnlineRecognizer(
-        reinterpret_cast<const SherpaOnnxOnlineRecognizer *>(stt_));
+    if (stt_) SherpaOnnxDestroyOfflineRecognizer(
+        reinterpret_cast<const SherpaOnnxOfflineRecognizer *>(stt_));
+    if (wake_stt_) SherpaOnnxDestroyOnlineRecognizer(
+        reinterpret_cast<const SherpaOnnxOnlineRecognizer *>(wake_stt_));
     if (tts_) SherpaOnnxDestroyOfflineTts(
         reinterpret_cast<SherpaOnnxOfflineTts *>(tts_));
 #endif
@@ -60,7 +62,13 @@ SherpaVoiceEngine::~SherpaVoiceEngine() {
 // Wake detection is done on the STT transcript now (see VoiceLoop), so warm the
 // STT recognizer at init instead of the KWS spotter. The KWS path is left in
 // place but unused by the loop.
-bool SherpaVoiceEngine::Init() { return EnsureStt(); }
+bool SherpaVoiceEngine::Init() {
+    const bool stt_ok = EnsureStt();
+    // Preload this at boot. Lazy-loading it on the first "Hey Nova" would make
+    // that first wake appear dead for tens of seconds on a Nano.
+    EnsureWakeStt();
+    return stt_ok;
+}
 bool SherpaVoiceEngine::Ready() const { return stt_ != nullptr; }
 
 // ---- KWS -----------------------------------------------------------------
@@ -157,17 +165,15 @@ bool SherpaVoiceEngine::EnsureStt() {
     if (stt_ || stt_tried_) return stt_ != nullptr;
     stt_tried_ = true;
     const std::string base = ModelsDir() + "/stt/";
-    // The bundled Vietnamese model is a streaming transducer (its encoder
-    // consumes fixed-size chunks). The voice loop still hands us a complete,
-    // VAD-endpointed utterance; feed it through an online stream and drain all
-    // ready chunks before reading the final transcript.
+    // The bundled model is the Vietnamese-only offline int8 transducer. The
+    // voice loop already hands us a complete, VAD-endpointed utterance.
     std::string enc = S("stt_encoder", base + "encoder.onnx");
     std::string dec = S("stt_decoder", base + "decoder.onnx");
     std::string joi = S("stt_joiner", base + "joiner.onnx");
     std::string tok = S("stt_tokens", base + "tokens.txt");
     std::string prov = S("stt_provider", "cpu");
 
-    SherpaOnnxOnlineRecognizerConfig cfg{};
+    SherpaOnnxOfflineRecognizerConfig cfg{};
     cfg.feat_config.sample_rate = 16000;
     cfg.feat_config.feature_dim = 80;
     cfg.model_config.transducer.encoder = enc.c_str();
@@ -181,7 +187,7 @@ bool SherpaVoiceEngine::EnsureStt() {
     cfg.max_active_paths = I("stt_max_active_paths", 4);
 
     try {
-        stt_ = SherpaOnnxCreateOnlineRecognizer(&cfg);
+        stt_ = SherpaOnnxCreateOfflineRecognizer(&cfg);
     } catch (const std::exception &e) {
         ESP_LOGE(TAG, "STT create failed: %s", e.what());
         stt_ = nullptr;
@@ -194,7 +200,8 @@ bool SherpaVoiceEngine::EnsureStt() {
                  prov.c_str());
         return false;
     }
-    ESP_LOGI(TAG, "STT ready (streaming transducer, provider=%s)", prov.c_str());
+    ESP_LOGI(TAG, "STT ready (Vietnamese offline int8 transducer, provider=%s)",
+             prov.c_str());
     return true;
 #else
     return false;
@@ -204,7 +211,85 @@ bool SherpaVoiceEngine::EnsureStt() {
 std::string SherpaVoiceEngine::Recognize(const int16_t *samples, size_t n) {
 #if JETSON_HAVE_SHERPA
     if (!EnsureStt()) return "";
-    auto *rec = reinterpret_cast<const SherpaOnnxOnlineRecognizer *>(stt_);
+    auto *rec = reinterpret_cast<const SherpaOnnxOfflineRecognizer *>(stt_);
+    const SherpaOnnxOfflineStream *stream = nullptr;
+    try {
+        stream = SherpaOnnxCreateOfflineStream(rec);
+        if (!stream) return "";
+        std::vector<float> f = ToFloat(samples, n);
+        SherpaOnnxAcceptWaveformOffline(stream, 16000, f.data(),
+                                        static_cast<int32_t>(n));
+        SherpaOnnxDecodeOfflineStream(rec, stream);
+        const SherpaOnnxOfflineRecognizerResult *r =
+            SherpaOnnxGetOfflineStreamResult(stream);
+        std::string text = (r && r->text) ? r->text : "";
+        if (r) SherpaOnnxDestroyOfflineRecognizerResult(r);
+        SherpaOnnxDestroyOfflineStream(stream);
+        return Trim(text);
+    } catch (const std::exception &e) {
+        if (stream) SherpaOnnxDestroyOfflineStream(stream);
+        ESP_LOGE(TAG, "STT decode failed: %s", e.what());
+        return "";
+    } catch (...) {
+        if (stream) SherpaOnnxDestroyOfflineStream(stream);
+        ESP_LOGE(TAG, "STT decode failed with an unknown exception");
+        return "";
+    }
+#else
+    return "";
+#endif
+}
+
+bool SherpaVoiceEngine::EnsureWakeStt() {
+#if JETSON_HAVE_SHERPA
+    if (wake_stt_ || wake_stt_tried_) return wake_stt_ != nullptr;
+    wake_stt_tried_ = true;
+    const std::string base = ModelsDir() + "/wake_stt/";
+    std::string enc = S("wake_stt_encoder", base + "encoder.onnx");
+    std::string dec = S("wake_stt_decoder", base + "decoder.onnx");
+    std::string joi = S("wake_stt_joiner", base + "joiner.onnx");
+    std::string tok = S("wake_stt_tokens", base + "tokens.txt");
+    std::string prov = S("wake_stt_provider", "cpu");
+
+    SherpaOnnxOnlineRecognizerConfig cfg{};
+    cfg.feat_config.sample_rate = 16000;
+    cfg.feat_config.feature_dim = 80;
+    cfg.model_config.transducer.encoder = enc.c_str();
+    cfg.model_config.transducer.decoder = dec.c_str();
+    cfg.model_config.transducer.joiner = joi.c_str();
+    cfg.model_config.tokens = tok.c_str();
+    cfg.model_config.num_threads = I("wake_stt_num_threads", 2);
+    cfg.model_config.provider = prov.c_str();
+    cfg.model_config.debug = 0;
+    cfg.decoding_method = "greedy_search";
+    cfg.max_active_paths = I("wake_stt_max_active_paths", 4);
+
+    try {
+        wake_stt_ = SherpaOnnxCreateOnlineRecognizer(&cfg);
+    } catch (const std::exception &e) {
+        ESP_LOGE(TAG, "wake STT create failed: %s", e.what());
+        wake_stt_ = nullptr;
+    } catch (...) {
+        ESP_LOGE(TAG, "wake STT create failed with an unknown exception");
+        wake_stt_ = nullptr;
+    }
+    if (!wake_stt_) {
+        ESP_LOGW(TAG, "wake STT unavailable (encoder=%s)", enc.c_str());
+        return false;
+    }
+    ESP_LOGI(TAG, "wake STT ready (multilingual streaming transducer, provider=%s)",
+             prov.c_str());
+    return true;
+#else
+    return false;
+#endif
+}
+
+std::string SherpaVoiceEngine::RecognizeWake(const int16_t *samples, size_t n) {
+#if JETSON_HAVE_SHERPA
+    if (!EnsureWakeStt()) return "";
+    auto *rec =
+        reinterpret_cast<const SherpaOnnxOnlineRecognizer *>(wake_stt_);
     const SherpaOnnxOnlineStream *stream = nullptr;
     try {
         stream = SherpaOnnxCreateOnlineStream(rec);
@@ -223,11 +308,11 @@ std::string SherpaVoiceEngine::Recognize(const int16_t *samples, size_t n) {
         return Trim(text);
     } catch (const std::exception &e) {
         if (stream) SherpaOnnxDestroyOnlineStream(stream);
-        ESP_LOGE(TAG, "STT decode failed: %s", e.what());
+        ESP_LOGE(TAG, "wake STT decode failed: %s", e.what());
         return "";
     } catch (...) {
         if (stream) SherpaOnnxDestroyOnlineStream(stream);
-        ESP_LOGE(TAG, "STT decode failed with an unknown exception");
+        ESP_LOGE(TAG, "wake STT decode failed with an unknown exception");
         return "";
     }
 #else

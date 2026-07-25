@@ -25,22 +25,26 @@
 namespace jetson::audio {
 
 namespace {
-// VAD / endpointing tuned for the reSpeaker USB v3 (onboard AGC/NS keeps the
-// noise floor low, so a modest RMS threshold cleanly separates speech). 512
-// frames @ 16 kHz = 32 ms per chunk.
-constexpr double kRmsThreshold = 250.0;      // int16 RMS above this = speech
+// 512 frames @ 16 kHz = 32 ms per chunk.
+constexpr int kCalibrationChunks = 31;      // ~1 s startup noise calibration
 constexpr int kMinSpeechChunks = 2;         // 64 ms of speech to start an utterance
-constexpr int kSilenceToEndChunks = 20;     // ~640 ms trailing silence -> endpoint
+constexpr int kSilenceToEndChunks = 28;     // ~900 ms trailing silence -> endpoint
 constexpr int kMaxUtterChunks = 375;         // 12 s hard cap
 constexpr int kFalseWakeChunks = 78;         // 2.5 s with no speech -> abandon
+constexpr int kVadLogChunks = 313;           // ~10 s between idle diagnostics
 
 // Seconds to keep listening for a follow-up (no wake word needed) after a turn.
 constexpr int kAwakeWindowSec = 12;
 
-// Wake words matched (case-insensitive) in the STT transcript. The Vietnamese
-// STT transcribes a spoken "nô va" as "NOVA"; the spaced spellings are kept as
-// defensive variants for other segmentations.
-const char *const kWakeWords[] = {"nova", "no va", "nô va"};
+// Wake phrases matched case-insensitively in the STT transcript. "hey lewa" is
+// not a guess: it is the exact output observed from the previously deployed
+// multilingual model for a spoken "Hey Nova". Keep it during the Vietnamese
+// model migration so the wake path remains tolerant of pronunciation.
+const char *const kWakePhrases[] = {
+    "hey nova", "hey no va", "hey nô va", "hey nowa",
+    "hey lewa", "hey leva", "hây nô va", "hãy nô va",
+    "ê nova", "ê nô va", "nova", "no va", "nô va"
+};
 
 // ALSA device: env (config.yaml) wins, then Settings("voice"), then "default".
 std::string AudioDevice(const char *env_key, const char *settings_key) {
@@ -63,6 +67,20 @@ std::string TrimStr(const std::string &s) {
     auto ep = s.find_last_not_of(" \t\r\n");
     return s.substr(sp, ep - sp + 1);
 }
+
+bool IsAsciiWordByte(unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+bool HasWordBoundaries(const std::string &text, size_t pos, size_t len) {
+    const bool left_ok =
+        pos == 0 || !IsAsciiWordByte(static_cast<unsigned char>(text[pos - 1]));
+    const size_t end = pos + len;
+    const bool right_ok =
+        end >= text.size() ||
+        !IsAsciiWordByte(static_cast<unsigned char>(text[end]));
+    return left_ok && right_ok;
+}
 } // namespace
 
 VoiceLoop::VoiceLoop() = default;
@@ -80,6 +98,25 @@ bool VoiceLoop::Start() {
         ESP_LOGW(TAG, "voice engine not ready (models missing?) -- loop inert until models sync");
 
     out_ = std::make_unique<AudioOutput>();
+
+    Settings voice("voice", false);
+    vad_min_rms_ = std::max(
+        10.0, std::min(2000.0, static_cast<double>(
+            voice.GetFloat("vad_min_rms", 38.0f))));
+    vad_noise_multiplier_ = std::max(
+        1.1, std::min(8.0, static_cast<double>(
+            voice.GetFloat("vad_noise_multiplier", 1.6f))));
+    vad_noise_margin_ = std::max(
+        0.0, std::min(1000.0, static_cast<double>(
+            voice.GetFloat("vad_noise_margin", 8.0f))));
+    const int pre_roll_ms = std::max(
+        0, std::min(1000, voice.GetInt("vad_pre_roll_ms", 640)));
+    pre_roll_samples_ = static_cast<size_t>(pre_roll_ms) * 16;
+    ESP_LOGI(TAG,
+             "adaptive VAD (min=%.1f, noise x%.2f +%.1f, calibrate=%d ms, pre-roll=%d ms)",
+             vad_min_rms_, vad_noise_multiplier_, vad_noise_margin_,
+             kCalibrationChunks * 32, pre_roll_ms);
+
     running_.store(true);
     speaker_thread_ = std::thread(&VoiceLoop::SpeakerThread, this);
     jetson::platform::SetThreadName(speaker_thread_, "ekko-speak");
@@ -129,14 +166,56 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     const double rms = std::sqrt(sumsq / std::max<size_t>(1, n));
 
     if (state_ == kIdle) {
-        // Open-mic: start collecting on speech onset. The wake word ("nova") is
-        // matched later on the STT transcript, not here.
-        if (rms > kRmsThreshold) {
+        // Preserve audio before onset so a quiet initial "Hey" is not lost.
+        pre_roll_.insert(pre_roll_.end(), samples, samples + n);
+        while (pre_roll_.size() > pre_roll_samples_) pre_roll_.pop_front();
+
+        // One second of calibration is cheap and prevents a fixed threshold
+        // from assuming every reSpeaker/room has the same gain and noise.
+        if (calibration_chunks_ < kCalibrationChunks) {
+            noise_rms_ =
+                (noise_rms_ * static_cast<double>(calibration_chunks_) + rms) /
+                static_cast<double>(calibration_chunks_ + 1);
+            calibration_chunks_++;
+            if (calibration_chunks_ == kCalibrationChunks) {
+                ESP_LOGI(TAG, "VAD calibrated (noise=%.1f, threshold=%.1f)",
+                         noise_rms_,
+                         std::max(vad_min_rms_,
+                                  noise_rms_ * vad_noise_multiplier_ +
+                                      vad_noise_margin_));
+                pre_roll_.clear();
+            }
+            return;
+        }
+
+        const double threshold =
+            std::max(vad_min_rms_,
+                     noise_rms_ * vad_noise_multiplier_ + vad_noise_margin_);
+        idle_peak_rms_ = std::max(idle_peak_rms_, rms);
+        idle_log_chunks_++;
+
+        // Open-mic: start collecting on speech onset. Wake matching happens
+        // later on the Vietnamese STT transcript.
+        if (rms > threshold) {
             state_ = kCollecting;
-            utter_.assign(samples, samples + n);
+            utter_.assign(pre_roll_.begin(), pre_roll_.end());
+            pre_roll_.clear();
             speech_chunks_ = 1;
             silence_chunks_ = 0;
             total_chunks_ = 1;
+            active_threshold_ = threshold;
+            ESP_LOGI(TAG, "speech onset (rms=%.1f, threshold=%.1f, noise=%.1f)",
+                     rms, threshold, noise_rms_);
+        } else {
+            // Track the stationary noise floor slowly without letting a speech
+            // onset immediately drag the threshold upward.
+            noise_rms_ = noise_rms_ * 0.99 + rms * 0.01;
+            if (idle_log_chunks_ >= kVadLogChunks) {
+                ESP_LOGI(TAG, "VAD idle (noise=%.1f, threshold=%.1f, peak=%.1f)",
+                         noise_rms_, threshold, idle_peak_rms_);
+                idle_log_chunks_ = 0;
+                idle_peak_rms_ = 0.0;
+            }
         }
         return;
     }
@@ -144,7 +223,13 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     // kCollecting: append + energy VAD.
     utter_.insert(utter_.end(), samples, samples + n);
     total_chunks_++;
-    if (rms > kRmsThreshold) {
+    // A little hysteresis keeps soft word endings inside the utterance.
+    // Once the utterance has opened, compare against the calibrated room
+    // floor instead of the higher onset threshold. This keeps quiet syllables
+    // such as the middle of "Hey Nova" from being mistaken for silence.
+    const double continue_threshold =
+        std::max(noise_rms_ * 1.25 + 4.0, active_threshold_ * 0.55);
+    if (rms > continue_threshold) {
         speech_chunks_++;
         silence_chunks_ = 0;
     } else {
@@ -173,11 +258,22 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
 bool VoiceLoop::MatchWake(const std::string &text, std::string &cmd) {
     const std::string low = LowerAscii(text);
     size_t pos = std::string::npos, wlen = 0;
-    for (const char *w : kWakeWords) {
-        const size_t p = low.rfind(w);   // last occurrence wins ("nova nova ...")
-        if (p != std::string::npos && (pos == std::string::npos || p > pos)) {
-            pos = p;
-            wlen = std::string(w).size();
+    for (const char *w : kWakePhrases) {
+        const size_t len = std::string(w).size();
+        size_t search_from = low.size();
+        while (search_from != std::string::npos) {
+            const size_t p = low.rfind(w, search_from);
+            if (p == std::string::npos) break;
+            if (HasWordBoundaries(low, p, len)) {
+                if (pos == std::string::npos || p > pos ||
+                    (p == pos && len > wlen)) {
+                    pos = p;
+                    wlen = len;
+                }
+                break;
+            }
+            if (p == 0) break;
+            search_from = p - 1;
         }
     }
     if (pos != std::string::npos) {
@@ -194,17 +290,46 @@ bool VoiceLoop::MatchWake(const std::string &text, std::string &cmd) {
 }
 
 void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
+    bool already_awake = false;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        already_awake = std::chrono::steady_clock::now() < awake_until_;
+    }
+
     std::string text;
-    if (engine_) text = engine_->Recognize(utterance.data(), utterance.size());
     auto go_idle = [this] { std::lock_guard<std::mutex> lk(mtx_); state_ = kIdle; };
-    if (text.empty()) { go_idle(); return; }
-    ESP_LOGI(TAG, "heard: %s", text.c_str());
 
     std::string cmd;
-    if (!MatchWake(text, cmd)) {
-        // Ambient speech without the wake word while not awake -> ignore.
-        go_idle();
-        return;
+    if (!already_awake && engine_) {
+        const std::string wake_text =
+            engine_->RecognizeWake(utterance.data(), utterance.size());
+        if (!wake_text.empty()) ESP_LOGI(TAG, "heard (wake): %s", wake_text.c_str());
+        if (MatchWake(wake_text, cmd)) {
+            ESP_LOGI(TAG, "wake matched");
+        } else {
+            cmd.clear();
+        }
+    }
+
+    // If the dedicated wake-language pass did not fire, retain Vietnamese STT
+    // matching as a fallback ("Nova"/"Nô va") and for the awake follow-up.
+    if (cmd.empty() && !already_awake) {
+        bool wake_matched = false;
+        if (engine_) text = engine_->Recognize(utterance.data(), utterance.size());
+        if (!text.empty()) ESP_LOGI(TAG, "heard: %s", text.c_str());
+        wake_matched = MatchWake(text, cmd);
+        if (!wake_matched) {
+            go_idle();
+            return;
+        }
+    } else if (already_awake) {
+        if (engine_) text = engine_->Recognize(utterance.data(), utterance.size());
+        if (text.empty()) { go_idle(); return; }
+        ESP_LOGI(TAG, "heard: %s", text.c_str());
+        if (!MatchWake(text, cmd)) {
+            go_idle();
+            return;
+        }
     }
 
     if (cmd.empty()) {
