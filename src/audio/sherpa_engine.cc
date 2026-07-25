@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -147,6 +148,38 @@ std::string Trim(std::string s) {
 }
 #endif
 
+// Letters and digits only, lowercased. Used to compare a transcript with the
+// prompt without tripping over punctuation or capitalisation.
+std::string SquashForCompare(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    for (const char c : s) {
+        const auto u = static_cast<unsigned char>(c);
+        if (u >= 0x80) {                       // keep UTF-8 payload bytes as-is
+            out.push_back(c);
+        } else if (std::isalnum(u)) {
+            out.push_back(static_cast<char>(std::tolower(u)));
+        }
+    }
+    return out;
+}
+
+/* True when the API handed back its own prompt instead of a transcript.
+ *
+ * gpt-4o-mini-transcribe echoes the `prompt` field when the audio holds no
+ * intelligible speech -- a silent follow-up capture therefore yields a fluent
+ * Vietnamese sentence that would otherwise be forwarded to the LLM as a real
+ * command. Reject the exact echo, and reject a fragment of it too: the model
+ * often returns only the first clause. Short results are left alone because a
+ * genuine one-word reply can coincidentally appear inside the prompt. */
+bool LooksLikePromptEcho(const std::string &text, const std::string &prompt) {
+    const std::string a = SquashForCompare(text);
+    const std::string b = SquashForCompare(prompt);
+    if (a.empty() || b.empty()) return false;
+    if (a == b) return true;
+    return a.size() >= 24 && b.find(a) != std::string::npos;
+}
+
 } // namespace
 
 SherpaVoiceEngine::~SherpaVoiceEngine() {
@@ -226,7 +259,7 @@ bool SherpaVoiceEngine::EnsureKws() {
         oww_connected_logged_ = true;
         ESP_LOGI(TAG,
                  "openWakeWord connected (model=Hey Nova, frame=80 ms, threshold=%.2f x%d)",
-                 EnvFloat("OPENWAKEWORD_THRESHOLD", 0.01f),
+                 EnvFloat("OPENWAKEWORD_THRESHOLD", 0.45f),
                  std::max(1, EnvInt("OPENWAKEWORD_MIN_FRAMES", 2)));
     }
     return true;
@@ -302,7 +335,7 @@ bool SherpaVoiceEngine::FeedWake(const int16_t *samples, size_t n) {
     constexpr size_t kFrameSamples = 1280;  // openWakeWord native 80 ms frame
     const float threshold =
         std::max(0.001f, std::min(0.99f,
-                                 EnvFloat("OPENWAKEWORD_THRESHOLD", 0.01f)));
+                                 EnvFloat("OPENWAKEWORD_THRESHOLD", 0.45f)));
     const int min_frames =
         std::max(1, std::min(5,
                             EnvInt("OPENWAKEWORD_MIN_FRAMES", 2)));
@@ -580,6 +613,12 @@ std::string SherpaVoiceEngine::Recognize(const int16_t *samples, size_t n) {
     if (first == std::string::npos) return "";
     const size_t last = text.find_last_not_of(" \t\r\n");
     text = text.substr(first, last - first + 1);
+    if (LooksLikePromptEcho(text, prompt)) {
+        ESP_LOGW(TAG,
+                 "OpenAI STT echoed the prompt (no speech in %.2f s of audio); discarding",
+                 static_cast<double>(n) / 16000.0);
+        return "";
+    }
     ESP_LOGI(TAG, "OpenAI STT transcript: %s", text.c_str());
     return text;
 }

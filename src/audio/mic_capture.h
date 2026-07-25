@@ -16,7 +16,12 @@ namespace jetson::audio {
  * samples to sherpa-onnx instead of letting ALSA downmix both channels.
  *
  * The callback runs on the capture thread, so callers must not block in it
- * for long; the voice loop copies the chunk into its own buffer and returns. */
+ * for long; the voice loop copies the chunk into its own buffer and returns.
+ *
+ * A USB mic can vanish and come back with a new device number (see dmesg
+ * "USB disconnect" / "new high-speed USB device"). The old handle then fails
+ * every read with -EBADFD, which snd_pcm_recover cannot repair, so the capture
+ * thread reopens the device instead of spinning on a dead handle. */
 class MicCapture {
 public:
     using ChunkCb = std::function<void(const int16_t *samples, size_t n)>;
@@ -39,7 +44,13 @@ public:
 private:
     void Run();
 
+    // Opens (or reopens) pcm_ with the configured format. Logs and returns
+    // false on failure; the caller retries with a backoff.
+    bool OpenDevice(bool log_success);
+    void CloseDevice();
+
     snd_pcm_t *pcm_ = nullptr;
+    std::string device_;
     int sample_rate_ = 16000;
     int frames_per_chunk_ = 512;
     int capture_channels_ = 1;

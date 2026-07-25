@@ -7,7 +7,7 @@ Requires=docker.service
 Type=simple
 RuntimeDirectory=jetsona-voice
 RuntimeDirectoryMode=0755
-ExecStart=/usr/bin/docker run --rm --name jetsona-openwakeword --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=32m --mount type=bind,src=/opt/jetson-fw/scripts/openwakeword_runtime.py,dst=/app/openwakeword_runtime.py,readonly --mount type=bind,src=/opt/jetson-fw/assets/models/openwakeword,dst=/models,readonly --mount type=bind,src=/var/lib/jetson-fw,dst=/state,readonly --mount type=bind,src=/run/jetsona-voice,dst=/run/jetsona-voice /app/openwakeword_runtime.py --socket /run/jetsona-voice/openwakeword.sock --model /models/hey_nova.onnx --verifier /state/hey_nova_verifier.pkl
+ExecStart=/opt/jetson-fw/scripts/jetsona_openwakeword_run.sh
 ExecStop=-/usr/bin/docker stop --time 2 jetsona-openwakeword
 Restart=always
 RestartSec=2

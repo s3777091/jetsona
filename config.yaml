@@ -51,7 +51,12 @@ JETSON_WOL_URL: "http://127.0.0.1:8080/api/wol/wake"
 # scripts/fetch_models.sh. Fine-tune model paths, providers (cpu/cuda) and
 # thresholds via the Settings("voice",...) KV store at runtime.
 JETSON_VOICE_MIC: "plughw:CARD=Lite,DEV=0"
-JETSON_VOICE_OUT: "default"
+# Pin playback to the ReSpeaker Lite as well. "default" resolves to PulseAudio
+# on the Tegra APE card, and measurement showed nothing on that path reaches the
+# room: four "Hey Nova" clips played through tegrasndt210ref left the wake model
+# at its 0.002 noise floor, while the same clip through the Lite peaked at 0.861.
+# The speaker is wired to the Lite, so its own replies must go there too.
+JETSON_VOICE_OUT: "plughw:CARD=Lite,DEV=0"
 
 # Voice pipeline:
 #   XU316 DSP PCM -> openWakeWord (continuous, 80 ms frames) -> Silero confirms
@@ -59,8 +64,14 @@ JETSON_VOICE_OUT: "default"
 # openWakeWord runs in a network-disabled sidecar and cannot exfiltrate raw
 # microphone audio. Speex is intentionally disabled by default because the
 # ReSpeaker XU316 has already applied AEC/NS/IC/VNR/AGC.
+# Threshold measured on this hardware with scripts/openwakeword_probe.py:
+# spoken "Hey Nova" reaching the ReSpeaker Lite scores 0.84 over 5 consecutive
+# 80 ms frames, while the fan, room ambience and non-wake speech stay under
+# 0.005. 0.45 sits in that gap. Do not lower it toward the noise floor -- the
+# separation is three orders of magnitude, so a miss means the audio never
+# reached the model, not that the threshold was too high.
 OPENWAKEWORD_SOCKET: "/run/jetsona-voice/openwakeword.sock"
-OPENWAKEWORD_THRESHOLD: "0.01"
+OPENWAKEWORD_THRESHOLD: "0.45"
 OPENWAKEWORD_MIN_FRAMES: "2"
 OPENWAKEWORD_SPEEX: "0"
 

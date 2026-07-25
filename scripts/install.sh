@@ -103,6 +103,7 @@ sudo cp "$JETSON_DIR/scripts/s3_assets.py" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/config_loader.sh" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/openwakeword_runtime.py" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/openwakeword_probe.py" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/jetsona_openwakeword_run.sh" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/edge_tts_synthesize.sh" /opt/jetson-fw/scripts/
 sudo chmod +x /opt/jetson-fw/scripts/s3_assets.py
 # Supervisor: restarts the firmware if it ever exits.
@@ -112,6 +113,7 @@ sudo chmod +x \
     /opt/jetson-fw/scripts/config_loader.sh \
     /opt/jetson-fw/scripts/openwakeword_runtime.py \
     /opt/jetson-fw/scripts/openwakeword_probe.py \
+    /opt/jetson-fw/scripts/jetsona_openwakeword_run.sh \
     /opt/jetson-fw/scripts/edge_tts_synthesize.sh
 if [ -f "$JETSON_DIR/.env" ]; then
     sudo cp "$JETSON_DIR/.env" /opt/jetson-fw/.env
