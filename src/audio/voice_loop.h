@@ -23,11 +23,9 @@ class AudioOutput;
  * match ("nova") -> Conversation -> TTS -> speaker -> re-arm. One process-wide
  * instance.
  *
- * Wake detection is done on the Vietnamese STT transcript rather than the
- * dedicated KWS spotter, whose ONNX graph is incompatible with the old
- * ONNX Runtime available on JetPack 4. Every voiced utterance is transcribed;
- * it is acted on only if it contains the wake word, or if we are still inside
- * a short "awake" window after the previous turn.
+ * Wake detection uses a JetPack-4-compatible English KWS model continuously.
+ * After it fires, Vietnamese STT handles the next utterance inside a short
+ * awake window. Ambient speech is discarded without running the larger STT.
  *
  * Mic chunks arrive on the capture thread; STT/agent run on a detached worker;
  * TTS playback runs on a dedicated speaker thread that also serves out-of-band

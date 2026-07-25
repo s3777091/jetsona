@@ -23,13 +23,11 @@ public:
 
     bool FeedWake(const int16_t *samples, size_t n) override;
     std::string Recognize(const int16_t *samples, size_t n) override;
-    std::string RecognizeWake(const int16_t *samples, size_t n) override;
     bool Synthesize(const std::string &text, SynthResult &out) override;
 
 private:
     bool EnsureKws();
     bool EnsureStt();
-    bool EnsureWakeStt();
     bool EnsureTts();
 
     // sherpa-onnx opaque handles (void* so the C API header stays out of the
@@ -37,11 +35,9 @@ private:
     void *kws_ = nullptr;     // SherpaOnnxKeywordSpotter*
     void *kws_stream_ = nullptr; // SherpaOnnxOnlineStream*
     const void *stt_ = nullptr; // SherpaOnnxOfflineRecognizer* (API returns const)
-    const void *wake_stt_ = nullptr; // SherpaOnnxOnlineRecognizer*
     void *tts_ = nullptr;     // SherpaOnnxOfflineTts*
     bool kws_tried_ = false;
     bool stt_tried_ = false;
-    bool wake_stt_tried_ = false;
     bool tts_tried_ = false;
 };
 

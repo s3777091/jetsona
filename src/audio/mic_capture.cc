@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "platform/thread_affinity.h"
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -13,10 +14,14 @@ namespace jetson::audio {
 MicCapture::~MicCapture() { Stop(); }
 
 bool MicCapture::Start(const std::string &device, int sample_rate,
-                       int frames_per_chunk, ChunkCb cb) {
+                       int frames_per_chunk, int capture_channels,
+                       int selected_channel, ChunkCb cb) {
     if (running_.load()) return true;
     sample_rate_ = sample_rate > 0 ? sample_rate : 16000;
     frames_per_chunk_ = frames_per_chunk > 0 ? frames_per_chunk : 512;
+    capture_channels_ = std::max(1, std::min(8, capture_channels));
+    selected_channel_ =
+        std::max(0, std::min(capture_channels_ - 1, selected_channel));
     cb_ = std::move(cb);
 
     int err = snd_pcm_open(&pcm_, device.c_str(), SND_PCM_STREAM_CAPTURE, 0);
@@ -34,7 +39,7 @@ bool MicCapture::Start(const std::string &device, int sample_rate,
     snd_pcm_hw_params_set_format(pcm_, hw, SND_PCM_FORMAT_S16_LE);
     unsigned rate = static_cast<unsigned>(sample_rate_);
     snd_pcm_hw_params_set_rate_near(pcm_, hw, &rate, nullptr);
-    unsigned channels = 1;
+    unsigned channels = static_cast<unsigned>(capture_channels_);
     snd_pcm_hw_params_set_channels(pcm_, hw, channels);
     // ~200 ms latency buffer is plenty for a wake-word + utterance loop and
     // keeps underruns rare on a busy A57.
@@ -57,8 +62,10 @@ bool MicCapture::Start(const std::string &device, int sample_rate,
     jetson::platform::SetThreadName(thread_, "ekko-mic");
     if (!jetson::platform::PinToCore(thread_, 0))
         ESP_LOGW(TAG, "could not pin capture to core 0");
-    ESP_LOGI(TAG, "capturing %u Hz mono S16LE from '%s' (%d frames/chunk)",
-             rate, device.c_str(), frames_per_chunk_);
+    ESP_LOGI(TAG,
+             "capturing %u Hz S16LE from '%s' (%d channels, selecting channel %d, %d frames/chunk)",
+             rate, device.c_str(), capture_channels_, selected_channel_,
+             frames_per_chunk_);
     return true;
 }
 
@@ -73,9 +80,12 @@ void MicCapture::Stop() {
 }
 
 void MicCapture::Run() {
-    std::vector<int16_t> buf(frames_per_chunk_);
+    std::vector<int16_t> interleaved(
+        static_cast<size_t>(frames_per_chunk_) * capture_channels_);
+    std::vector<int16_t> mono(frames_per_chunk_);
     while (running_.load()) {
-        snd_pcm_sframes_t n = snd_pcm_readi(pcm_, buf.data(), frames_per_chunk_);
+        snd_pcm_sframes_t n =
+            snd_pcm_readi(pcm_, interleaved.data(), frames_per_chunk_);
         if (n < 0) {
             // EPIPE = overrun; recover and keep going rather than dropping the
             // whole capture session on a transient scheduler hiccup.
@@ -87,7 +97,17 @@ void MicCapture::Run() {
             snd_pcm_recover(pcm_, (int)n, 1);
             continue;
         }
-        if (cb_) cb_(buf.data(), static_cast<size_t>(n));
+        if (!cb_) continue;
+        if (capture_channels_ == 1) {
+            cb_(interleaved.data(), static_cast<size_t>(n));
+            continue;
+        }
+        for (snd_pcm_sframes_t i = 0; i < n; ++i) {
+            mono[static_cast<size_t>(i)] =
+                interleaved[static_cast<size_t>(i) * capture_channels_ +
+                            selected_channel_];
+        }
+        cb_(mono.data(), static_cast<size_t>(n));
     }
 }
 

@@ -123,7 +123,16 @@ bool VoiceLoop::Start() {
 
     mic_ = std::make_unique<MicCapture>();
     std::string mic_dev = AudioDevice("JETSON_VOICE_MIC", "mic_device");
-    bool ok = mic_->Start(mic_dev, 16000, 512,
+    const bool is_respeaker_lite =
+        mic_dev.find("CARD=Lite") != std::string::npos ||
+        mic_dev.find("ReSpeaker Lite") != std::string::npos;
+    const int mic_channels = std::max(
+        1, std::min(8, voice.GetInt("mic_channels",
+                                    is_respeaker_lite ? 2 : 1)));
+    const int mic_channel = std::max(
+        0, std::min(mic_channels - 1,
+                    voice.GetInt("mic_channel", 0)));
+    bool ok = mic_->Start(mic_dev, 16000, 512, mic_channels, mic_channel,
                           [this](const int16_t *s, size_t n) { OnMicChunk(s, n); });
     if (!ok) {
         ESP_LOGE(TAG, "mic open failed on '%s' -- voice loop inert (agent still usable)",
@@ -327,41 +336,24 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
         already_awake = std::chrono::steady_clock::now() < awake_until_;
     }
 
-    std::string text;
     auto go_idle = [this] { std::lock_guard<std::mutex> lk(mtx_); state_ = kIdle; };
-
-    std::string cmd;
-    bool wake_detected = false;
-    if (!already_awake && engine_) {
-        const std::string wake_text =
-            engine_->RecognizeWake(utterance.data(), utterance.size());
-        if (!wake_text.empty()) ESP_LOGI(TAG, "heard (wake): %s", wake_text.c_str());
-        if (MatchWake(wake_text, cmd)) {
-            wake_detected = true;
-            ESP_LOGI(TAG, "wake matched");
-        } else {
-            cmd.clear();
-        }
+    // KWS runs continuously in OnMicChunk. If it did not fire, ambient speech
+    // must not invoke either the Vietnamese command recognizer or the obsolete
+    // multilingual fallback (which is incompatible with JetPack's old ORT).
+    if (!already_awake) {
+        go_idle();
+        return;
     }
 
-    // If the dedicated wake-language pass did not fire, retain Vietnamese STT
-    // matching as a fallback ("Nova"/"Nô va") and for the awake follow-up.
-    if (!wake_detected && !already_awake) {
-        if (engine_) text = engine_->Recognize(utterance.data(), utterance.size());
-        if (!text.empty()) ESP_LOGI(TAG, "heard: %s", text.c_str());
-        wake_detected = MatchWake(text, cmd);
-        if (!wake_detected) {
-            go_idle();
-            return;
-        }
-    } else if (already_awake) {
-        if (engine_) text = engine_->Recognize(utterance.data(), utterance.size());
-        if (text.empty()) { go_idle(); return; }
-        ESP_LOGI(TAG, "heard: %s", text.c_str());
-        if (!MatchWake(text, cmd)) {
-            go_idle();
-            return;
-        }
+    std::string text;
+    if (engine_) text = engine_->Recognize(utterance.data(), utterance.size());
+    if (text.empty()) { go_idle(); return; }
+    ESP_LOGI(TAG, "heard: %s", text.c_str());
+
+    std::string cmd;
+    if (!MatchWake(text, cmd)) {
+        go_idle();
+        return;
     }
 
     if (cmd.empty()) {
