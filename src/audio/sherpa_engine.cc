@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -49,8 +50,8 @@ SherpaVoiceEngine::~SherpaVoiceEngine() {
         reinterpret_cast<SherpaOnnxOnlineStream *>(kws_stream_));
     if (kws_) SherpaOnnxDestroyKeywordSpotter(
         reinterpret_cast<SherpaOnnxKeywordSpotter *>(kws_));
-    if (stt_) SherpaOnnxDestroyOfflineRecognizer(
-        reinterpret_cast<const SherpaOnnxOfflineRecognizer *>(stt_));
+    if (stt_) SherpaOnnxDestroyOnlineRecognizer(
+        reinterpret_cast<const SherpaOnnxOnlineRecognizer *>(stt_));
     if (tts_) SherpaOnnxDestroyOfflineTts(
         reinterpret_cast<SherpaOnnxOfflineTts *>(tts_));
 #endif
@@ -156,16 +157,17 @@ bool SherpaVoiceEngine::EnsureStt() {
     if (stt_ || stt_tried_) return stt_ != nullptr;
     stt_tried_ = true;
     const std::string base = ModelsDir() + "/stt/";
-    // Offline (non-streaming) transducer: the voice loop hands us a whole
-    // utterance already endpointed by its energy VAD, so a one-shot offline
-    // decode is both simpler and more accurate than the streaming recognizer.
+    // The bundled Vietnamese model is a streaming transducer (its encoder
+    // consumes fixed-size chunks). The voice loop still hands us a complete,
+    // VAD-endpointed utterance; feed it through an online stream and drain all
+    // ready chunks before reading the final transcript.
     std::string enc = S("stt_encoder", base + "encoder.onnx");
     std::string dec = S("stt_decoder", base + "decoder.onnx");
     std::string joi = S("stt_joiner", base + "joiner.onnx");
     std::string tok = S("stt_tokens", base + "tokens.txt");
     std::string prov = S("stt_provider", "cpu");
 
-    SherpaOnnxOfflineRecognizerConfig cfg{};
+    SherpaOnnxOnlineRecognizerConfig cfg{};
     cfg.feat_config.sample_rate = 16000;
     cfg.feat_config.feature_dim = 80;
     cfg.model_config.transducer.encoder = enc.c_str();
@@ -178,13 +180,21 @@ bool SherpaVoiceEngine::EnsureStt() {
     cfg.decoding_method = "greedy_search";
     cfg.max_active_paths = I("stt_max_active_paths", 4);
 
-    stt_ = SherpaOnnxCreateOfflineRecognizer(&cfg);
+    try {
+        stt_ = SherpaOnnxCreateOnlineRecognizer(&cfg);
+    } catch (const std::exception &e) {
+        ESP_LOGE(TAG, "STT create failed: %s", e.what());
+        stt_ = nullptr;
+    } catch (...) {
+        ESP_LOGE(TAG, "STT create failed with an unknown exception");
+        stt_ = nullptr;
+    }
     if (!stt_) {
         ESP_LOGE(TAG, "STT create failed (encoder=%s, provider=%s)", enc.c_str(),
                  prov.c_str());
         return false;
     }
-    ESP_LOGI(TAG, "STT ready (offline transducer, provider=%s)", prov.c_str());
+    ESP_LOGI(TAG, "STT ready (streaming transducer, provider=%s)", prov.c_str());
     return true;
 #else
     return false;
@@ -194,19 +204,32 @@ bool SherpaVoiceEngine::EnsureStt() {
 std::string SherpaVoiceEngine::Recognize(const int16_t *samples, size_t n) {
 #if JETSON_HAVE_SHERPA
     if (!EnsureStt()) return "";
-    auto *rec = reinterpret_cast<const SherpaOnnxOfflineRecognizer *>(stt_);
-    const SherpaOnnxOfflineStream *stream = SherpaOnnxCreateOfflineStream(rec);
-    if (!stream) return "";
-    std::vector<float> f = ToFloat(samples, n);
-    SherpaOnnxAcceptWaveformOffline(stream, 16000, f.data(),
-                                    static_cast<int32_t>(n));
-    SherpaOnnxDecodeOfflineStream(rec, stream);
-    const SherpaOnnxOfflineRecognizerResult *r =
-        SherpaOnnxGetOfflineStreamResult(stream);
-    std::string text = (r && r->text) ? r->text : "";
-    if (r) SherpaOnnxDestroyOfflineRecognizerResult(r);
-    SherpaOnnxDestroyOfflineStream(stream);
-    return Trim(text);
+    auto *rec = reinterpret_cast<const SherpaOnnxOnlineRecognizer *>(stt_);
+    const SherpaOnnxOnlineStream *stream = nullptr;
+    try {
+        stream = SherpaOnnxCreateOnlineStream(rec);
+        if (!stream) return "";
+        std::vector<float> f = ToFloat(samples, n);
+        SherpaOnnxOnlineStreamAcceptWaveform(stream, 16000, f.data(),
+                                             static_cast<int32_t>(n));
+        SherpaOnnxOnlineStreamInputFinished(stream);
+        while (SherpaOnnxIsOnlineStreamReady(rec, stream))
+            SherpaOnnxDecodeOnlineStream(rec, stream);
+        const SherpaOnnxOnlineRecognizerResult *r =
+            SherpaOnnxGetOnlineStreamResult(rec, stream);
+        std::string text = (r && r->text) ? r->text : "";
+        if (r) SherpaOnnxDestroyOnlineRecognizerResult(r);
+        SherpaOnnxDestroyOnlineStream(stream);
+        return Trim(text);
+    } catch (const std::exception &e) {
+        if (stream) SherpaOnnxDestroyOnlineStream(stream);
+        ESP_LOGE(TAG, "STT decode failed: %s", e.what());
+        return "";
+    } catch (...) {
+        if (stream) SherpaOnnxDestroyOnlineStream(stream);
+        ESP_LOGE(TAG, "STT decode failed with an unknown exception");
+        return "";
+    }
 #else
     return "";
 #endif
