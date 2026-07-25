@@ -45,7 +45,8 @@ constexpr int kAwakeWindowSec = 12;
 const char *const kWakePhrases[] = {
     "hey nova", "hey no va", "hey nô va", "hey nowa",
     "hey lewa", "hey leva", "hây nô va", "hãy nô va",
-    "ê nova", "ê nô va", "nova", "no va", "nô va"
+    "ê nova", "ê nô va", "anh lô vào", "hai lô vào",
+    "nova", "no va", "nô va"
 };
 
 // ALSA device: env (config.yaml) wins, then Settings("voice"), then "default".
@@ -54,12 +55,27 @@ std::string AudioDevice(const char *env_key, const char *settings_key) {
     return Settings("voice", false).GetString(settings_key, "default");
 }
 
-// Lower-case ASCII A-Z only; multi-byte UTF-8 (Vietnamese diacritics) is left
-// untouched, so byte offsets stay aligned with the original string.
-std::string LowerAscii(const std::string &s) {
+void ReplaceAll(std::string &s, const std::string &from,
+                const std::string &to) {
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+        s.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+}
+
+std::string LowerWakeText(const std::string &s) {
     std::string o = s;
     for (char &c : o)
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    // The Vietnamese STT emits uppercase transcripts. These UTF-8 pairs have
+    // equal byte lengths, so replacements preserve offsets used to extract the
+    // command following the wake phrase.
+    const std::pair<const char *, const char *> folds[] = {
+        {"À", "à"}, {"Â", "â"}, {"Ã", "ã"}, {"Ê", "ê"},
+        {"Ô", "ô"}, {"Ờ", "ờ"}, {"Đ", "đ"}
+    };
+    for (const auto &fold : folds) ReplaceAll(o, fold.first, fold.second);
     return o;
 }
 
@@ -376,7 +392,7 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
 }
 
 bool VoiceLoop::MatchWake(const std::string &text, std::string &cmd) {
-    const std::string low = LowerAscii(text);
+    const std::string low = LowerWakeText(text);
     size_t pos = std::string::npos, wlen = 0;
     for (const char *w : kWakePhrases) {
         const size_t len = std::string(w).size();
