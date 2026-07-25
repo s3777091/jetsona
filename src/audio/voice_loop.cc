@@ -300,11 +300,13 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
     auto go_idle = [this] { std::lock_guard<std::mutex> lk(mtx_); state_ = kIdle; };
 
     std::string cmd;
+    bool wake_detected = false;
     if (!already_awake && engine_) {
         const std::string wake_text =
             engine_->RecognizeWake(utterance.data(), utterance.size());
         if (!wake_text.empty()) ESP_LOGI(TAG, "heard (wake): %s", wake_text.c_str());
         if (MatchWake(wake_text, cmd)) {
+            wake_detected = true;
             ESP_LOGI(TAG, "wake matched");
         } else {
             cmd.clear();
@@ -313,12 +315,11 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
 
     // If the dedicated wake-language pass did not fire, retain Vietnamese STT
     // matching as a fallback ("Nova"/"Nô va") and for the awake follow-up.
-    if (cmd.empty() && !already_awake) {
-        bool wake_matched = false;
+    if (!wake_detected && !already_awake) {
         if (engine_) text = engine_->Recognize(utterance.data(), utterance.size());
         if (!text.empty()) ESP_LOGI(TAG, "heard: %s", text.c_str());
-        wake_matched = MatchWake(text, cmd);
-        if (!wake_matched) {
+        wake_detected = MatchWake(text, cmd);
+        if (!wake_detected) {
             go_idle();
             return;
         }

@@ -74,6 +74,34 @@ else
     echo "!!  nova -> 'N OW1 V AH0 :1.5' (one line per pronunciation variant)."
 fi
 
+# ---- Wake-language STT ("Hey Nova") ---------------------------------------
+# The command recognizer below is Vietnamese-only by design, and consistently
+# collapses the English name "Hey Nova" to the filler word "Ừ". Use the
+# multilingual streaming model only as a wake-language pass; once awake, the
+# smaller Vietnamese model handles commands. Keeping these recognizers
+# separate prevents English wake accuracy and Vietnamese command accuracy from
+# fighting each other.
+WAKE_STT_REPO="${MODEL_WAKE_STT_REPO:-https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10/resolve/main}"
+WAKE_STT_DIR="$MODELS/wake_stt"
+if [ ! -f "$WAKE_STT_DIR/encoder.onnx" ] ||
+   [ ! -f "$WAKE_STT_DIR/decoder.onnx" ] ||
+   [ ! -f "$WAKE_STT_DIR/joiner.onnx" ] ||
+   [ ! -f "$WAKE_STT_DIR/tokens.txt" ]; then
+    echo "==> wake STT: $WAKE_STT_REPO"
+    mkdir -p "$WAKE_STT_DIR"
+    tmp="$(mktemp -d)"
+    $WGET -O "$tmp/encoder.onnx" \
+        "$WAKE_STT_REPO/encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx"
+    $WGET -O "$tmp/decoder.onnx" \
+        "$WAKE_STT_REPO/decoder-epoch-75-avg-11-chunk-16-left-128.onnx"
+    $WGET -O "$tmp/joiner.onnx" \
+        "$WAKE_STT_REPO/joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx"
+    $WGET -O "$tmp/tokens.txt" "$WAKE_STT_REPO/tokens.txt"
+    cp -f "$tmp/"* "$WAKE_STT_DIR/"
+    rm -rf "$tmp"
+fi
+echo "==> wake STT ready in $WAKE_STT_DIR"
+
 # ---- STT (Vietnamese-only offline int8) -----------------------------------
 # Official sherpa-onnx Vietnamese model trained on roughly 70k hours. Do not
 # replace this with the multilingual ar/en/id/ja/ru/th/vi/zh model: on short
