@@ -4,10 +4,27 @@
 #include "settings.h"
 
 #include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
+#include <mutex>
 #include <string>
 #include <vector>
+
+#include <curl/curl.h>
+#include <nlohmann/json.hpp>
+
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #if JETSON_HAVE_SHERPA
 #include <sherpa-onnx/c-api/c-api.h>
@@ -27,6 +44,94 @@ std::string S(const char *key, const std::string &def) {
 int I(const char *key, int def) { return Settings("voice", false).GetInt(key, def); }
 float F(const char *key, float def) { return Settings("voice", false).GetFloat(key, def); }
 
+std::string EnvOr(const char *key, const std::string &fallback) {
+    const char *value = std::getenv(key);
+    return value && *value ? value : fallback;
+}
+
+int EnvInt(const char *key, int fallback) {
+    const char *value = std::getenv(key);
+    if (!value || !*value) return fallback;
+    char *end = nullptr;
+    long parsed = std::strtol(value, &end, 10);
+    return end && *end == '\0' ? static_cast<int>(parsed) : fallback;
+}
+
+float EnvFloat(const char *key, float fallback) {
+    const char *value = std::getenv(key);
+    if (!value || !*value) return fallback;
+    char *end = nullptr;
+    float parsed = std::strtof(value, &end);
+    return end && *end == '\0' ? parsed : fallback;
+}
+
+size_t CurlWrite(void *data, size_t size, size_t count, void *user) {
+    const size_t bytes = size * count;
+    auto *out = static_cast<std::string *>(user);
+    if (out->size() + bytes > 1024 * 1024) return 0;
+    out->append(static_cast<const char *>(data), bytes);
+    return bytes;
+}
+
+void AppendLe16(std::vector<uint8_t> &out, uint16_t value) {
+    out.push_back(static_cast<uint8_t>(value & 0xff));
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+}
+
+void AppendLe32(std::vector<uint8_t> &out, uint32_t value) {
+    out.push_back(static_cast<uint8_t>(value & 0xff));
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+    out.push_back(static_cast<uint8_t>((value >> 16) & 0xff));
+    out.push_back(static_cast<uint8_t>((value >> 24) & 0xff));
+}
+
+std::vector<uint8_t> MakePcmWav(const int16_t *samples, size_t count) {
+    const uint32_t data_bytes =
+        static_cast<uint32_t>(std::min<size_t>(count, UINT32_MAX / 2) * 2);
+    std::vector<uint8_t> wav;
+    wav.reserve(static_cast<size_t>(data_bytes) + 44);
+    const char riff[] = "RIFF";
+    wav.insert(wav.end(), riff, riff + 4);
+    AppendLe32(wav, 36 + data_bytes);
+    const char wave_fmt[] = "WAVEfmt ";
+    wav.insert(wav.end(), wave_fmt, wave_fmt + 8);
+    AppendLe32(wav, 16);
+    AppendLe16(wav, 1);
+    AppendLe16(wav, 1);
+    AppendLe32(wav, 16000);
+    AppendLe32(wav, 16000 * 2);
+    AppendLe16(wav, 2);
+    AppendLe16(wav, 16);
+    const char data[] = "data";
+    wav.insert(wav.end(), data, data + 4);
+    AppendLe32(wav, data_bytes);
+    const auto *bytes = reinterpret_cast<const uint8_t *>(samples);
+    wav.insert(wav.end(), bytes, bytes + data_bytes);
+    return wav;
+}
+
+bool SendAll(int fd, const void *data, size_t size) {
+    const auto *p = static_cast<const uint8_t *>(data);
+    while (size > 0) {
+        const ssize_t sent = send(fd, p, size, MSG_NOSIGNAL);
+        if (sent <= 0) return false;
+        p += sent;
+        size -= static_cast<size_t>(sent);
+    }
+    return true;
+}
+
+bool RecvAll(int fd, void *data, size_t size) {
+    auto *p = static_cast<uint8_t *>(data);
+    while (size > 0) {
+        const ssize_t received = recv(fd, p, size, 0);
+        if (received <= 0) return false;
+        p += received;
+        size -= static_cast<size_t>(received);
+    }
+    return true;
+}
+
 #if JETSON_HAVE_SHERPA
 std::vector<float> ToFloat(const int16_t *s, size_t n) {
     std::vector<float> f(n);
@@ -45,6 +150,7 @@ std::string Trim(std::string s) {
 } // namespace
 
 SherpaVoiceEngine::~SherpaVoiceEngine() {
+    if (oww_fd_ >= 0) close(oww_fd_);
 #if JETSON_HAVE_SHERPA
     if (vad_) SherpaOnnxDestroyVoiceActivityDetector(
         reinterpret_cast<SherpaOnnxVoiceActivityDetector *>(vad_));
@@ -59,24 +165,73 @@ SherpaVoiceEngine::~SherpaVoiceEngine() {
 #endif
 }
 
-// Warm all three sessions before opening the mic. KWS is the low-latency wake
-// path; the Vietnamese STT also serves as an accent-tolerant wake fallback and
-// recognizes commands after the wake window opens.
+// Only Silero remains in-process. openWakeWord is isolated in an offline
+// sidecar, transcription is OpenAI, and speech synthesis is Edge TTS.
 bool SherpaVoiceEngine::Init() {
-    const bool stt_ok = EnsureStt();
-    // KWS is only a few MB and runs continuously with sub-second latency.
-    EnsureKws();
-    EnsureVad();
-    // TTS session creation is slow on a Nano. Finish it before opening the mic
-    // so the first successful wake receives an immediate audible reply.
-    EnsureTts();
-    return stt_ok;
+    const bool kws_ok = EnsureKws();
+    const bool vad_ok = EnsureVad();
+    const bool stt_ok = !EnvOr("OPENAI_API_KEY", "").empty();
+    ESP_LOGI(TAG, "OpenAI STT %s (model=%s)",
+             stt_ok ? "configured" : "MISSING OPENAI_API_KEY",
+             EnvOr("OPENAI_TRANSCRIBE_MODEL",
+                   "gpt-4o-mini-transcribe").c_str());
+    ESP_LOGI(TAG, "Edge TTS configured (voice=%s)",
+             EnvOr("EDGE_TTS_VOICE", "vi-VN-HoaiMyNeural").c_str());
+    return kws_ok && vad_ok && stt_ok;
 }
-bool SherpaVoiceEngine::Ready() const { return stt_ != nullptr; }
+bool SherpaVoiceEngine::Ready() const {
+    return vad_ != nullptr && !EnvOr("OPENAI_API_KEY", "").empty();
+}
 
 // ---- KWS -----------------------------------------------------------------
 
 bool SherpaVoiceEngine::EnsureKws() {
+    if (oww_fd_ >= 0) return true;
+
+    const std::string socket_path =
+        EnvOr("OPENWAKEWORD_SOCKET",
+              "/run/jetsona-voice/openwakeword.sock");
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return false;
+
+    timeval timeout{};
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 250000;
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    if (socket_path.size() >= sizeof(address.sun_path)) {
+        close(fd);
+        ESP_LOGE(TAG, "openWakeWord socket path is too long");
+        return false;
+    }
+    std::memcpy(address.sun_path, socket_path.c_str(),
+                socket_path.size() + 1);
+    if (connect(fd, reinterpret_cast<sockaddr *>(&address),
+                sizeof(address)) != 0) {
+        close(fd);
+        if (!kws_tried_) {
+            kws_tried_ = true;
+            ESP_LOGW(TAG, "openWakeWord not ready at %s: %s",
+                     socket_path.c_str(), std::strerror(errno));
+        }
+        return false;
+    }
+
+    oww_fd_ = fd;
+    kws_tried_ = false;
+    if (!oww_connected_logged_) {
+        oww_connected_logged_ = true;
+        ESP_LOGI(TAG,
+                 "openWakeWord connected (model=Hey Nova, frame=80 ms, threshold=%.2f x%d)",
+                 EnvFloat("OPENWAKEWORD_THRESHOLD", 0.01f),
+                 std::max(1, EnvInt("OPENWAKEWORD_MIN_FRAMES", 2)));
+    }
+    return true;
+
+#if 0  // Replaced by the offline openWakeWord sidecar above.
 #if JETSON_HAVE_SHERPA
     if (kws_ || kws_tried_) return kws_ != nullptr;
     kws_tried_ = true;
@@ -137,36 +292,62 @@ bool SherpaVoiceEngine::EnsureKws() {
     }
     return false;
 #endif
+#endif
 }
 
 bool SherpaVoiceEngine::FeedWake(const int16_t *samples, size_t n) {
-#if JETSON_HAVE_SHERPA
-    if (!EnsureKws()) return false;
-    auto *spotter = reinterpret_cast<SherpaOnnxKeywordSpotter *>(kws_);
-    auto *stream = reinterpret_cast<SherpaOnnxOnlineStream *>(kws_stream_);
-    std::vector<float> f = ToFloat(samples, n);
-    SherpaOnnxOnlineStreamAcceptWaveform(stream, 16000, f.data(),
-                                         static_cast<int32_t>(n));
+    if (!samples || n == 0) return false;
+    oww_audio_.insert(oww_audio_.end(), samples, samples + n);
+
+    constexpr size_t kFrameSamples = 1280;  // openWakeWord native 80 ms frame
+    const float threshold =
+        std::max(0.001f, std::min(0.99f,
+                                 EnvFloat("OPENWAKEWORD_THRESHOLD", 0.01f)));
+    const int min_frames =
+        std::max(1, std::min(5,
+                            EnvInt("OPENWAKEWORD_MIN_FRAMES", 2)));
     bool detected = false;
-    while (SherpaOnnxIsKeywordStreamReady(spotter, stream)) {
-        SherpaOnnxDecodeKeywordStream(spotter, stream);
-        const SherpaOnnxKeywordResult *r = SherpaOnnxGetKeywordResult(spotter, stream);
-        if (r && r->keyword && r->keyword[0]) {
+
+    while (oww_audio_.size() >= kFrameSamples) {
+        if (!EnsureKws()) {
+            // Bound memory while the sidecar is restarting. The next call
+            // retries the connection without starving continuous capture.
+            if (oww_audio_.size() > kFrameSamples * 3)
+                oww_audio_.erase(oww_audio_.begin(),
+                                 oww_audio_.end() - kFrameSamples * 3);
+            return false;
+        }
+
+        float score = 0.0f;
+        const bool ok =
+            SendAll(oww_fd_, oww_audio_.data(), kFrameSamples * sizeof(int16_t)) &&
+            RecvAll(oww_fd_, &score, sizeof(score));
+        oww_audio_.erase(oww_audio_.begin(),
+                         oww_audio_.begin() + kFrameSamples);
+        if (!ok || !std::isfinite(score)) {
+            close(oww_fd_);
+            oww_fd_ = -1;
+            oww_score_frames_ = 0;
+            ESP_LOGW(TAG, "openWakeWord connection lost; reconnecting");
+            continue;
+        }
+
+        if (score >= threshold) {
+            ++oww_score_frames_;
+            ESP_LOGI(TAG, "Hey Nova candidate score=%.3f frame=%d/%d",
+                     score, oww_score_frames_, min_frames);
+        } else {
+            // One sub-threshold frame is tolerated so a narrow score peak
+            // across adjacent 80 ms windows is not discarded immediately.
+            oww_score_frames_ = std::max(0, oww_score_frames_ - 1);
+        }
+        if (oww_score_frames_ >= min_frames) {
             detected = true;
-            ESP_LOGI(TAG, "wake word: %s", r->keyword);
-            SherpaOnnxDestroyKeywordResult(r);
-            // Re-arm: drop the accumulated stream and start a fresh one so the
-            // next wake word is detected independently of this utterance.
-            SherpaOnnxDestroyOnlineStream(stream);
-            kws_stream_ = SherpaOnnxCreateKeywordStream(spotter);
+            oww_score_frames_ = 0;
             break;
         }
-        if (r) SherpaOnnxDestroyKeywordResult(r);
     }
     return detected;
-#else
-    return false;
-#endif
 }
 
 // ---- VAD -----------------------------------------------------------------
@@ -301,35 +482,106 @@ bool SherpaVoiceEngine::EnsureStt() {
 }
 
 std::string SherpaVoiceEngine::Recognize(const int16_t *samples, size_t n) {
-#if JETSON_HAVE_SHERPA
-    if (!EnsureStt()) return "";
-    auto *rec = reinterpret_cast<const SherpaOnnxOfflineRecognizer *>(stt_);
-    const SherpaOnnxOfflineStream *stream = nullptr;
-    try {
-        stream = SherpaOnnxCreateOfflineStream(rec);
-        if (!stream) return "";
-        std::vector<float> f = ToFloat(samples, n);
-        SherpaOnnxAcceptWaveformOffline(stream, 16000, f.data(),
-                                        static_cast<int32_t>(n));
-        SherpaOnnxDecodeOfflineStream(rec, stream);
-        const SherpaOnnxOfflineRecognizerResult *r =
-            SherpaOnnxGetOfflineStreamResult(stream);
-        std::string text = (r && r->text) ? r->text : "";
-        if (r) SherpaOnnxDestroyOfflineRecognizerResult(r);
-        SherpaOnnxDestroyOfflineStream(stream);
-        return Trim(text);
-    } catch (const std::exception &e) {
-        if (stream) SherpaOnnxDestroyOfflineStream(stream);
-        ESP_LOGE(TAG, "STT decode failed: %s", e.what());
-        return "";
-    } catch (...) {
-        if (stream) SherpaOnnxDestroyOfflineStream(stream);
-        ESP_LOGE(TAG, "STT decode failed with an unknown exception");
+    if (!samples || n == 0) return "";
+    const std::string api_key = EnvOr("OPENAI_API_KEY", "");
+    if (api_key.empty()) {
+        ESP_LOGE(TAG, "OpenAI STT unavailable: OPENAI_API_KEY is missing");
         return "";
     }
-#else
-    return "";
-#endif
+
+    static std::once_flag curl_once;
+    std::call_once(curl_once,
+                   [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        ESP_LOGE(TAG, "OpenAI STT: curl init failed");
+        return "";
+    }
+
+    const std::vector<uint8_t> wav = MakePcmWav(samples, n);
+    const std::string base =
+        EnvOr("OPENAI_TRANSCRIBE_BASE_URL", "https://api.openai.com/v1");
+    const std::string url = base + "/audio/transcriptions";
+    const std::string model =
+        EnvOr("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe");
+    const std::string language =
+        EnvOr("OPENAI_TRANSCRIBE_LANGUAGE", "vi");
+    const std::string prompt =
+        "Đây là lệnh tiếng Việt gửi cho trợ lý Nova. Cụm từ đánh thức là "
+        "\"Hey Nova\"; hãy chép chính xác tên Nova khi được nói.";
+
+    std::string response;
+    curl_mime *mime = curl_mime_init(curl);
+    auto add_text = [mime](const char *name, const std::string &value) {
+        curl_mimepart *part = curl_mime_addpart(mime);
+        curl_mime_name(part, name);
+        curl_mime_data(part, value.c_str(), CURL_ZERO_TERMINATED);
+    };
+    curl_mimepart *file = curl_mime_addpart(mime);
+    curl_mime_name(file, "file");
+    curl_mime_filename(file, "utterance.wav");
+    curl_mime_type(file, "audio/wav");
+    curl_mime_data(file, reinterpret_cast<const char *>(wav.data()),
+                   wav.size());
+    add_text("model", model);
+    add_text("language", language);
+    add_text("prompt", prompt);
+    add_text("response_format", "json");
+    add_text("temperature", "0");
+
+    struct curl_slist *headers = nullptr;
+    const std::string authorization = "Authorization: Bearer " + api_key;
+    headers = curl_slist_append(headers, authorization.c_str());
+    headers = curl_slist_append(headers, "Accept: application/json");
+    headers = curl_slist_append(headers, "Expect:");
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWrite);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+    ESP_LOGI(TAG, "OpenAI STT request (model=%s, audio=%.2f s)",
+             model.c_str(), static_cast<double>(n) / 16000.0);
+    const CURLcode rc = curl_easy_perform(curl);
+    long status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
+    curl_mime_free(mime);
+    curl_easy_cleanup(curl);
+
+    if (rc != CURLE_OK) {
+        ESP_LOGE(TAG, "OpenAI STT transport failed: %s",
+                 curl_easy_strerror(rc));
+        return "";
+    }
+
+    const auto root = nlohmann::json::parse(response, nullptr, false);
+    if (status < 200 || status >= 300) {
+        std::string message = "unknown API error";
+        if (root.is_object() && root.contains("error") &&
+            root["error"].is_object())
+            message = root["error"].value("message", message);
+        ESP_LOGE(TAG, "OpenAI STT HTTP %ld: %.180s", status,
+                 message.c_str());
+        return "";
+    }
+    if (!root.is_object() || !root.contains("text") ||
+        !root["text"].is_string()) {
+        ESP_LOGE(TAG, "OpenAI STT returned invalid JSON");
+        return "";
+    }
+
+    std::string text = root["text"].get<std::string>();
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const size_t last = text.find_last_not_of(" \t\r\n");
+    text = text.substr(first, last - first + 1);
+    ESP_LOGI(TAG, "OpenAI STT transcript: %s", text.c_str());
+    return text;
 }
 
 // ---- TTS -----------------------------------------------------------------
@@ -376,27 +628,108 @@ bool SherpaVoiceEngine::EnsureTts() {
 
 bool SherpaVoiceEngine::Synthesize(const std::string &text, SynthResult &out) {
     if (text.empty()) return false;
-#if JETSON_HAVE_SHERPA
-    if (!EnsureTts()) return false;
-    auto *tts = reinterpret_cast<SherpaOnnxOfflineTts *>(tts_);
-    int sid = I("tts_sid", 0);
-    float speed = F("tts_speed", 1.0f);
-    const SherpaOnnxGeneratedAudio *a =
-        SherpaOnnxOfflineTtsGenerate(tts, text.c_str(), sid, speed);
-    if (!a || a->n <= 0) {
-        if (a) SherpaOnnxDestroyOfflineTtsGeneratedAudio(a);
-        ESP_LOGW(TAG, "TTS produced no audio for: %.40s", text.c_str());
+    // Keep Edge's network-enabled container in a directory separate from the
+    // offline KWS socket. It must never be able to open the raw-PCM channel.
+    if (mkdir("/run/jetsona-edge-tts", 0700) != 0 && errno != EEXIST) {
+        ESP_LOGE(TAG, "Edge TTS: cannot create runtime directory: %s",
+                 std::strerror(errno));
         return false;
     }
-    out.sample_rate = a->sample_rate ? a->sample_rate
-                                     : SherpaOnnxOfflineTtsSampleRate(tts);
-    out.samples.assign(a->samples, a->samples + a->n);
-    SherpaOnnxDestroyOfflineTtsGeneratedAudio(a);
+
+    char text_path[] = "/run/jetsona-edge-tts/tts-text-XXXXXX";
+    char pcm_path[] = "/run/jetsona-edge-tts/tts-pcm-XXXXXX";
+    const int text_fd = mkstemp(text_path);
+    const int pcm_fd = mkstemp(pcm_path);
+    if (text_fd < 0 || pcm_fd < 0) {
+        if (text_fd >= 0) close(text_fd);
+        if (pcm_fd >= 0) close(pcm_fd);
+        if (text_fd >= 0) unlink(text_path);
+        if (pcm_fd >= 0) unlink(pcm_path);
+        ESP_LOGE(TAG, "Edge TTS: cannot create temporary files");
+        return false;
+    }
+    close(pcm_fd);
+
+    size_t written = 0;
+    bool write_ok = true;
+    while (written < text.size()) {
+        const ssize_t n =
+            write(text_fd, text.data() + written, text.size() - written);
+        if (n <= 0) {
+            write_ok = false;
+            break;
+        }
+        written += static_cast<size_t>(n);
+    }
+    close(text_fd);
+    if (!write_ok) {
+        unlink(text_path);
+        unlink(pcm_path);
+        ESP_LOGE(TAG, "Edge TTS: cannot write input text");
+        return false;
+    }
+
+    const std::string script =
+        EnvOr("EDGE_TTS_SCRIPT",
+              "/opt/jetson-fw/scripts/edge_tts_synthesize.sh");
+    const std::string voice =
+        EnvOr("EDGE_TTS_VOICE", "vi-VN-HoaiMyNeural");
+    const std::string rate = EnvOr("EDGE_TTS_RATE", "+0%");
+    const int sample_rate =
+        std::max(8000, std::min(48000,
+                                EnvInt("EDGE_TTS_SAMPLE_RATE", 24000)));
+    const std::string sample_rate_arg = std::to_string(sample_rate);
+    const std::string image =
+        EnvOr("JETSON_VOICE_RUNTIME_IMAGE",
+              "jetsona/voice-runtime:oww-0.6-edge-7.2.8");
+
+    const pid_t child = fork();
+    if (child == 0) {
+        execl(script.c_str(), script.c_str(), text_path, pcm_path,
+              voice.c_str(), rate.c_str(), sample_rate_arg.c_str(),
+              image.c_str(), static_cast<char *>(nullptr));
+        _exit(127);
+    }
+    int status = 0;
+    const bool child_ok =
+        child > 0 && waitpid(child, &status, 0) == child &&
+        WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    unlink(text_path);
+    if (!child_ok) {
+        unlink(pcm_path);
+        ESP_LOGE(TAG, "Edge TTS failed (status=%d)", status);
+        return false;
+    }
+
+    std::ifstream pcm(pcm_path, std::ios::binary);
+    std::vector<int16_t> s16;
+    if (pcm) {
+        pcm.seekg(0, std::ios::end);
+        const std::streamoff bytes = pcm.tellg();
+        pcm.seekg(0, std::ios::beg);
+        if (bytes > 1) {
+            s16.resize(static_cast<size_t>(bytes) / sizeof(int16_t));
+            pcm.read(reinterpret_cast<char *>(s16.data()),
+                     static_cast<std::streamsize>(
+                         s16.size() * sizeof(int16_t)));
+        }
+    }
+    unlink(pcm_path);
+    if (s16.empty()) {
+        ESP_LOGE(TAG, "Edge TTS produced no PCM");
+        return false;
+    }
+
+    out.sample_rate = sample_rate;
+    out.samples.resize(s16.size());
+    std::transform(s16.begin(), s16.end(), out.samples.begin(),
+                   [](int16_t value) {
+                       return static_cast<float>(value) / 32768.0f;
+                   });
+    ESP_LOGI(TAG, "Edge TTS rendered %.2f s (voice=%s)",
+             static_cast<double>(out.samples.size()) / sample_rate,
+             voice.c_str());
     return true;
-#else
-    (void)out;
-    return false;
-#endif
 }
 
 } // namespace jetson::audio

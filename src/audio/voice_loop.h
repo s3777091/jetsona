@@ -19,13 +19,13 @@ class VoiceEngine;
 class MicCapture;
 class AudioOutput;
 
-/* The voice loop: mic -> capture utterance (energy VAD) -> STT -> wake-word
- * match ("nova") -> Conversation -> TTS -> speaker -> re-arm. One process-wide
- * instance.
+/* The voice loop: mic -> continuous openWakeWord -> Silero confirmation ->
+ * capture through trailing silence -> OpenAI STT -> Conversation -> Edge TTS.
  *
- * Wake detection uses a JetPack-4-compatible English KWS model continuously.
- * After it fires, Vietnamese STT handles the next utterance inside a short
- * awake window. Ambient speech is discarded without running the larger STT.
+ * KWS always receives PCM while idle/collecting. Silero never gates audio sent
+ * to KWS; it only confirms a wake candidate and endpoints an active command.
+ * Ambient speech without a wake match is kept only in the short ring buffer
+ * and never sent to cloud STT.
  *
  * Mic chunks arrive on the capture thread; STT/agent run on a detached worker;
  * TTS playback runs on a dedicated speaker thread that also serves out-of-band
@@ -56,12 +56,14 @@ private:
 
     void OnMicChunk(const int16_t *samples, size_t n);
     void SpeakerThread();
-    void RecognizeAndSend(const std::vector<int16_t> &utterance);
+    void RecognizeAndSend(const std::vector<int16_t> &utterance,
+                          bool explicit_wake);
 
     // Decide whether a transcript should be acted on. Returns true when the
     // wake word "nova" is present (cmd = text after it) or we are still awake
     // from a recent turn (cmd = whole text). Reads awake_until_ under mtx_.
-    bool MatchWake(const std::string &text, std::string &cmd);
+    bool MatchWake(const std::string &text, bool explicit_wake,
+                   std::string &cmd);
 
     std::unique_ptr<VoiceEngine> engine_;
     std::unique_ptr<MicCapture> mic_;
@@ -78,6 +80,8 @@ private:
     int silence_chunks_ = 0;
     int total_chunks_ = 0;
     int onset_chunks_ = 0;
+    int recent_vad_chunks_ = 0;
+    bool wake_latched_ = false;
 
     // Adaptive energy VAD. Startup calibration keeps the per-chunk RMS samples
     // and uses a low percentile, so steady fan noise becomes part of the floor

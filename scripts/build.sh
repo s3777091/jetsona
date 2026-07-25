@@ -41,6 +41,10 @@ echo "==> Source:  $JETSON_DIR"
 echo "==> Build:   $BUILD_DIR"
 echo "==> Profile: headless Ekko Lite"
 
+# The custom openWakeWord classifier is a pinned build input, separate from the
+# private MinIO asset bucket. Fetch it before hashing/copying assets.
+bash "$SCRIPT_DIR/fetch_openwakeword.sh"
+
 # Fetch runtime assets from MinIO (S3) before building. ETag checks make this
 # cheap after the first download while still detecting same-size icon changes.
 # A normal build is strict; opt into a cached/offline build explicitly with

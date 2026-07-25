@@ -1,7 +1,7 @@
 [Unit]
 Description=Jetson Nano Ekko Lite (headless voice AI)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target jetsona-openwakeword.service
+Wants=network-online.target jetsona-openwakeword.service
 
 [Service]
 Type=simple

@@ -53,6 +53,27 @@ JETSON_WOL_URL: "http://127.0.0.1:8080/api/wol/wake"
 JETSON_VOICE_MIC: "plughw:CARD=Lite,DEV=0"
 JETSON_VOICE_OUT: "default"
 
+# Voice pipeline:
+#   XU316 DSP PCM -> openWakeWord (continuous, 80 ms frames) -> Silero confirms
+#   -> capture until silence -> OpenAI STT -> existing LLM -> Edge TTS.
+# openWakeWord runs in a network-disabled sidecar and cannot exfiltrate raw
+# microphone audio. Speex is intentionally disabled by default because the
+# ReSpeaker XU316 has already applied AEC/NS/IC/VNR/AGC.
+OPENWAKEWORD_SOCKET: "/run/jetsona-voice/openwakeword.sock"
+OPENWAKEWORD_THRESHOLD: "0.01"
+OPENWAKEWORD_MIN_FRAMES: "2"
+OPENWAKEWORD_SPEEX: "0"
+
+OPENAI_TRANSCRIBE_BASE_URL: "https://api.openai.com/v1"
+OPENAI_TRANSCRIBE_MODEL: "gpt-4o-mini-transcribe"
+OPENAI_TRANSCRIBE_LANGUAGE: "vi"
+
+EDGE_TTS_SCRIPT: "/opt/jetson-fw/scripts/edge_tts_synthesize.sh"
+EDGE_TTS_VOICE: "vi-VN-HoaiMyNeural"
+EDGE_TTS_RATE: "+0%"
+EDGE_TTS_SAMPLE_RATE: "24000"
+JETSON_VOICE_RUNTIME_IMAGE: "jetsona/voice-runtime:oww-0.6-edge-7.2.8"
+
 # Network and local paths.
 JETSON_FILES_HOME: ""
 # Absolute path pins the settings store to one file. Left empty it falls back to

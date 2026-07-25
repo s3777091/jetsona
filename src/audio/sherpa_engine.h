@@ -2,6 +2,9 @@
 
 #include "audio/voice_engine.h"
 
+#include <cstdint>
+#include <vector>
+
 namespace jetson::audio {
 
 /* sherpa-onnx (v1.10.30) backed VoiceEngine for the Jetson Nano + reSpeaker.
@@ -41,6 +44,16 @@ private:
     void *vad_ = nullptr;     // SherpaOnnxVoiceActivityDetector*
     const void *stt_ = nullptr; // SherpaOnnxOfflineRecognizer* (API returns const)
     void *tts_ = nullptr;     // SherpaOnnxOfflineTts*
+
+    // openWakeWord runs in a network-disabled sidecar. Audio is accumulated
+    // into its native 80 ms / 1280-sample frames and exchanged over a local
+    // Unix socket. The old sherpa KWS handles above remain only so older model
+    // settings can still be destroyed safely during a rolling upgrade.
+    int oww_fd_ = -1;
+    std::vector<int16_t> oww_audio_;
+    int oww_score_frames_ = 0;
+    bool oww_connected_logged_ = false;
+
     bool kws_tried_ = false;
     bool vad_tried_ = false;
     bool stt_tried_ = false;

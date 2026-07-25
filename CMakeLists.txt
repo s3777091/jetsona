@@ -203,6 +203,9 @@ install(TARGETS jetson_fw RUNTIME DESTINATION /opt/jetson-fw)
 install(DIRECTORY assets DESTINATION /opt/jetson-fw)
 install(FILES config.yaml DESTINATION /opt/jetson-fw)
 install(PROGRAMS scripts/s3_assets.py scripts/config_loader.sh
+        scripts/openwakeword_runtime.py scripts/openwakeword_probe.py
+        scripts/edge_tts_synthesize.sh
         DESTINATION /opt/jetson-fw/scripts)
-install(PROGRAMS scripts/jetson-fw.service DESTINATION /etc/systemd/system OPTIONAL)
+install(PROGRAMS scripts/jetson-fw.service scripts/jetsona-openwakeword.service
+        DESTINATION /etc/systemd/system OPTIONAL)
 message(STATUS "jetson_fw: headless Ekko Lite build")

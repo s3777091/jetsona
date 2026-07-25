@@ -38,16 +38,10 @@ constexpr int kVadLogChunks = 313;           // ~10 s between idle diagnostics
 // Seconds to keep listening for a follow-up (no wake word needed) after a turn.
 constexpr int kAwakeWindowSec = 12;
 
-// Wake phrases matched case-insensitively in the STT transcript. "hey lewa" is
-// not a guess: it is the exact output observed from the previously deployed
-// multilingual model for a spoken "Hey Nova". Keep it during the Vietnamese
-// model migration so the wake path remains tolerant of pronunciation.
+// Cloud STT is prompted to preserve the proper name. Keep only the actual wake
+// phrase here; the old list of guessed STT aliases masked a broken KWS path.
 const char *const kWakePhrases[] = {
-    "hey nova", "hey no va", "hey nô va", "hey nowa",
-    "hey lewa", "hey leva", "hây nô va", "hãy nô va",
-    "ê nova", "ê nô va", "hello ba", "hello vào", "hello à",
-    "anh lô vào", "hai lô vào", "hay nôm vào",
-    "nova", "no va", "nô va"
+    "hey nova", "nova"
 };
 
 // ALSA device: env (config.yaml) wins, then Settings("voice"), then "default".
@@ -129,7 +123,7 @@ bool VoiceLoop::Start() {
         0.0, std::min(1000.0, static_cast<double>(
             voice.GetFloat("vad_noise_margin", 8.0f))));
     const int pre_roll_ms = std::max(
-        0, std::min(1000, voice.GetInt("vad_pre_roll_ms", 640)));
+        0, std::min(2000, voice.GetInt("vad_pre_roll_ms", 1400)));
     pre_roll_samples_ = static_cast<size_t>(pre_roll_ms) * 16;
     calibration_rms_.clear();
     calibration_rms_.reserve(kCalibrationChunks);
@@ -190,6 +184,110 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     std::lock_guard<std::mutex> lk(mtx_);
     if (state_ == kBusy) return;
 
+    // Keep a 1-1.5 second ring continuously while idle. This happens before
+    // both KWS and VAD so a quiet initial "Hey" is never clipped.
+    if (state_ == kIdle) {
+        pre_roll_.insert(pre_roll_.end(), samples, samples + n);
+        while (pre_roll_.size() > pre_roll_samples_) pre_roll_.pop_front();
+    }
+
+    // Both models always receive the same XU316-processed PCM. VAD is a
+    // confirmation signal only; it never decides whether KWS receives audio.
+    const bool wake_candidate = engine_ && engine_->FeedWake(samples, n);
+    const bool neural_vad = engine_ && engine_->VadReady();
+    const bool neural_speech =
+        neural_vad && engine_->FeedVad(samples, n);
+    if (neural_speech)
+        recent_vad_chunks_ = 32;  // remember speech for ~1 second
+    else
+        recent_vad_chunks_ = std::max(0, recent_vad_chunks_ - 1);
+
+    double sumsq_new = 0.0;
+    for (size_t i = 0; i < n; ++i)
+        sumsq_new += static_cast<double>(samples[i]) * samples[i];
+    const double rms_new =
+        std::sqrt(sumsq_new / std::max<size_t>(1, n));
+    const bool speech_now =
+        neural_vad ? neural_speech : rms_new >= vad_min_rms_;
+
+    if (state_ == kIdle) {
+        const bool awake =
+            std::chrono::steady_clock::now() < awake_until_;
+
+        if (wake_candidate) {
+            if (neural_vad && recent_vad_chunks_ == 0) {
+                ESP_LOGW(TAG,
+                         "Hey Nova candidate rejected: Silero found no speech");
+                return;
+            }
+
+            wake_latched_ = true;
+            state_ = kCollecting;
+            utter_.assign(pre_roll_.begin(), pre_roll_.end());
+            pre_roll_.clear();
+            speech_chunks_ = kMinSpeechChunks;
+            silence_chunks_ = 0;
+            total_chunks_ = static_cast<int>(
+                (utter_.size() + 511) / 512);
+            onset_chunks_ = 0;
+            ESP_LOGI(TAG,
+                     "Hey Nova accepted (openWakeWord + Silero, pre-roll=%zu ms)",
+                     utter_.size() / 16);
+            return;
+        }
+
+        // Conversation in the room is real speech, but it is not a command.
+        // While asleep we retain only the ring buffer and never call cloud STT.
+        if (!awake) return;
+
+        // A verified wake keeps a short follow-up window open. Silero may then
+        // start a command without requiring the phrase a second time.
+        if (speech_now) {
+            ++onset_chunks_;
+            if (onset_chunks_ >= 2) {
+                wake_latched_ = false;
+                state_ = kCollecting;
+                utter_.assign(pre_roll_.begin(), pre_roll_.end());
+                pre_roll_.clear();
+                speech_chunks_ = onset_chunks_;
+                silence_chunks_ = 0;
+                total_chunks_ = static_cast<int>(
+                    (utter_.size() + 511) / 512);
+                onset_chunks_ = 0;
+                ESP_LOGI(TAG, "follow-up speech onset (Silero)");
+            }
+        } else {
+            onset_chunks_ = 0;
+        }
+        return;
+    }
+
+    // Active capture continues until Silero sees sustained trailing silence.
+    utter_.insert(utter_.end(), samples, samples + n);
+    ++total_chunks_;
+    if (speech_now) {
+        ++speech_chunks_;
+        silence_chunks_ = 0;
+    } else {
+        ++silence_chunks_;
+    }
+
+    const bool endpoint_new =
+        (speech_chunks_ >= kMinSpeechChunks &&
+         silence_chunks_ >= kSilenceToEndChunks) ||
+        total_chunks_ >= kMaxUtterChunks;
+    if (!endpoint_new) return;
+
+    const bool explicit_wake = wake_latched_;
+    wake_latched_ = false;
+    state_ = kBusy;
+    std::vector<int16_t> utterance = std::move(utter_);
+    utter_.clear();
+    std::thread(&VoiceLoop::RecognizeAndSend, this, std::move(utterance),
+                explicit_wake).detach();
+    return;
+
+#if 0  // Superseded by the continuous-KWS state machine above.
     // Energy of this chunk.
     double sumsq = 0;
     for (size_t i = 0; i < n; ++i) sumsq += static_cast<double>(samples[i]) * samples[i];
@@ -390,9 +488,11 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     utter_.clear();
     // Recognize + send off the capture thread so mic capture never stalls.
     std::thread(&VoiceLoop::RecognizeAndSend, this, std::move(u)).detach();
+#endif
 }
 
-bool VoiceLoop::MatchWake(const std::string &text, std::string &cmd) {
+bool VoiceLoop::MatchWake(const std::string &text, bool explicit_wake,
+                          std::string &cmd) {
     const std::string low = LowerWakeText(text);
     size_t pos = std::string::npos, wlen = 0;
     for (const char *w : kWakePhrases) {
@@ -417,6 +517,13 @@ bool VoiceLoop::MatchWake(const std::string &text, std::string &cmd) {
         cmd = TrimStr(text.substr(pos + wlen));   // command follows the wake word
         return true;
     }
+    // The local acoustic model has already verified the wake phrase. Cloud STT
+    // may omit or slightly rewrite those first words, so do not require a
+    // second textual wake match before accepting the captured command.
+    if (explicit_wake) {
+        cmd = TrimStr(text);
+        return true;
+    }
     // No wake word: act only if we're still awake from a recent turn.
     std::lock_guard<std::mutex> lk(mtx_);
     if (std::chrono::steady_clock::now() < awake_until_) {
@@ -426,7 +533,8 @@ bool VoiceLoop::MatchWake(const std::string &text, std::string &cmd) {
     return false;
 }
 
-void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
+void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance,
+                                 bool explicit_wake) {
     auto go_idle = [this] {
         std::lock_guard<std::mutex> lk(mtx_);
         onset_chunks_ = 0;
@@ -443,7 +551,7 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
     ESP_LOGI(TAG, "heard: %s", text.c_str());
 
     std::string cmd;
-    if (!MatchWake(text, cmd)) {
+    if (!MatchWake(text, explicit_wake, cmd)) {
         go_idle();
         return;
     }

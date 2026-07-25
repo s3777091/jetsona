@@ -58,10 +58,17 @@ if [ "$BUILD_GIT_HEAD" != "$CURRENT_GIT_HEAD" ] ||
     exit 1
 fi
 
+# Build the Python/ONNX runtime before stopping the live services. Docker's
+# layer cache makes repeat installs cheap, and no project .env is sent in the
+# build context (docker/voice-runtime contains only its Dockerfile).
+echo "==> Building openWakeWord + Edge TTS runtime"
+sudo bash "$JETSON_DIR/scripts/build_voice_runtime.sh"
+
 # The service executes /opt/jetson-fw/jetson_fw directly. Stop it before
 # replacing that binary; otherwise Linux can reject cp with ETXTBSY ("Text
 # file busy"). This is harmless on the first install when the unit is absent.
 sudo systemctl stop jetson-fw 2>/dev/null || true
+sudo systemctl stop jetsona-openwakeword 2>/dev/null || true
 
 echo "==> Installing to /opt/jetson-fw"
 echo "==> Binary: $BUILD_DIR/jetson_fw"
@@ -94,17 +101,24 @@ sudo cp "$JETSON_DIR/config.yaml" /opt/jetson-fw/
 sudo mkdir -p /opt/jetson-fw/scripts
 sudo cp "$JETSON_DIR/scripts/s3_assets.py" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/config_loader.sh" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/openwakeword_runtime.py" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/openwakeword_probe.py" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/edge_tts_synthesize.sh" /opt/jetson-fw/scripts/
 sudo chmod +x /opt/jetson-fw/scripts/s3_assets.py
 # Supervisor: restarts the firmware if it ever exits.
 sudo cp "$JETSON_DIR/scripts/jetson_fw_run.sh" /opt/jetson-fw/scripts/
 sudo chmod +x \
     /opt/jetson-fw/scripts/jetson_fw_run.sh \
-    /opt/jetson-fw/scripts/config_loader.sh
+    /opt/jetson-fw/scripts/config_loader.sh \
+    /opt/jetson-fw/scripts/openwakeword_runtime.py \
+    /opt/jetson-fw/scripts/openwakeword_probe.py \
+    /opt/jetson-fw/scripts/edge_tts_synthesize.sh
 if [ -f "$JETSON_DIR/.env" ]; then
     sudo cp "$JETSON_DIR/.env" /opt/jetson-fw/.env
     sudo chmod 600 /opt/jetson-fw/.env
 fi
 sudo cp "$JETSON_DIR/scripts/jetson-fw.service" /etc/systemd/system/
+sudo cp "$JETSON_DIR/scripts/jetsona-openwakeword.service" /etc/systemd/system/
 
 # Legacy 12V-fan-on-GPIO helper (NOT auto-enabled — requires MOSFET rewiring
 # first). Unrelated to the PWM fan header below; kept for boards wired that way.
@@ -128,6 +142,8 @@ sudo chmod 0666 /etc/jetson-fan.conf
 echo "==> Enabling systemd service"
 sudo systemctl daemon-reload
 
+sudo systemctl enable jetsona-openwakeword
+sudo systemctl restart jetsona-openwakeword
 sudo systemctl enable jetson-fw
 sudo systemctl restart jetson-fw
 sudo systemctl enable jetson-fan
