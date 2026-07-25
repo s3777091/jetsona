@@ -72,14 +72,19 @@ JETSON_VOICE_OUT: "plug:'dmix:CARD=Lite,DEV=0'"
 # openWakeWord runs in a network-disabled sidecar and cannot exfiltrate raw
 # microphone audio. Speex is intentionally disabled by default because the
 # ReSpeaker XU316 has already applied AEC/NS/IC/VNR/AGC.
-# Threshold measured on this hardware with scripts/openwakeword_probe.py:
-# spoken "Hey Nova" reaching the ReSpeaker Lite scores 0.84 over 5 consecutive
-# 80 ms frames, while the fan, room ambience and non-wake speech stay under
-# 0.005. 0.45 sits in that gap. Do not lower it toward the noise floor -- the
-# separation is three orders of magnitude, so a miss means the audio never
-# reached the model, not that the threshold was too high.
+# Set from this device owner's own voice, not from synthetic speech. Logged
+# attempts scored 0.128, 0.164, 0.209, 0.583, 0.719, 0.770, 0.851 -- a real
+# "Hey Nova" lands anywhere in that range depending on how it is said, and the
+# rejected attempts were no quieter than the accepted ones (loudest-frame RMS
+# ~10500 either way), so level is not the variable. An earlier 0.45, chosen
+# from a 0.86-scoring TTS clip, therefore threw away roughly half of them.
+#
+# The floor is far below all of it: ~30 minutes of room ambience with the fan
+# running peaked at 0.006. 0.10 accepts every attempt above while still sitting
+# more than an order of magnitude over the noise. Raise it only if real false
+# wakes appear in the journal, and lower it only with new measured scores.
 OPENWAKEWORD_SOCKET: "/run/jetsona-voice/openwakeword.sock"
-OPENWAKEWORD_THRESHOLD: "0.45"
+OPENWAKEWORD_THRESHOLD: "0.10"
 OPENWAKEWORD_MIN_FRAMES: "2"
 OPENWAKEWORD_SPEEX: "0"
 

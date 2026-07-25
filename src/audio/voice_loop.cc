@@ -585,6 +585,32 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance,
     // recognizer as a fallback and require an explicit wake phrase unless KWS
     // already opened the awake window. Ambient speech therefore cannot send a
     // command merely because VAD fired.
+    /* A bare wake word needs no transcript. The capture is the 1.4 s pre-roll
+     * plus the 640 ms of silence that ended it, so anything barely longer than
+     * that carried no command, and sending it to cloud STT only buys a
+     * multi-second wait before an acknowledgement the wake word alone already
+     * justified. Answer straight from the phrase cache instead. Even one short
+     * spoken syllable pushes the capture past this, so a real command is not
+     * swallowed -- and if one ever were, the user hears the acknowledgement and
+     * simply says it again inside the follow-up window. */
+    const double utterance_sec =
+        static_cast<double>(utterance.size()) / 16000.0;
+    const double bare_wake_sec =
+        static_cast<double>(pre_roll_samples_) / 16000.0 +
+        kSilenceToEndChunks * 0.032 + 0.16;
+    if (explicit_wake && utterance_sec <= bare_wake_sec) {
+        ESP_LOGI(TAG, "bare wake (%.2f s <= %.2f s); acknowledging without STT",
+                 utterance_sec, bare_wake_sec);
+        speaking_.store(true);
+        Speak(NextWakeAck());
+        std::lock_guard<std::mutex> lk(mtx_);
+        awake_until_ = std::chrono::steady_clock::now() +
+                       std::chrono::seconds(kAwakeWindowSec);
+        onset_chunks_ = 0;
+        state_ = kIdle;
+        return;
+    }
+
     std::string text;
     if (engine_) text = engine_->Recognize(utterance.data(), utterance.size());
     if (text.empty()) { go_idle(); return; }
@@ -613,10 +639,18 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance,
     filler_spoken_.store(false);
     conv->Send(cmd, [this](std::string reply, std::string err) {
         if (!err.empty()) ESP_LOGW(TAG, "agent error: %s", err.c_str());
-        if (!reply.empty()) {
-            speaking_.store(true);
-            Speak(reply);
+        if (reply.empty()) {
+            // The agent produced nothing usable -- an error, or a reply with
+            // neither text nor a tool call. Saying nothing is the worst
+            // possible outcome: the user cannot tell a broken device from one
+            // that never heard them, so they repeat the wake word into what
+            // looks like a dead box. Always answer something.
+            reply = err.empty() ? "Mình chưa nghĩ ra câu trả lời, bạn nói lại giúp mình nhé."
+                                : "Mình đang gặp lỗi khi xử lý, bạn thử lại giúp mình nhé.";
+            ESP_LOGW(TAG, "agent returned nothing; speaking a fallback");
         }
+        speaking_.store(true);
+        Speak(reply);
         std::lock_guard<std::mutex> lk(mtx_);
         awake_until_ = std::chrono::steady_clock::now() +
                        std::chrono::seconds(kAwakeWindowSec);

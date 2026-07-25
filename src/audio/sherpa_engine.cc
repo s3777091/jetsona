@@ -667,6 +667,26 @@ bool SherpaVoiceEngine::EnsureTts() {
 
 bool SherpaVoiceEngine::Synthesize(const std::string &text, SynthResult &out) {
     if (text.empty()) return false;
+
+    /* Every spoken line, including three-word fixed ones like the wake
+     * acknowledgement, otherwise costs a full Edge TTS trip: ~1.1 s to spawn
+     * the container, ~1.8 s of import and network, ~0.2 s of ffmpeg. Those
+     * fixed lines are the ones the user hears most and the ones where delay is
+     * least forgivable, so keep their audio after the first render.
+     *
+     * Only short strings are cached, which is exactly the fixed-phrase set --
+     * real answers vary every time and would just evict each other. */
+    constexpr size_t kMaxCachedTextBytes = 96;
+    constexpr size_t kMaxCachedPhrases = 16;
+    const bool cacheable = text.size() <= kMaxCachedTextBytes;
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(tts_cache_mutex_);
+        const auto hit = tts_cache_.find(text);
+        if (hit != tts_cache_.end()) {
+            out = hit->second;
+            return true;
+        }
+    }
     // Keep Edge's network-enabled container in a directory separate from the
     // offline KWS socket. It must never be able to open the raw-PCM channel.
     if (mkdir("/run/jetsona-edge-tts", 0700) != 0 && errno != EEXIST) {
@@ -768,6 +788,11 @@ bool SherpaVoiceEngine::Synthesize(const std::string &text, SynthResult &out) {
     ESP_LOGI(TAG, "Edge TTS rendered %.2f s (voice=%s)",
              static_cast<double>(out.samples.size()) / sample_rate,
              voice.c_str());
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(tts_cache_mutex_);
+        if (tts_cache_.size() >= kMaxCachedPhrases) tts_cache_.clear();
+        tts_cache_[text] = out;
+    }
     return true;
 }
 

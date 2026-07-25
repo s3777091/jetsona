@@ -3,6 +3,9 @@
 #include "audio/voice_engine.h"
 
 #include <cstdint>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace jetson::audio {
@@ -53,6 +56,13 @@ private:
     std::vector<int16_t> oww_audio_;
     int oww_score_frames_ = 0;
     bool oww_connected_logged_ = false;
+
+    // Rendered audio for short fixed phrases (wake acknowledgements, "let me
+    // check", the fallback line). Edge TTS costs about three seconds a call,
+    // which these repeat-heavy lines cannot afford. Guarded because Synthesize
+    // runs on the speaker thread while Speak can be called from anywhere.
+    std::unordered_map<std::string, SynthResult> tts_cache_;
+    std::mutex tts_cache_mutex_;
 
     bool kws_tried_ = false;
     bool vad_tried_ = false;

@@ -285,6 +285,16 @@ ChatResult LlmClient::ChatWithTools(const std::vector<ChatMessage> &messages,
         } else {
             r.content = choice.value("content", "");
         }
+        // A reply with neither text nor a tool call leaves the voice loop with
+        // nothing to say, and the user hears silence and assumes the device is
+        // broken. It is not an HTTP error so nothing else would record it --
+        // log enough to tell a refusal from a truncation from a shape this
+        // parser mishandled.
+        if (r.content.empty() && r.tool_calls.empty()) {
+            const auto &c = j.at("choices").at(0);
+            ESP_LOGW(TAG, "empty reply (finish_reason=%s) | body: %.240s",
+                     c.value("finish_reason", "?").c_str(), raw.c_str());
+        }
     } catch (const std::exception &ex) {
         r.ok = false;
         r.error = std::string("parse reply loi: ") + ex.what() + " | body: " + raw.substr(0, 240);
