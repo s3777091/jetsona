@@ -122,7 +122,7 @@ Xong. **Rút nguồn cắm lại → Jetson tự chạy UI DS-02**, không còn 
 Quản lý service:
 ```bash
 sudo systemctl status jetson-fw
-sudo journalctl -u jetson-fw -f                 # hoặc: tail -f /var/log/jetson-fw.log
+sudo journalctl -u jetson-fw -f
 sudo systemctl disable --now jetson-fw          # dừng
 sudo systemctl set-default graphical.target     # về desktop để debug (reboot sau)
 ```

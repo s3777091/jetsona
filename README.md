@@ -172,7 +172,7 @@ Các lệnh quản lý service:
 ```bash
 sudo systemctl status jetson-fw
 sudo systemctl restart jetson-fw
-tail -f /var/log/jetson-fw.log
+sudo journalctl -u jetson-fw -f
 sudo systemctl disable --now jetson-fw
 ```
 

@@ -44,12 +44,13 @@ JETSON_WEATHER_NAME: "Đà Nẵng"
 JETSON_WOL_URL: "http://127.0.0.1:8080/api/wol/wake"
 
 # Voice loop (reSpeaker USB v3 + sherpa-onnx). ALSA pcm names for the mic and
-# speaker; "default" works once the reSpeaker card is the system default
-# (aplay/arecord -l lists the card; e.g. "plughw:CARD=ReSpeaker,DEV=0").
+# speaker. Pin the microphone by ALSA card name so it does not silently switch
+# to the Jetson onboard codec when card indexes or the system default change
+# (aplay/arecord -l lists the card).
 # Model files live under assets/models/{kws,stt,tts}/, fetched by
 # scripts/fetch_models.sh. Fine-tune model paths, providers (cpu/cuda) and
 # thresholds via the Settings("voice",...) KV store at runtime.
-JETSON_VOICE_MIC: "default"
+JETSON_VOICE_MIC: "plughw:CARD=Lite,DEV=0"
 JETSON_VOICE_OUT: "default"
 
 # Network and local paths.

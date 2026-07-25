@@ -133,4 +133,4 @@ sudo systemctl restart jetson-fw
 sudo systemctl enable jetson-fan
 sudo systemctl restart jetson-fan
 
-echo "==> Installed. Check:  sudo systemctl status jetson-fw ; tail -f /var/log/jetson-fw.log"
+echo "==> Installed. Check:  sudo systemctl status jetson-fw ; sudo journalctl -u jetson-fw -f"

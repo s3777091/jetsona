@@ -18,8 +18,11 @@ Environment=JETSON_FW_LOG=/var/log/jetson-fw.log
 # Pin the settings store: systemd exports HOME=/root for User=root, so without
 # this the boot run reads a different store than a manual launch.
 Environment=JETSON_SETTINGS_FILE=/var/lib/jetson-fw/settings.kv
-StandardOutput=append:/var/log/jetson-fw.log
-StandardError=append:/var/log/jetson-fw.log
+# JetPack 4 ships systemd 237, which predates the "append:" output target.
+# Keep all firmware output in the journal, where service logs are persistent
+# and available without version-specific output directives.
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
