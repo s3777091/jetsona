@@ -77,11 +77,14 @@ private:
     int speech_chunks_ = 0;
     int silence_chunks_ = 0;
     int total_chunks_ = 0;
+    int onset_chunks_ = 0;
 
-    // Adaptive energy VAD. The first second calibrates the room/device noise
-    // floor; idle chunks keep it tracking slowly. Pre-roll preserves the start
-    // of softly spoken "Hey Nova" instead of cutting it off at onset.
+    // Adaptive energy VAD. Startup calibration keeps the per-chunk RMS samples
+    // and uses a low percentile, so steady fan noise becomes part of the floor
+    // while a person speaking during calibration does not inflate it. Idle
+    // chunks keep the estimate tracking slowly.
     double noise_rms_ = 0.0;
+    double noise_high_rms_ = 0.0;
     double vad_min_rms_ = 38.0;
     double vad_noise_multiplier_ = 1.6;
     double vad_noise_margin_ = 8.0;
@@ -89,6 +92,7 @@ private:
     double idle_peak_rms_ = 0.0;
     size_t pre_roll_samples_ = 10240;
     uint64_t calibration_chunks_ = 0;
+    std::vector<double> calibration_rms_;
     uint64_t idle_log_chunks_ = 0;
 
     // After a turn we stay "awake" briefly so a follow-up needn't repeat the

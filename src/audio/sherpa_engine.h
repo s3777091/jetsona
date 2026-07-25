@@ -22,11 +22,15 @@ public:
     bool Init() override;
 
     bool FeedWake(const int16_t *samples, size_t n) override;
+    bool VadReady() const override;
+    bool FeedVad(const int16_t *samples, size_t n) override;
+    void ResetVad() override;
     std::string Recognize(const int16_t *samples, size_t n) override;
     bool Synthesize(const std::string &text, SynthResult &out) override;
 
 private:
     bool EnsureKws();
+    bool EnsureVad();
     bool EnsureStt();
     bool EnsureTts();
 
@@ -34,9 +38,11 @@ private:
     // public header; cast back in the .cc).
     void *kws_ = nullptr;     // SherpaOnnxKeywordSpotter*
     void *kws_stream_ = nullptr; // SherpaOnnxOnlineStream*
+    void *vad_ = nullptr;     // SherpaOnnxVoiceActivityDetector*
     const void *stt_ = nullptr; // SherpaOnnxOfflineRecognizer* (API returns const)
     void *tts_ = nullptr;     // SherpaOnnxOfflineTts*
     bool kws_tried_ = false;
+    bool vad_tried_ = false;
     bool stt_tried_ = false;
     bool tts_tried_ = false;
 };

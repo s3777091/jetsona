@@ -26,7 +26,9 @@ namespace jetson::audio {
 
 namespace {
 // 512 frames @ 16 kHz = 32 ms per chunk.
-constexpr int kCalibrationChunks = 31;      // ~1 s startup noise calibration
+constexpr int kCalibrationChunks = 313;     // ~10 s robust startup calibration
+constexpr double kCalibrationRejectRms = 500.0;
+constexpr int kMinOnsetChunks = 3;          // reject short fan/mechanical spikes
 constexpr int kMinSpeechChunks = 2;         // 64 ms of speech to start an utterance
 constexpr int kSilenceToEndChunks = 28;     // ~900 ms trailing silence -> endpoint
 constexpr int kMaxUtterChunks = 375;         // 12 s hard cap
@@ -112,6 +114,8 @@ bool VoiceLoop::Start() {
     const int pre_roll_ms = std::max(
         0, std::min(1000, voice.GetInt("vad_pre_roll_ms", 640)));
     pre_roll_samples_ = static_cast<size_t>(pre_roll_ms) * 16;
+    calibration_rms_.clear();
+    calibration_rms_.reserve(kCalibrationChunks);
     ESP_LOGI(TAG,
              "adaptive VAD (min=%.1f, noise x%.2f +%.1f, calibrate=%d ms, pre-roll=%d ms)",
              vad_min_rms_, vad_noise_multiplier_, vad_noise_margin_,
@@ -180,9 +184,11 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     // is not a command; the next utterance is handled inside the awake window.
     if (engine_ && engine_->FeedWake(samples, n)) {
         ESP_LOGI(TAG, "wake matched (KWS)");
+        engine_->ResetVad();
         utter_.clear();
         pre_roll_.clear();
         speech_chunks_ = silence_chunks_ = total_chunks_ = 0;
+        onset_chunks_ = 0;
         state_ = kIdle;
         awake_until_ = std::chrono::steady_clock::now() +
                        std::chrono::seconds(kAwakeWindowSec);
@@ -193,60 +199,133 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
         return;
     }
 
+    const bool neural_vad = engine_ && engine_->VadReady();
+    const bool neural_speech =
+        neural_vad && engine_->FeedVad(samples, n);
+
     if (state_ == kIdle) {
         // Preserve audio before onset so a quiet initial "Hey" is not lost.
         pre_roll_.insert(pre_roll_.end(), samples, samples + n);
         while (pre_roll_.size() > pre_roll_samples_) pre_roll_.pop_front();
 
-        // One second of calibration is cheap and prevents a fixed threshold
-        // from assuming every reSpeaker/room has the same gain and noise.
+        if (neural_vad) {
+            idle_peak_rms_ = std::max(idle_peak_rms_, rms);
+            idle_log_chunks_++;
+            if (neural_speech) {
+                onset_chunks_++;
+                if (onset_chunks_ >= 2) {
+                    state_ = kCollecting;
+                    utter_.assign(pre_roll_.begin(), pre_roll_.end());
+                    pre_roll_.clear();
+                    speech_chunks_ = onset_chunks_;
+                    silence_chunks_ = 0;
+                    total_chunks_ = onset_chunks_;
+                    onset_chunks_ = 0;
+                    ESP_LOGI(TAG,
+                             "speech onset (Silero VAD, rms=%.1f)",
+                             rms);
+                }
+            } else {
+                onset_chunks_ = 0;
+                if (idle_log_chunks_ >= kVadLogChunks) {
+                    ESP_LOGI(TAG,
+                             "VAD idle (Silero, peak-rms=%.1f)",
+                             idle_peak_rms_);
+                    idle_log_chunks_ = 0;
+                    idle_peak_rms_ = 0.0;
+                }
+            }
+            return;
+        }
+
+        // Keep several seconds of samples and use their lower percentile. This
+        // measures continuous fan noise correctly, while ignoring chunks where
+        // somebody starts talking before startup calibration has finished.
         if (calibration_chunks_ < kCalibrationChunks) {
-            noise_rms_ =
-                (noise_rms_ * static_cast<double>(calibration_chunks_) + rms) /
-                static_cast<double>(calibration_chunks_ + 1);
+            calibration_rms_.push_back(rms);
             calibration_chunks_++;
             if (calibration_chunks_ == kCalibrationChunks) {
-                // A user may start speaking as soon as the service restarts.
-                // Do not let that first second become a permanently inflated
-                // "room noise" estimate. The known ReSpeaker idle floor is
-                // below half the conservative onset threshold; idle tracking
-                // will still adapt upward later when the room is truly noisy.
-                const double calibration_cap = vad_min_rms_ * 0.5;
-                if (noise_rms_ > calibration_cap) {
+                std::sort(calibration_rms_.begin(), calibration_rms_.end());
+                const size_t low_index = std::min(
+                    calibration_rms_.size() - 1,
+                    static_cast<size_t>(
+                        (calibration_rms_.size() - 1) * 0.20));
+                const size_t median_index = calibration_rms_.size() / 2;
+                const size_t high_index = std::min(
+                    calibration_rms_.size() - 1,
+                    static_cast<size_t>(
+                        (calibration_rms_.size() - 1) * 0.60));
+                const double low = calibration_rms_[low_index];
+                const double median =
+                    calibration_rms_[calibration_rms_.size() / 2];
+                const double high = calibration_rms_[high_index];
+                // Reject a window with no quiet portion at all (for example a
+                // startup sound or somebody talking through all 10 seconds).
+                // KWS keeps listening while the next window is collected.
+                if (low > kCalibrationRejectRms) {
                     ESP_LOGW(TAG,
-                             "VAD calibration contained speech (measured=%.1f, cap=%.1f)",
-                             noise_rms_, calibration_cap);
-                    noise_rms_ = calibration_cap;
+                             "VAD calibration contaminated (p20=%.1f); retrying",
+                             low);
+                    calibration_rms_.clear();
+                    calibration_chunks_ = 0;
+                    pre_roll_.clear();
+                    return;
                 }
-                ESP_LOGI(TAG, "VAD calibrated (noise=%.1f, threshold=%.1f)",
-                         noise_rms_,
-                         std::max(vad_min_rms_,
-                                  noise_rms_ * vad_noise_multiplier_ +
-                                      vad_noise_margin_));
+                // p60 is high enough to include the continuous fan but remains
+                // below a short spoken phrase in a ten-second window.
+                noise_rms_ = calibration_rms_[median_index];
+                noise_high_rms_ = high;
+                const double fan_guard = high * 1.90 + 20.0;
+                ESP_LOGI(TAG,
+                         "VAD calibrated (p20=%.1f, median=%.1f, p60=%.1f, threshold=%.1f)",
+                         low, median, high,
+                         std::max(
+                             fan_guard,
+                             std::max(vad_min_rms_,
+                                      noise_rms_ * vad_noise_multiplier_ +
+                                          vad_noise_margin_)));
+                calibration_rms_.clear();
+                calibration_rms_.shrink_to_fit();
                 pre_roll_.clear();
             }
             return;
         }
 
-        const double threshold =
+        const bool awake =
+            std::chrono::steady_clock::now() < awake_until_;
+        // The upper quiet-band statistic captures the fan's broadband bursts,
+        // which its median alone misses. Keep a stronger guard while asleep;
+        // after a real KWS wake, relax it slightly for a soft follow-up.
+        const double fan_guard =
+            noise_high_rms_ * (awake ? 1.70 : 1.90) +
+            (awake ? 15.0 : 20.0);
+        const double threshold = std::max(
+            fan_guard,
             std::max(vad_min_rms_,
-                     noise_rms_ * vad_noise_multiplier_ + vad_noise_margin_);
+                     noise_rms_ * vad_noise_multiplier_ + vad_noise_margin_));
         idle_peak_rms_ = std::max(idle_peak_rms_, rms);
         idle_log_chunks_++;
 
-        // Open-mic: start collecting on speech onset. Wake matching happens
-        // later on the Vietnamese STT transcript.
+        // A fan can produce isolated 2-10 ms mechanical spikes far above its
+        // steady RMS. Require sustained energy for ~96 ms before opening the
+        // command utterance; pre-roll still preserves its first syllable.
         if (rms > threshold) {
-            state_ = kCollecting;
-            utter_.assign(pre_roll_.begin(), pre_roll_.end());
-            pre_roll_.clear();
-            speech_chunks_ = 1;
-            silence_chunks_ = 0;
-            total_chunks_ = 1;
-            active_threshold_ = threshold;
-            ESP_LOGI(TAG, "speech onset (rms=%.1f, threshold=%.1f, noise=%.1f)",
-                     rms, threshold, noise_rms_);
+            onset_chunks_++;
+            if (onset_chunks_ >= kMinOnsetChunks) {
+                state_ = kCollecting;
+                utter_.assign(pre_roll_.begin(), pre_roll_.end());
+                pre_roll_.clear();
+                speech_chunks_ = onset_chunks_;
+                silence_chunks_ = 0;
+                total_chunks_ = onset_chunks_;
+                onset_chunks_ = 0;
+                active_threshold_ = threshold;
+                ESP_LOGI(TAG,
+                         "speech onset sustained (rms=%.1f, threshold=%.1f, noise=%.1f)",
+                         rms, threshold, noise_rms_);
+            }
         } else {
+            onset_chunks_ = 0;
             // Track the stationary noise floor slowly without letting a speech
             // onset immediately drag the threshold upward.
             noise_rms_ = noise_rms_ * 0.99 + rms * 0.01;
@@ -268,8 +347,8 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     // floor instead of the higher onset threshold. This keeps quiet syllables
     // such as the middle of "Hey Nova" from being mistaken for silence.
     const double continue_threshold =
-        std::max(noise_rms_ * 1.25 + 4.0, active_threshold_ * 0.55);
-    if (rms > continue_threshold) {
+        std::max(noise_rms_ * 1.35 + 6.0, active_threshold_ * 0.80);
+    if (neural_vad ? neural_speech : rms > continue_threshold) {
         speech_chunks_++;
         silence_chunks_ = 0;
     } else {
@@ -279,6 +358,7 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     // Onset turned out to be a transient (no sustained speech) -> abandon.
     if (total_chunks_ >= kFalseWakeChunks && speech_chunks_ < kMinSpeechChunks) {
         state_ = kIdle;
+        onset_chunks_ = 0;
         utter_.clear();
         return;
     }
@@ -330,21 +410,16 @@ bool VoiceLoop::MatchWake(const std::string &text, std::string &cmd) {
 }
 
 void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
-    bool already_awake = false;
-    {
+    auto go_idle = [this] {
         std::lock_guard<std::mutex> lk(mtx_);
-        already_awake = std::chrono::steady_clock::now() < awake_until_;
-    }
-
-    auto go_idle = [this] { std::lock_guard<std::mutex> lk(mtx_); state_ = kIdle; };
-    // KWS runs continuously in OnMicChunk. If it did not fire, ambient speech
-    // must not invoke either the Vietnamese command recognizer or the obsolete
-    // multilingual fallback (which is incompatible with JetPack's old ORT).
-    if (!already_awake) {
-        go_idle();
-        return;
-    }
-
+        onset_chunks_ = 0;
+        state_ = kIdle;
+    };
+    // The tiny English KWS is the fast path, but a Vietnamese accent can miss
+    // its English acoustic model. Decode sustained speech with the Vietnamese
+    // recognizer as a fallback and require an explicit wake phrase unless KWS
+    // already opened the awake window. Ambient speech therefore cannot send a
+    // command merely because VAD fired.
     std::string text;
     if (engine_) text = engine_->Recognize(utterance.data(), utterance.size());
     if (text.empty()) { go_idle(); return; }
@@ -363,6 +438,7 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
         std::lock_guard<std::mutex> lk(mtx_);
         awake_until_ = std::chrono::steady_clock::now() +
                        std::chrono::seconds(kAwakeWindowSec);
+        onset_chunks_ = 0;
         state_ = kIdle;
         return;
     }
@@ -378,6 +454,7 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance) {
         std::lock_guard<std::mutex> lk(mtx_);
         awake_until_ = std::chrono::steady_clock::now() +
                        std::chrono::seconds(kAwakeWindowSec);
+        onset_chunks_ = 0;
         state_ = kIdle;
     });
 }

@@ -46,6 +46,8 @@ std::string Trim(std::string s) {
 
 SherpaVoiceEngine::~SherpaVoiceEngine() {
 #if JETSON_HAVE_SHERPA
+    if (vad_) SherpaOnnxDestroyVoiceActivityDetector(
+        reinterpret_cast<SherpaOnnxVoiceActivityDetector *>(vad_));
     if (kws_stream_) SherpaOnnxDestroyOnlineStream(
         reinterpret_cast<SherpaOnnxOnlineStream *>(kws_stream_));
     if (kws_) SherpaOnnxDestroyKeywordSpotter(
@@ -57,14 +59,14 @@ SherpaVoiceEngine::~SherpaVoiceEngine() {
 #endif
 }
 
-// Wake detection is done on the STT transcript now (see VoiceLoop), so warm the
-// STT recognizer at init instead of the KWS spotter. The KWS path is left in
-// place but unused by the loop.
+// Warm all three sessions before opening the mic. KWS is the low-latency wake
+// path; the Vietnamese STT also serves as an accent-tolerant wake fallback and
+// recognizes commands after the wake window opens.
 bool SherpaVoiceEngine::Init() {
     const bool stt_ok = EnsureStt();
     // KWS is only a few MB and runs continuously with sub-second latency.
-    // The much larger multilingual recognizer remains a lazy fallback.
     EnsureKws();
+    EnsureVad();
     // TTS session creation is slow on a Nano. Finish it before opening the mic
     // so the first successful wake receives an immediate audible reply.
     EnsureTts();
@@ -101,8 +103,8 @@ bool SherpaVoiceEngine::EnsureKws() {
     cfg.model_config.debug = 0;
     cfg.max_active_paths = I("kws_max_active_paths", 3);
     cfg.num_trailing_blanks = I("kws_num_trailing_blanks", 3);
-    cfg.keywords_score = F("kws_keywords_score", 1.0f);
-    cfg.keywords_threshold = F("kws_keywords_threshold", 0.3f);
+    cfg.keywords_score = F("kws_keywords_score", 3.0f);
+    cfg.keywords_threshold = F("kws_keywords_threshold", 0.05f);
     if (!kwb.empty()) {
         cfg.keywords_buf = kwb.c_str();
         cfg.keywords_buf_size = static_cast<int32_t>(kwb.size());
@@ -164,6 +166,87 @@ bool SherpaVoiceEngine::FeedWake(const int16_t *samples, size_t n) {
     return detected;
 #else
     return false;
+#endif
+}
+
+// ---- VAD -----------------------------------------------------------------
+
+bool SherpaVoiceEngine::EnsureVad() {
+#if JETSON_HAVE_SHERPA
+    if (vad_ || vad_tried_) return vad_ != nullptr;
+    vad_tried_ = true;
+    const std::string base = ModelsDir() + "/vad/";
+    std::string model = S("vad_model", base + "silero_vad_v4.onnx");
+    std::string provider = S("vad_provider", "cpu");
+
+    SherpaOnnxVadModelConfig cfg{};
+    cfg.silero_vad.model = model.c_str();
+    cfg.silero_vad.threshold = F("vad_speech_threshold", 0.5f);
+    cfg.silero_vad.min_silence_duration =
+        F("vad_min_silence_duration", 0.3f);
+    cfg.silero_vad.min_speech_duration =
+        F("vad_min_speech_duration", 0.15f);
+    cfg.silero_vad.max_speech_duration =
+        F("vad_max_speech_duration", 20.0f);
+    cfg.silero_vad.window_size = 512;
+    cfg.sample_rate = 16000;
+    cfg.num_threads = I("vad_num_threads", 1);
+    cfg.provider = provider.c_str();
+    cfg.debug = 0;
+
+    try {
+        vad_ = SherpaOnnxCreateVoiceActivityDetector(&cfg, 30.0f);
+    } catch (const std::exception &e) {
+        ESP_LOGE(TAG, "VAD create failed: %s", e.what());
+        vad_ = nullptr;
+    } catch (...) {
+        ESP_LOGE(TAG, "VAD create failed with an unknown exception");
+        vad_ = nullptr;
+    }
+    if (!vad_) {
+        ESP_LOGW(TAG, "neural VAD unavailable (model=%s); using energy fallback",
+                 model.c_str());
+        return false;
+    }
+    ESP_LOGI(TAG, "Silero VAD ready (threshold=%.2f, provider=%s)",
+             cfg.silero_vad.threshold, provider.c_str());
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool SherpaVoiceEngine::VadReady() const { return vad_ != nullptr; }
+
+bool SherpaVoiceEngine::FeedVad(const int16_t *samples, size_t n) {
+#if JETSON_HAVE_SHERPA
+    if (!EnsureVad()) return false;
+    auto *vad =
+        reinterpret_cast<SherpaOnnxVoiceActivityDetector *>(vad_);
+    std::vector<float> f = ToFloat(samples, n);
+    SherpaOnnxVoiceActivityDetectorAcceptWaveform(
+        vad, f.data(), static_cast<int32_t>(f.size()));
+    const bool detected = SherpaOnnxVoiceActivityDetectorDetected(vad) != 0;
+    // We retain audio in VoiceLoop's pre-roll/utterance buffers, so discard
+    // sherpa's completed segment copies to keep its circular buffer bounded.
+    while (!SherpaOnnxVoiceActivityDetectorEmpty(vad)) {
+        const SherpaOnnxSpeechSegment *segment =
+            SherpaOnnxVoiceActivityDetectorFront(vad);
+        if (segment) SherpaOnnxDestroySpeechSegment(segment);
+        SherpaOnnxVoiceActivityDetectorPop(vad);
+    }
+    return detected;
+#else
+    (void)samples;
+    (void)n;
+    return false;
+#endif
+}
+
+void SherpaVoiceEngine::ResetVad() {
+#if JETSON_HAVE_SHERPA
+    if (vad_) SherpaOnnxVoiceActivityDetectorReset(
+        reinterpret_cast<SherpaOnnxVoiceActivityDetector *>(vad_));
 #endif
 }
 
