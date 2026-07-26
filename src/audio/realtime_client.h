@@ -82,6 +82,23 @@ private:
     // not leave the speaker device claimed.
     bool playing_ = false;
 
+    /* Echo control. This board has no working canceller: measured on the
+     * device, the microphone hears the speaker at 1.2x the level it was played
+     * at, because the two sit centimetres apart. Sending that back up made the
+     * model transcribe Nova's own words as the user's, answer itself, and
+     * interrupt itself. So playback is attenuated, and while it is audible the
+     * microphone is only forwarded when it clearly beats the echo -- which is
+     * what still lets a real interruption through.
+     *
+     * echo_rms_ decays rather than dropping to zero, because audio handed to
+     * ALSA is still on its way out of the speaker for another buffer's worth
+     * of time. */
+    double out_gain_ = 0.35;
+    double echo_coupling_ = 1.2;
+    double echo_margin_ = 1.6;
+    std::atomic<double> echo_rms_{0.0};
+    std::vector<int16_t> gain_buffer_;
+
     mutable std::mutex activity_mtx_;
     double last_activity_ = 0.0;
 };

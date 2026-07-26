@@ -8,6 +8,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <sys/socket.h>
@@ -37,6 +38,22 @@ constexpr int kReplySampleRate = 24000;
 std::string EnvOr(const char *key, const std::string &fallback) {
     const char *value = std::getenv(key);
     return value && *value ? value : fallback;
+}
+
+double EnvDouble(const char *key, double fallback) {
+    const char *value = std::getenv(key);
+    if (!value || !*value) return fallback;
+    char *end = nullptr;
+    const double parsed = std::strtod(value, &end);
+    return (end && *end == '\0') ? parsed : fallback;
+}
+
+double RmsOf(const int16_t *samples, size_t n) {
+    if (!samples || n == 0) return 0.0;
+    double sum = 0.0;
+    for (size_t i = 0; i < n; ++i)
+        sum += static_cast<double>(samples[i]) * samples[i];
+    return std::sqrt(sum / static_cast<double>(n));
 }
 
 double NowSeconds() {
@@ -101,6 +118,10 @@ bool RealtimeClient::Start(const std::string &system_prompt,
 
     fd_ = fd;
     out_ = out;
+    out_gain_ = std::max(0.05, std::min(1.0, EnvDouble("JETSON_VOICE_OUT_GAIN", 0.35)));
+    echo_coupling_ = std::max(0.1, EnvDouble("JETSON_ECHO_COUPLING", 1.2));
+    echo_margin_ = std::max(1.1, EnvDouble("JETSON_ECHO_MARGIN", 1.6));
+    echo_rms_.store(0.0);
     executor_ = std::move(executor);
     on_turn_done_ = std::move(on_turn_done);
     playing_ = false;
@@ -147,6 +168,18 @@ void RealtimeClient::Stop() {
 
 void RealtimeClient::SendAudio(const int16_t *samples, size_t n) {
     if (!running_.load() || !samples || n == 0) return;
+
+    /* While Nova is audible, most of what the microphone hears is Nova. With
+     * no canceller on this board that echo is louder than the original, and
+     * forwarding it makes the model answer its own words. Forward only what
+     * clearly beats the echo -- a person speaking up close still does, which
+     * is how interrupting survives. */
+    const double echo = echo_rms_.load();
+    if (echo > 1.0) {
+        if (RmsOf(samples, n) < echo * echo_margin_) return;
+        ESP_LOGI(TAG, "barge-in: speech over playback");
+    }
+
     SendFrame(kMsgAudioIn, samples, n * sizeof(int16_t));
 }
 
@@ -218,11 +251,31 @@ void RealtimeClient::ReaderThread() {
                 playing_ = out_->BeginStream(kReplySampleRate, device);
                 if (!playing_) break;
             }
-            out_->WriteStream(reinterpret_cast<const int16_t *>(payload.data()),
-                              payload.size() / sizeof(int16_t));
+            const auto *pcm = reinterpret_cast<const int16_t *>(payload.data());
+            const size_t count = payload.size() / sizeof(int16_t);
+
+            // Attenuate before playing: at full level the echo swamps anything
+            // the user could say over it, and barge-in stops being possible.
+            gain_buffer_.resize(count);
+            for (size_t i = 0; i < count; ++i) {
+                const double scaled = pcm[i] * out_gain_;
+                gain_buffer_[i] = static_cast<int16_t>(
+                    scaled > 32767.0 ? 32767.0
+                                     : (scaled < -32768.0 ? -32768.0 : scaled));
+            }
+
+            // What the microphone is about to hear. Decay instead of dropping
+            // to zero: this audio is still leaving the speaker for another
+            // buffer's worth of time after the write returns.
+            const double expected = RmsOf(gain_buffer_.data(), count) *
+                                    echo_coupling_;
+            echo_rms_.store(std::max(expected, echo_rms_.load() * 0.8));
+
+            out_->WriteStream(gain_buffer_.data(), count);
             break;
         }
         case kMsgInterrupted:
+            echo_rms_.store(0.0);
             // The user spoke over the reply. Everything already handed to ALSA
             // is stale; playing it out would be the device talking over them.
             if (out_ && playing_) {
@@ -237,6 +290,7 @@ void RealtimeClient::ReaderThread() {
             HandleToolCall(std::string(payload.begin(), payload.end()));
             break;
         case kMsgTurnComplete:
+            echo_rms_.store(0.0);
             if (out_ && playing_) {
                 out_->EndStream();
                 playing_ = false;
