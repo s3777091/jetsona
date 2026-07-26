@@ -62,12 +62,14 @@ private:
     void OnMicChunk(const int16_t *samples, size_t n);
     void SpeakerThread();
     void RecognizeAndSend(const std::vector<int16_t> &utterance,
-                          bool explicit_wake);
+                          bool explicit_wake, bool follow_up);
 
     // Decide whether a transcript should be acted on. Returns true when the
-    // wake word "nova" is present (cmd = text after it) or we are still awake
-    // from a recent turn (cmd = whole text). Reads awake_until_ under mtx_.
-    bool MatchWake(const std::string &text, bool explicit_wake,
+    // wake word is present (cmd = text after it), when the local model already
+    // matched it, or when capture began inside the awake window (cmd = whole
+    // text). The last two are decided at capture time and passed in, because
+    // endpointing plus cloud STT can outlast the window on their own.
+    bool MatchWake(const std::string &text, bool explicit_wake, bool follow_up,
                    std::string &cmd);
 
     std::unique_ptr<VoiceEngine> engine_;
@@ -87,6 +89,9 @@ private:
     int onset_chunks_ = 0;
     int recent_vad_chunks_ = 0;
     bool wake_latched_ = false;
+    // Set when a capture starts inside the awake window, so the follow-up is
+    // still honoured after STT returns however long that took.
+    bool followup_latched_ = false;
 
     // Adaptive energy VAD. Startup calibration keeps the per-chunk RMS samples
     // and uses a low percentile, so steady fan noise becomes part of the floor

@@ -30,13 +30,23 @@ constexpr int kCalibrationChunks = 313;     // ~10 s robust startup calibration
 constexpr double kCalibrationRejectRms = 500.0;
 constexpr int kMinOnsetChunks = 3;          // reject short fan/mechanical spikes
 constexpr int kMinSpeechChunks = 2;         // 64 ms of speech to start an utterance
-constexpr int kSilenceToEndChunks = 20;     // ~640 ms trailing silence -> endpoint
+/* Trailing silence before a capture is considered finished. 640 ms shaved a
+ * little latency but cut people off mid-sentence: an ordinary pause for breath
+ * or for thinking runs past it, and the half-spoken command goes to STT while
+ * the rest is lost to the busy state. Natural speech matters more here than
+ * the quarter second. */
+constexpr int kSilenceToEndChunks = 28;     // ~900 ms trailing silence -> endpoint
 constexpr int kMaxUtterChunks = 375;         // 12 s hard cap
 constexpr int kFalseWakeChunks = 78;         // 2.5 s with no speech -> abandon
 constexpr int kVadLogChunks = 313;           // ~10 s between idle diagnostics
 
-// Seconds to keep listening for a follow-up (no wake word needed) after a turn.
-constexpr int kAwakeWindowSec = 12;
+/* Seconds to keep listening for a follow-up with no wake word. This is counted
+ * from the moment the acknowledgement is queued, and the device's own latency
+ * -- rendering the reply, speaking it, then transcribing the answer -- ate the
+ * entire twelve seconds in a logged session, leaving the user none. Counting it
+ * properly is what followup_latched_ does; this only has to outlast the reply
+ * plus a person deciding what to say. */
+constexpr int kAwakeWindowSec = 25;
 
 /* Spoken only when the wake word arrives with no command attached. Rotating
  * through these keeps Nova from answering every activation with the identical
@@ -286,6 +296,12 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
             ++onset_chunks_;
             if (onset_chunks_ >= 2) {
                 wake_latched_ = false;
+                // Capture began inside the awake window, so this speech is a
+                // command. Remember that here rather than re-reading the clock
+                // once the transcript comes back: endpointing plus a cloud STT
+                // round trip take seconds, and the window would have expired
+                // by then through no fault of the speaker.
+                followup_latched_ = true;
                 state_ = kCollecting;
                 utter_.assign(pre_roll_.begin(), pre_roll_.end());
                 pre_roll_.clear();
@@ -319,12 +335,14 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     if (!endpoint_new) return;
 
     const bool explicit_wake = wake_latched_;
+    const bool follow_up = followup_latched_;
     wake_latched_ = false;
+    followup_latched_ = false;
     state_ = kBusy;
     std::vector<int16_t> utterance = std::move(utter_);
     utter_.clear();
     std::thread(&VoiceLoop::RecognizeAndSend, this, std::move(utterance),
-                explicit_wake).detach();
+                explicit_wake, follow_up).detach();
     return;
 
 #if 0  // Superseded by the continuous-KWS state machine above.
@@ -532,7 +550,7 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
 }
 
 bool VoiceLoop::MatchWake(const std::string &text, bool explicit_wake,
-                          std::string &cmd) {
+                          bool follow_up, std::string &cmd) {
     const std::string low = LowerWakeText(text);
     size_t pos = std::string::npos, wlen = 0;
     for (const char *w : kWakePhrases) {
@@ -557,14 +575,17 @@ bool VoiceLoop::MatchWake(const std::string &text, bool explicit_wake,
         cmd = TrimStr(text.substr(pos + wlen));   // command follows the wake word
         return true;
     }
-    // The local acoustic model has already verified the wake phrase. Cloud STT
-    // may omit or slightly rewrite those first words, so do not require a
-    // second textual wake match before accepting the captured command.
-    if (explicit_wake) {
+    // The local acoustic model has already verified the wake phrase, or the
+    // capture began inside the awake window. Cloud STT may omit or rewrite the
+    // opening words, and the window may well have expired during the round
+    // trip, so neither is re-checked here -- the decision was made when this
+    // audio was recorded.
+    if (explicit_wake || follow_up) {
         cmd = TrimStr(text);
         return true;
     }
-    // No wake word: act only if we're still awake from a recent turn.
+    // Nothing latched this capture: fall back to the clock for anything that
+    // reached here by another path.
     std::lock_guard<std::mutex> lk(mtx_);
     if (std::chrono::steady_clock::now() < awake_until_) {
         cmd = TrimStr(text);
@@ -574,7 +595,7 @@ bool VoiceLoop::MatchWake(const std::string &text, bool explicit_wake,
 }
 
 void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance,
-                                 bool explicit_wake) {
+                                 bool explicit_wake, bool follow_up) {
     auto go_idle = [this] {
         std::lock_guard<std::mutex> lk(mtx_);
         onset_chunks_ = 0;
@@ -597,7 +618,7 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance,
         static_cast<double>(utterance.size()) / 16000.0;
     const double bare_wake_sec =
         static_cast<double>(pre_roll_samples_) / 16000.0 +
-        kSilenceToEndChunks * 0.032 + 0.16;
+        kSilenceToEndChunks * 0.032 + 0.55;
     if (explicit_wake && utterance_sec <= bare_wake_sec) {
         ESP_LOGI(TAG, "bare wake (%.2f s <= %.2f s); acknowledging without STT",
                  utterance_sec, bare_wake_sec);
@@ -617,7 +638,7 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance,
     ESP_LOGI(TAG, "heard: %s", text.c_str());
 
     std::string cmd;
-    if (!MatchWake(text, explicit_wake, cmd)) {
+    if (!MatchWake(text, explicit_wake, follow_up, cmd)) {
         go_idle();
         return;
     }
