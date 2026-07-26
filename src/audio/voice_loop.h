@@ -18,6 +18,7 @@ namespace jetson::audio {
 class VoiceEngine;
 class MicCapture;
 class AudioOutput;
+class RealtimeClient;
 
 /* The voice loop: mic -> continuous openWakeWord -> Silero confirmation ->
  * capture through trailing silence -> OpenAI STT -> Conversation -> Edge TTS.
@@ -72,9 +73,18 @@ private:
     bool MatchWake(const std::string &text, bool explicit_wake, bool follow_up,
                    std::string &cmd);
 
+    // Opens a streaming Gemini Live session on a wake word and closes it when
+    // the conversation goes quiet. While it is open the mic keeps feeding it,
+    // including while Nova is talking -- that is what allows interrupting her.
+    // Null when JETSON_VOICE_REALTIME is off, which leaves the older
+    // STT/LLM/TTS path in charge.
+    bool StartRealtime();
+
     std::unique_ptr<VoiceEngine> engine_;
     std::unique_ptr<MicCapture> mic_;
     std::unique_ptr<AudioOutput> out_;
+    std::unique_ptr<RealtimeClient> realtime_;
+    double realtime_idle_sec_ = 20.0;
 
     // State machine (guarded by mtx_). kIdle waits for speech onset (energy);
     // kCollecting accumulates the utterance; kBusy ignores the mic until the

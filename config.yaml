@@ -88,6 +88,23 @@ OPENWAKEWORD_THRESHOLD: "0.10"
 OPENWAKEWORD_MIN_FRAMES: "2"
 OPENWAKEWORD_SPEEX: "0"
 
+# Realtime voice. One streaming Gemini Live session replaces the four serial
+# stages below (transcribe, think, think again, synthesise), which is what made
+# the device impossible to interrupt: the microphone had to be muted while it
+# spoke. Measured on this box: 3.4 s from the end of a question to the first
+# word of the answer, against roughly fourteen.
+#
+# The session is opened by the local wake word and closed after
+# GEMINI_LIVE_IDLE_SEC of quiet, so it is billed per conversation, not per day.
+# Set JETSON_VOICE_REALTIME to 0 to fall back to the OPENAI_TRANSCRIBE_* and
+# EDGE_TTS_* chain, which is kept working for exactly that reason.
+# GEMINI_API_KEY lives in .env.
+JETSON_VOICE_REALTIME: "1"
+GEMINI_LIVE_SOCKET: "/run/jetsona-live/realtime.sock"
+GEMINI_LIVE_MODEL: "gemini-2.5-flash-native-audio-preview-12-2025"
+GEMINI_LIVE_VOICE: "Aoede"
+GEMINI_LIVE_IDLE_SEC: "20"
+
 OPENAI_TRANSCRIBE_BASE_URL: "https://api.openai.com/v1"
 OPENAI_TRANSCRIBE_MODEL: "gpt-4o-mini-transcribe"
 OPENAI_TRANSCRIBE_LANGUAGE: "vi"

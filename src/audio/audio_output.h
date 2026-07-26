@@ -31,9 +31,28 @@ public:
     /* Interrupts the in-flight Play() if any. Thread-safe. */
     void Stop() { stop_.store(true); }
 
+    /* Streaming playback for the realtime path, where the reply arrives in
+     * pieces and has to start playing before the rest of it exists. Begin once,
+     * Write each piece as it lands, End to drain what is left.
+     *
+     * Abort is barge-in: the user talked over the reply, so everything still
+     * sitting in the ALSA buffer is stale and must be dropped rather than
+     * played after they have stopped. Samples are S16LE mono, matching what
+     * the model streams back. */
+    bool BeginStream(int sample_rate, const std::string &device);
+    bool WriteStream(const int16_t *samples, size_t n);
+    void EndStream();
+    void AbortStream();
+    bool streaming() const;
+
 private:
+    void CloseStreamLocked(bool drain);
+
     std::mutex mtx_;
     std::atomic<bool> stop_{false};
+
+    mutable std::mutex stream_mtx_;
+    snd_pcm_t *stream_pcm_ = nullptr;
 };
 
 } // namespace jetson::audio

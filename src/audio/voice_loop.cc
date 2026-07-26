@@ -2,6 +2,7 @@
 
 #include "audio/audio_output.h"
 #include "audio/mic_capture.h"
+#include "audio/realtime_client.h"
 #include "audio/sherpa_engine.h"
 #include "audio/voice_engine.h"
 #include "app/application.h"
@@ -177,6 +178,20 @@ bool VoiceLoop::Start() {
              vad_min_rms_, vad_noise_multiplier_, vad_noise_margin_,
              kCalibrationChunks * 32, pre_roll_ms);
 
+    // Realtime is the intended path; the STT/LLM/TTS chain stays behind it as
+    // a fallback for when the sidecar is down or the switch is off.
+    const char *realtime_env = std::getenv("JETSON_VOICE_REALTIME");
+    const bool realtime_on = !realtime_env || std::atoi(realtime_env) != 0;
+    if (realtime_on) {
+        realtime_ = std::make_unique<RealtimeClient>();
+        const char *idle = std::getenv("GEMINI_LIVE_IDLE_SEC");
+        if (idle && *idle) realtime_idle_sec_ = std::max(5.0, std::atof(idle));
+        ESP_LOGI(TAG, "realtime path enabled (idle timeout %.0f s)",
+                 realtime_idle_sec_);
+    } else {
+        ESP_LOGI(TAG, "realtime path disabled; using STT/LLM/TTS chain");
+    }
+
     running_.store(true);
     speaker_thread_ = std::thread(&VoiceLoop::SpeakerThread, this);
     jetson::platform::SetThreadName(speaker_thread_, "ekko-speak");
@@ -207,6 +222,7 @@ void VoiceLoop::Stop() {
     if (!running_.exchange(false)) return;
     speech_cv_.notify_all();
     if (mic_) mic_->Stop();
+    if (realtime_) realtime_->Stop();
     if (speaker_thread_.joinable()) speaker_thread_.join();
 }
 
@@ -224,8 +240,49 @@ void VoiceLoop::NotifyToolStarted() {
     Speak(NextWorkingFiller());
 }
 
+bool VoiceLoop::StartRealtime() {
+    if (!realtime_ || realtime_->running()) return realtime_ && realtime_->running();
+    auto *conv = Application::GetInstance().GetConversation();
+    if (!conv) return false;
+
+    const bool ok = realtime_->Start(
+        conv->SystemPrompt(), conv->ToolsJson(), out_.get(),
+        [conv](const std::string &name, const std::string &args) {
+            return conv->ExecuteTool(name, args);
+        },
+        [] {});
+    if (!ok) return false;
+
+    // Hand over the ring buffer so a command spoken in the same breath as the
+    // wake word -- "Hey Nova, bật nhạc" -- reaches the model intact.
+    if (!pre_roll_.empty()) {
+        std::vector<int16_t> pre(pre_roll_.begin(), pre_roll_.end());
+        pre_roll_.clear();
+        realtime_->SendAudio(pre.data(), pre.size());
+    }
+    ESP_LOGI(TAG, "realtime session started by wake word");
+    return true;
+}
+
 void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
     if (!running_.load()) return;
+
+    /* A live session takes over the microphone completely. Note what is NOT
+     * here: no speaking_ check and no kBusy check. The mic stays open while
+     * Nova is talking and while a tool is running, which is exactly what the
+     * old path forbade and exactly what lets the user cut in. */
+    if (realtime_ && realtime_->running()) {
+        realtime_->SendAudio(samples, n);
+        if (realtime_->IdleSeconds() > realtime_idle_sec_) {
+            ESP_LOGI(TAG, "realtime idle %.0f s; closing session",
+                     realtime_idle_sec_);
+            realtime_->Stop();
+            std::lock_guard<std::mutex> lk(mtx_);
+            pre_roll_.clear();
+            state_ = kIdle;
+        }
+        return;
+    }
     // While the speaker is active (or a turn is in flight) we ignore the mic:
     // the device's own TTS output must not be transcribed back as a command, and
     // we don't want to collect a second utterance mid-turn.
@@ -270,6 +327,11 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
                          "Hey Nova candidate rejected: Silero found no speech");
                 return;
             }
+
+            // Preferred path: hand the conversation to the streaming session.
+            // Falls through to the older capture-and-transcribe machine if the
+            // sidecar is not up, so a failed session is not a dead device.
+            if (StartRealtime()) return;
 
             wake_latched_ = true;
             state_ = kCollecting;

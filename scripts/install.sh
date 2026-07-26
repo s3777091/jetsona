@@ -69,6 +69,7 @@ sudo bash "$JETSON_DIR/scripts/build_voice_runtime.sh"
 # file busy"). This is harmless on the first install when the unit is absent.
 sudo systemctl stop jetson-fw 2>/dev/null || true
 sudo systemctl stop jetsona-openwakeword 2>/dev/null || true
+sudo systemctl stop jetsona-gemini-live 2>/dev/null || true
 
 echo "==> Installing to /opt/jetson-fw"
 echo "==> Binary: $BUILD_DIR/jetson_fw"
@@ -104,6 +105,9 @@ sudo cp "$JETSON_DIR/scripts/config_loader.sh" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/openwakeword_runtime.py" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/openwakeword_probe.py" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/jetsona_openwakeword_run.sh" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/gemini_live_runtime.py" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/gemini_live_probe.py" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/jetsona_live_run.sh" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/edge_tts_synthesize.sh" /opt/jetson-fw/scripts/
 sudo chmod +x /opt/jetson-fw/scripts/s3_assets.py
 # Supervisor: restarts the firmware if it ever exits.
@@ -114,6 +118,9 @@ sudo chmod +x \
     /opt/jetson-fw/scripts/openwakeword_runtime.py \
     /opt/jetson-fw/scripts/openwakeword_probe.py \
     /opt/jetson-fw/scripts/jetsona_openwakeword_run.sh \
+    /opt/jetson-fw/scripts/gemini_live_runtime.py \
+    /opt/jetson-fw/scripts/gemini_live_probe.py \
+    /opt/jetson-fw/scripts/jetsona_live_run.sh \
     /opt/jetson-fw/scripts/edge_tts_synthesize.sh
 if [ -f "$JETSON_DIR/.env" ]; then
     sudo cp "$JETSON_DIR/.env" /opt/jetson-fw/.env
@@ -121,6 +128,7 @@ if [ -f "$JETSON_DIR/.env" ]; then
 fi
 sudo cp "$JETSON_DIR/scripts/jetson-fw.service" /etc/systemd/system/
 sudo cp "$JETSON_DIR/scripts/jetsona-openwakeword.service" /etc/systemd/system/
+sudo cp "$JETSON_DIR/scripts/jetsona-gemini-live.service" /etc/systemd/system/
 
 # Legacy 12V-fan-on-GPIO helper (NOT auto-enabled — requires MOSFET rewiring
 # first). Unrelated to the PWM fan header below; kept for boards wired that way.
@@ -146,6 +154,8 @@ sudo systemctl daemon-reload
 
 sudo systemctl enable jetsona-openwakeword
 sudo systemctl restart jetsona-openwakeword
+sudo systemctl enable jetsona-gemini-live
+sudo systemctl restart jetsona-gemini-live
 sudo systemctl enable jetson-fw
 sudo systemctl restart jetson-fw
 sudo systemctl enable jetson-fan

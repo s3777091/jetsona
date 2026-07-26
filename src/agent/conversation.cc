@@ -1,6 +1,8 @@
 #include "conversation.h"
 #include "esp_log.h"
 
+#include <nlohmann/json.hpp>
+
 #include <thread>
 #include <utility>
 
@@ -100,6 +102,33 @@ void Conversation::RunWithTools(std::vector<ChatMessage> &history,
         // tools or produces a final answer.
     }
     out_err = "Agent vuot qua so luong tool-call cho phep";
+}
+
+std::string Conversation::ToolsJson() const {
+    if (!tools_) return "[]";
+    nlohmann::json out = nlohmann::json::array();
+    for (const auto &def : tools_->Definitions()) {
+        nlohmann::json entry;
+        entry["name"] = def.name;
+        entry["description"] = def.description;
+        auto params = nlohmann::json::parse(def.parameters_json, nullptr, false);
+        entry["parameters"] = params.is_discarded() ? nlohmann::json::object()
+                                                    : params;
+        out.push_back(std::move(entry));
+    }
+    return out.dump();
+}
+
+std::string Conversation::ExecuteTool(const std::string &name,
+                                      const std::string &arguments_json) {
+    Tool *tool = tools_ ? tools_->Find(name) : nullptr;
+    if (!tool) return "ERROR: tool khong ton tai: " + name;
+    if (on_tool_event_) on_tool_event_(name, "start");
+    std::string result = tool->Execute(arguments_json);
+    if (on_tool_event_)
+        on_tool_event_(name, result.rfind("ERROR", 0) == 0 ? "err" : "ok");
+    ESP_LOGI(TAG, "tool %s -> %s", name.c_str(), result.substr(0, 120).c_str());
+    return result;
 }
 
 void Conversation::Clear() {

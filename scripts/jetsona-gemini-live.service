@@ -1,0 +1,21 @@
+[Unit]
+Description=Jetsona Gemini Live realtime voice session
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+RuntimeDirectory=jetsona-live
+RuntimeDirectoryMode=0755
+ExecStart=/opt/jetson-fw/scripts/jetsona_live_run.sh
+ExecStop=-/usr/bin/docker stop --time 2 jetsona-gemini-live
+Restart=always
+RestartSec=2
+
+# Holds the API key and the WebSocket, never a sound device: jetson_fw stays
+# the only ALSA owner and streams PCM over the shared Unix socket.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

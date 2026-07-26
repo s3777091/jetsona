@@ -41,6 +41,21 @@ public:
     bool Send(const std::string &user_text, ReplyCb cb);
 
     void SetTools(std::shared_ptr<ToolRegistry> tools) { tools_ = std::move(tools); }
+
+    /* The registry as a JSON array of {name, description, parameters}, for the
+     * realtime session to declare on connect. Sharing the registry rather than
+     * restating it keeps the two paths from drifting apart. */
+    std::string ToolsJson() const;
+
+    /* Run one tool by name and return its result string. Used by the realtime
+     * path, where the model asks over the socket instead of over HTTP. Returns
+     * an "ERROR: ..." string for an unknown tool, as the tools themselves do. */
+    std::string ExecuteTool(const std::string &name,
+                            const std::string &arguments_json);
+
+    // The persona the realtime session must adopt, so both paths speak with
+    // the same voice and obey the same rules.
+    std::string SystemPrompt() const { return client_.SystemPrompt(); }
     void SetOnToolEvent(ToolEventCb cb) { on_tool_event_ = std::move(cb); }
 
     bool busy() const { return busy_.load(); }
