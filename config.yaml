@@ -105,6 +105,29 @@ GEMINI_LIVE_MODEL: "gemini-2.5-flash-native-audio-preview-12-2025"
 GEMINI_LIVE_VOICE: "Aoede"
 GEMINI_LIVE_IDLE_SEC: "20"
 
+# Daily ceiling on realtime session time. This path is billed by the second a
+# session stays open, so a session that fails to close, or a run of false wakes,
+# would spend for as long as nobody looks. The running total is kept in
+# /var/lib/jetson-fw/realtime_usage.json so a restart cannot clear the day, and
+# is printed with every session so the figure is in the journal rather than only
+# on a bill.
+#
+# Hitting the ceiling is not an outage: the device falls back to the
+# OPENAI_TRANSCRIBE_*/EDGE_TTS_* chain, which costs about a thousandth as much
+# per turn, and returns to realtime at midnight. Set to 0 to remove the cap.
+GEMINI_LIVE_DAILY_MINUTES: "60"
+
+# Echo handling for a board whose canceller does nothing: measured here, the
+# microphone hears the speaker at ~1.2x the level it was played at. Playback is
+# attenuated so a person can be heard over it at all, and the microphone is only
+# forwarded while Nova speaks once it beats the expected echo by the margin.
+# These describe this room and this enclosure, so tune them by ear:
+# quieter Nova -> lower the gain; Nova answering herself -> lower it further;
+# interruptions not registering -> lower the margin.
+JETSON_VOICE_OUT_GAIN: "0.35"
+JETSON_ECHO_COUPLING: "1.2"
+JETSON_ECHO_MARGIN: "2.2"
+
 OPENAI_TRANSCRIBE_BASE_URL: "https://api.openai.com/v1"
 OPENAI_TRANSCRIBE_MODEL: "gpt-4o-mini-transcribe"
 OPENAI_TRANSCRIBE_LANGUAGE: "vi"
@@ -113,7 +136,7 @@ EDGE_TTS_SCRIPT: "/opt/jetson-fw/scripts/edge_tts_synthesize.sh"
 EDGE_TTS_VOICE: "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE: "+0%"
 EDGE_TTS_SAMPLE_RATE: "24000"
-JETSON_VOICE_RUNTIME_IMAGE: "jetsona/voice-runtime:oww-0.6-edge-7.2.8"
+JETSON_VOICE_RUNTIME_IMAGE: "jetsona/voice-runtime:oww0.6-edge7.2.8-genai2.14"
 
 # Network and local paths.
 JETSON_FILES_HOME: ""

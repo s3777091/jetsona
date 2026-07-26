@@ -740,7 +740,7 @@ bool SherpaVoiceEngine::Synthesize(const std::string &text, SynthResult &out) {
     const std::string sample_rate_arg = std::to_string(sample_rate);
     const std::string image =
         EnvOr("JETSON_VOICE_RUNTIME_IMAGE",
-              "jetsona/voice-runtime:oww-0.6-edge-7.2.8");
+              "jetsona/voice-runtime:oww0.6-edge7.2.8-genai2.14");
 
     const pid_t child = fork();
     if (child == 0) {

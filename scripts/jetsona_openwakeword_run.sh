@@ -14,7 +14,7 @@ set -eu
 . /opt/jetson-fw/scripts/config_loader.sh
 jetson_load_config "${JETSON_CONFIG_FILE:-/opt/jetson-fw/config.yaml}"
 
-IMAGE="${JETSON_VOICE_RUNTIME_IMAGE:-jetsona/voice-runtime:oww-0.6-edge-7.2.8}"
+IMAGE="${JETSON_VOICE_RUNTIME_IMAGE:-jetsona/voice-runtime:oww0.6-edge7.2.8-genai2.14}"
 SOCKET="${OPENWAKEWORD_SOCKET:-/run/jetsona-voice/openwakeword.sock}"
 SOCKET_DIR="$(dirname "$SOCKET")"
 MODEL_NAME="${OPENWAKEWORD_MODEL:-hey_nova.onnx}"

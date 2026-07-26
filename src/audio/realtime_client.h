@@ -116,6 +116,8 @@ private:
 
     mutable std::mutex activity_mtx_;
     double last_activity_ = 0.0;
+    // Wall time the session opened, for the daily ledger.
+    double session_started_ = 0.0;
 };
 
 } // namespace jetson::audio

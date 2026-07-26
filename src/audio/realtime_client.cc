@@ -11,6 +11,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <fstream>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -70,6 +72,50 @@ double NowSeconds() {
     return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
 }
 
+/* Daily budget.
+ *
+ * A realtime session is billed by the second it stays open, unlike the chat
+ * path which is billed per exchange, so a session that fails to close -- or a
+ * run of false wakes -- spends money for as long as nobody notices. The ledger
+ * lives on disk so a firmware restart cannot reset the day's total, and the
+ * running figure is logged after every session rather than left to be
+ * discovered on a bill.
+ *
+ * Running out is not an outage: Start() refuses, VoiceLoop falls through to the
+ * STT/LLM/TTS chain, and the device keeps answering at roughly a thousandth of
+ * the cost until midnight. */
+std::string LedgerPath() {
+    const char *dir = std::getenv("JETSON_STATE_DIR");
+    return std::string((dir && *dir) ? dir : "/var/lib/jetson-fw") +
+           "/realtime_usage.json";
+}
+
+std::string Today() {
+    const std::time_t now = std::time(nullptr);
+    std::tm parts{};
+    localtime_r(&now, &parts);
+    char buffer[16];
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &parts);
+    return buffer;
+}
+
+double SecondsUsedToday() {
+    std::ifstream file(LedgerPath());
+    if (!file) return 0.0;
+    auto parsed = nlohmann::json::parse(file, nullptr, false);
+    if (!parsed.is_object() || parsed.value("date", "") != Today()) return 0.0;
+    return parsed.value("seconds", 0.0);
+}
+
+void RecordSeconds(double seconds) {
+    if (seconds <= 0.0) return;
+    nlohmann::json ledger;
+    ledger["date"] = Today();
+    ledger["seconds"] = SecondsUsedToday() + seconds;
+    std::ofstream file(LedgerPath(), std::ios::trunc);
+    if (file) file << ledger.dump();
+}
+
 bool WriteAll(int fd, const void *data, size_t size) {
     const auto *p = static_cast<const uint8_t *>(data);
     while (size > 0) {
@@ -102,6 +148,16 @@ bool RealtimeClient::Start(const std::string &system_prompt,
                            ToolExecutor executor, TurnDoneCb on_turn_done) {
     if (running_.load()) return true;
 
+    const double budget_min = EnvDouble("GEMINI_LIVE_DAILY_MINUTES", 60.0);
+    const double used_min = SecondsUsedToday() / 60.0;
+    if (budget_min > 0.0 && used_min >= budget_min) {
+        ESP_LOGW(TAG,
+                 "daily realtime budget spent (%.1f of %.0f min); "
+                 "falling back to the STT/LLM/TTS path until tomorrow",
+                 used_min, budget_min);
+        return false;
+    }
+
     const std::string socket_path =
         EnvOr("GEMINI_LIVE_SOCKET", "/run/jetsona-live/realtime.sock");
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -129,7 +185,7 @@ bool RealtimeClient::Start(const std::string &system_prompt,
     out_ = out;
     out_gain_ = std::max(0.05, std::min(1.0, EnvDouble("JETSON_VOICE_OUT_GAIN", 0.35)));
     echo_coupling_ = std::max(0.1, EnvDouble("JETSON_ECHO_COUPLING", 1.2));
-    echo_margin_ = std::max(1.1, EnvDouble("JETSON_ECHO_MARGIN", 1.6));
+    echo_margin_ = std::max(1.1, EnvDouble("JETSON_ECHO_MARGIN", 2.2));
     echo_rms_.store(0.0);
     executor_ = std::move(executor);
     on_turn_done_ = std::move(on_turn_done);
@@ -152,10 +208,11 @@ bool RealtimeClient::Start(const std::string &system_prompt,
         return false;
     }
 
+    session_started_ = NowSeconds();
     reader_ = std::thread(&RealtimeClient::ReaderThread, this);
-    ESP_LOGI(TAG, "session open (voice=%s, %zu tools)",
+    ESP_LOGI(TAG, "session open (voice=%s, %zu tools, %.1f/%.0f min dùng hôm nay)",
              config["voice"].get<std::string>().c_str(),
-             config["tools"].size());
+             config["tools"].size(), used_min, budget_min);
     return true;
 }
 
@@ -172,7 +229,12 @@ void RealtimeClient::Stop() {
         out_->EndStream();
         playing_ = false;
     }
-    ESP_LOGI(TAG, "session closed");
+
+    const double elapsed = NowSeconds() - session_started_;
+    RecordSeconds(elapsed);
+    const double budget_min = EnvDouble("GEMINI_LIVE_DAILY_MINUTES", 60.0);
+    ESP_LOGI(TAG, "session closed sau %.0f s (%.1f/%.0f phút hôm nay)", elapsed,
+             SecondsUsedToday() / 60.0, budget_min);
 }
 
 void RealtimeClient::SendAudio(const int16_t *samples, size_t n) {

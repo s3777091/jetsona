@@ -13,7 +13,7 @@ set -eu
 jetson_load_config "${JETSON_CONFIG_FILE:-/opt/jetson-fw/config.yaml}"
 jetson_load_secrets "${JETSON_ENV_FILE:-/opt/jetson-fw/.env}"
 
-IMAGE="${JETSON_VOICE_RUNTIME_IMAGE:-jetsona/voice-runtime:oww-0.6-edge-7.2.8}"
+IMAGE="${JETSON_VOICE_RUNTIME_IMAGE:-jetsona/voice-runtime:oww0.6-edge7.2.8-genai2.14}"
 SOCKET="${GEMINI_LIVE_SOCKET:-/run/jetsona-live/realtime.sock}"
 SOCKET_DIR="$(dirname "$SOCKET")"
 MODEL="${GEMINI_LIVE_MODEL:-gemini-2.5-flash-native-audio-preview-12-2025}"
