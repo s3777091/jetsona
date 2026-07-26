@@ -262,9 +262,9 @@ bool VoiceLoop::StartRealtime() {
      * speaker, so music at listening volume drowns the person talking to the
      * device -- both for the wake word and for everything said after it. The
      * level is restored when the session closes. */
-    auto &player = jetson::media::PlayerController::Instance();
+    auto &player = jetson::music::PlayerController::Instance();
     const auto snapshot = player.Snapshot();
-    if (snapshot.status == jetson::media::PlaybackStatus::Playing) {
+    if (snapshot.status == jetson::music::PlaybackStatus::Playing) {
         ducked_volume_ = snapshot.volume;
         player.SetVolume(std::min(snapshot.volume, kDuckedMusicVolume));
         ESP_LOGI(TAG, "ducked music %d -> %d for the session", ducked_volume_,
@@ -296,7 +296,7 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
                      realtime_idle_sec_);
             realtime_->Stop();
             if (ducked_volume_ >= 0) {
-                jetson::media::PlayerController::Instance().SetVolume(
+                jetson::music::PlayerController::Instance().SetVolume(
                     ducked_volume_);
                 ESP_LOGI(TAG, "music restored to %d", ducked_volume_);
                 ducked_volume_ = -1;
