@@ -85,6 +85,8 @@ private:
     std::unique_ptr<AudioOutput> out_;
     std::unique_ptr<RealtimeClient> realtime_;
     double realtime_idle_sec_ = 20.0;
+    // Music volume to restore when the session ends; -1 when nothing was ducked.
+    int ducked_volume_ = -1;
 
     // State machine (guarded by mtx_). kIdle waits for speech onset (energy);
     // kCollecting accumulates the utterance; kBusy ignores the mic until the

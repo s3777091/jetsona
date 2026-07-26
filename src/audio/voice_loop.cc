@@ -7,6 +7,7 @@
 #include "audio/voice_engine.h"
 #include "app/application.h"
 #include "agent/conversation.h"
+#include "media/player_controller.h"
 #include "esp_log.h"
 #include "platform/thread_affinity.h"
 #include "settings.h"
@@ -48,6 +49,10 @@ constexpr int kVadLogChunks = 313;           // ~10 s between idle diagnostics
  * properly is what followup_latched_ does; this only has to outlast the reply
  * plus a person deciding what to say. */
 constexpr int kAwakeWindowSec = 25;
+
+/* Music volume while a session is open. The speaker is centimetres from the
+ * microphone, so anything near listening level buries the person speaking. */
+constexpr int kDuckedMusicVolume = 25;
 
 /* Spoken only when the wake word arrives with no command attached. Rotating
  * through these keeps Nova from answering every activation with the identical
@@ -253,6 +258,19 @@ bool VoiceLoop::StartRealtime() {
         [] {});
     if (!ok) return false;
 
+    /* Duck whatever is playing. The microphone sits centimetres from the
+     * speaker, so music at listening volume drowns the person talking to the
+     * device -- both for the wake word and for everything said after it. The
+     * level is restored when the session closes. */
+    auto &player = jetson::media::PlayerController::Instance();
+    const auto snapshot = player.Snapshot();
+    if (snapshot.status == jetson::media::PlaybackStatus::Playing) {
+        ducked_volume_ = snapshot.volume;
+        player.SetVolume(std::min(snapshot.volume, kDuckedMusicVolume));
+        ESP_LOGI(TAG, "ducked music %d -> %d for the session", ducked_volume_,
+                 kDuckedMusicVolume);
+    }
+
     // Hand over the ring buffer so a command spoken in the same breath as the
     // wake word -- "Hey Nova, bật nhạc" -- reaches the model intact.
     if (!pre_roll_.empty()) {
@@ -277,6 +295,12 @@ void VoiceLoop::OnMicChunk(const int16_t *samples, size_t n) {
             ESP_LOGI(TAG, "realtime idle %.0f s; closing session",
                      realtime_idle_sec_);
             realtime_->Stop();
+            if (ducked_volume_ >= 0) {
+                jetson::media::PlayerController::Instance().SetVolume(
+                    ducked_volume_);
+                ESP_LOGI(TAG, "music restored to %d", ducked_volume_);
+                ducked_volume_ = -1;
+            }
             std::lock_guard<std::mutex> lk(mtx_);
             pre_roll_.clear();
             state_ = kIdle;

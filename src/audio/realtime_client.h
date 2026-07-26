@@ -93,10 +93,14 @@ private:
      * echo_rms_ decays rather than dropping to zero, because audio handed to
      * ALSA is still on its way out of the speaker for another buffer's worth
      * of time. */
+    bool EchoActive() const;
+
     double out_gain_ = 0.35;
     double echo_coupling_ = 1.2;
-    double echo_margin_ = 1.6;
+    double echo_margin_ = 2.2;
     std::atomic<double> echo_rms_{0.0};
+    double echo_until_ = 0.0;          // guarded by activity_mtx_
+    int barge_chunks_ = 0;             // capture thread only
     std::vector<int16_t> gain_buffer_;
 
     mutable std::mutex activity_mtx_;

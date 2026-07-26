@@ -614,6 +614,15 @@ private:
         std::snprintf(start_option, sizeof(start_option), "--start=%.3f",
                       static_cast<double>(std::max<int64_t>(0, start_ms)) / 1000.0);
 
+        /* Pin the output the same way the voice path does. Without this mpv
+         * takes its own default, which resolves to PulseAudio on the Tegra
+         * card -- a card with nothing plugged into it. Playback then succeeds,
+         * reports itself playing, and is inaudible: the device would announce
+         * a song that nobody could hear. */
+        const char *music_device = std::getenv("JETSON_MUSIC_DEVICE");
+        if (!music_device || !*music_device)
+            music_device = std::getenv("JETSON_VOICE_OUT");
+
         std::vector<std::string> arguments = {
             player_binary_,
             "--no-video",
@@ -627,6 +636,9 @@ private:
             std::string("--mute=") + (muted ? "yes" : "no"),
             start_option,
         };
+        if (music_device && *music_device)
+            arguments.emplace_back(std::string("--audio-device=alsa/") +
+                                   music_device);
         if (start_paused) arguments.emplace_back("--pause=yes");
         arguments.emplace_back("--");
         arguments.push_back(url);

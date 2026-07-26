@@ -48,6 +48,15 @@ double EnvDouble(const char *key, double fallback) {
     return (end && *end == '\0') ? parsed : fallback;
 }
 
+/* How long after the last write the speaker is still audible: the ALSA buffer
+ * plus the room. Slightly generous, because letting one echo frame through is
+ * worse than swallowing one frame of the user. */
+constexpr double kEchoTailSec = 0.45;
+
+// Consecutive loud chunks (32 ms each) before the reply is cut short. Long
+// enough that a cough or a door does not stop Nova mid-sentence.
+constexpr int kBargeInChunks = 5;
+
 double RmsOf(const int16_t *samples, size_t n) {
     if (!samples || n == 0) return 0.0;
     double sum = 0.0;
@@ -169,18 +178,37 @@ void RealtimeClient::Stop() {
 void RealtimeClient::SendAudio(const int16_t *samples, size_t n) {
     if (!running_.load() || !samples || n == 0) return;
 
-    /* While Nova is audible, most of what the microphone hears is Nova. With
-     * no canceller on this board that echo is louder than the original, and
-     * forwarding it makes the model answer its own words. Forward only what
-     * clearly beats the echo -- a person speaking up close still does, which
-     * is how interrupting survives. */
-    const double echo = echo_rms_.load();
-    if (echo > 1.0) {
-        if (RmsOf(samples, n) < echo * echo_margin_) return;
-        ESP_LOGI(TAG, "barge-in: speech over playback");
+    /* While Nova is audible the microphone mostly hears Nova, and this board
+     * has no canceller to remove her. What must not happen is forwarding some
+     * frames and dropping others: an earlier attempt at that fed the model a
+     * chopped stream, which it transcribed as fragments of Thai and then acted
+     * on -- it reached for pc_power because a burst of echo looked like a
+     * request. Send a whole stream or none of it.
+     *
+     * So: stay silent while she speaks, and watch the level. Speech close to
+     * the microphone beats the echo, and when it does for long enough this
+     * stops the playback outright -- which both answers the interruption and
+     * removes the echo, so everything forwarded from then on is clean. */
+    if (EchoActive()) {
+        if (RmsOf(samples, n) < echo_rms_.load() * echo_margin_) {
+            barge_chunks_ = 0;
+            return;
+        }
+        if (++barge_chunks_ < kBargeInChunks) return;
+        barge_chunks_ = 0;
+        ESP_LOGI(TAG, "barge-in: user spoke over the reply; stopping playback");
+        if (out_) out_->AbortStream();
+        playing_ = false;
+        echo_rms_.store(0.0);
+        // Fall through: from here the room is quiet and the user has the floor.
     }
 
     SendFrame(kMsgAudioIn, samples, n * sizeof(int16_t));
+}
+
+bool RealtimeClient::EchoActive() const {
+    std::lock_guard<std::mutex> lk(activity_mtx_);
+    return NowSeconds() < echo_until_ && echo_rms_.load() > 1.0;
 }
 
 double RealtimeClient::IdleSeconds() const {
@@ -264,12 +292,19 @@ void RealtimeClient::ReaderThread() {
                                      : (scaled < -32768.0 ? -32768.0 : scaled));
             }
 
-            // What the microphone is about to hear. Decay instead of dropping
-            // to zero: this audio is still leaving the speaker for another
-            // buffer's worth of time after the write returns.
+            /* What the microphone is about to hear. Peak-hold with a deadline
+             * rather than a per-write decay: the audio handed to ALSA does not
+             * reach the speaker for another buffer's worth of time, so a decay
+             * applied per chunk had collapsed the estimate to near zero by the
+             * moment the echo actually arrived -- which is how the gate came to
+             * pass everything it was meant to block. */
             const double expected = RmsOf(gain_buffer_.data(), count) *
                                     echo_coupling_;
-            echo_rms_.store(std::max(expected, echo_rms_.load() * 0.8));
+            echo_rms_.store(std::max(expected, echo_rms_.load()));
+            {
+                std::lock_guard<std::mutex> lk(activity_mtx_);
+                echo_until_ = NowSeconds() + kEchoTailSec;
+            }
 
             out_->WriteStream(gain_buffer_.data(), count);
             break;
