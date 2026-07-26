@@ -101,6 +101,17 @@ private:
     std::atomic<double> echo_rms_{0.0};
     double echo_until_ = 0.0;          // guarded by activity_mtx_
     int barge_chunks_ = 0;             // capture thread only
+
+    /* Set when the user cuts in, cleared when the turn ends. The model keeps
+     * generating for a moment after an interruption, and without this the next
+     * audio frame would reopen the speaker and resume the abandoned sentence
+     * halfway through. */
+    std::atomic<bool> turn_muted_{false};
+
+    // Transcripts arrive a word or two at a time. Held here and logged as whole
+    // sentences, because one line per fragment buries everything else.
+    std::string user_line_;
+    std::string assistant_line_;
     std::vector<int16_t> gain_buffer_;
 
     mutable std::mutex activity_mtx_;

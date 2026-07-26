@@ -1,4 +1,5 @@
 #include "conversation.h"
+#include "agent/assistant_tools.h"
 #include "esp_log.h"
 
 #include <nlohmann/json.hpp>
@@ -102,6 +103,14 @@ void Conversation::RunWithTools(std::vector<ChatMessage> &history,
         // tools or produces a final answer.
     }
     out_err = "Agent vuot qua so luong tool-call cho phep";
+}
+
+std::string Conversation::SystemPrompt() const {
+    std::string prompt = client_.SystemPrompt();
+    const std::string remembered = MemoryTool::Summary();
+    if (!remembered.empty())
+        prompt += "\n\nĐÃ BIẾT VỀ NGƯỜI DÙNG:\n" + remembered;
+    return prompt;
 }
 
 std::string Conversation::ToolsJson() const {

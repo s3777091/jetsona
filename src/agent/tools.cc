@@ -1,4 +1,5 @@
 #include "tools.h"
+#include "agent/assistant_tools.h"
 #include "system_tools.h"
 #include "settings.h"
 #include "esp_log.h"
@@ -469,6 +470,11 @@ std::shared_ptr<ToolRegistry> BuildDefaultToolRegistry() {
     reg->Register(std::make_unique<ReminderTool>(ReminderTool::Complete));
     reg->Register(std::make_unique<NoteTool>(NoteTool::Add));
     reg->Register(std::make_unique<NoteTool>(NoteTool::List));
+
+    reg->Register(std::make_unique<TimerTool>());
+    reg->Register(std::make_unique<MemoryTool>(MemoryTool::Remember));
+    reg->Register(std::make_unique<MemoryTool>(MemoryTool::Recall));
+    reg->Register(std::make_unique<MemoryTool>(MemoryTool::Forget));
 
     reg->Register(std::make_unique<WebSearchTool>());
     reg->Register(std::make_unique<WebOpenTool>());

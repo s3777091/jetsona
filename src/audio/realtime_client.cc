@@ -199,6 +199,7 @@ void RealtimeClient::SendAudio(const int16_t *samples, size_t n) {
         ESP_LOGI(TAG, "barge-in: user spoke over the reply; stopping playback");
         if (out_) out_->AbortStream();
         playing_ = false;
+        turn_muted_.store(true);
         echo_rms_.store(0.0);
         // Fall through: from here the room is quiet and the user has the floor.
     }
@@ -272,6 +273,9 @@ void RealtimeClient::ReaderThread() {
         switch (type) {
         case kMsgAudioOut: {
             MarkActivity();
+            // Interrupted: swallow the rest of this turn rather than resuming a
+            // sentence the user has already talked over.
+            if (turn_muted_.load()) break;
             if (!out_) break;
             if (!playing_) {
                 const std::string device =
@@ -326,9 +330,18 @@ void RealtimeClient::ReaderThread() {
             break;
         case kMsgTurnComplete:
             echo_rms_.store(0.0);
+            turn_muted_.store(false);
             if (out_ && playing_) {
                 out_->EndStream();
                 playing_ = false;
+            }
+            if (!user_line_.empty()) {
+                ESP_LOGI(TAG, "nghe: %s", user_line_.c_str());
+                user_line_.clear();
+            }
+            if (!assistant_line_.empty()) {
+                ESP_LOGI(TAG, "nói: %s", assistant_line_.c_str());
+                assistant_line_.clear();
             }
             MarkActivity();
             if (on_turn_done_) on_turn_done_();
@@ -338,8 +351,9 @@ void RealtimeClient::ReaderThread() {
                 std::string(payload.begin(), payload.end()), nullptr, false);
             if (!item.is_discarded()) {
                 MarkActivity();
-                ESP_LOGI(TAG, "%s: %s", item.value("role", "?").c_str(),
-                         item.value("text", "").c_str());
+                // Accumulate; whole sentences are logged when the turn ends.
+                (item.value("role", "") == "user" ? user_line_ : assistant_line_)
+                    += item.value("text", "");
             }
             break;
         }

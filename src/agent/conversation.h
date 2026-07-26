@@ -53,9 +53,12 @@ public:
     std::string ExecuteTool(const std::string &name,
                             const std::string &arguments_json);
 
-    // The persona the realtime session must adopt, so both paths speak with
-    // the same voice and obey the same rules.
-    std::string SystemPrompt() const { return client_.SystemPrompt(); }
+    /* The persona the realtime session must adopt, so both paths speak with the
+     * same voice and obey the same rules, with whatever Nova has been asked to
+     * remember appended. A streaming session has no history to carry those
+     * facts in, so without this it would greet its owner as a stranger every
+     * time the wake word fires. */
+    std::string SystemPrompt() const;
     void SetOnToolEvent(ToolEventCb cb) { on_tool_event_ = std::move(cb); }
 
     bool busy() const { return busy_.load(); }
