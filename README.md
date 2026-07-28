@@ -188,6 +188,95 @@ Ekko Lite không có display: chỉ cần chạy binary, không cần dừng dis
 hay giành scanout. `run_headless.sh` nạp config/secrets rồi chạy binary ở
 foreground -- Ctrl+C để thoát.
 
+## Điều hòa (LG ThinQ)
+
+Agent điều khiển điều hòa LG trong phòng qua tool `air_conditioner`. Tool không
+gọi thẳng cloud LG mà gọi một dịch vụ cầu nối chạy ngay trên Jetson:
+
+```
+"Ekko, lạnh quá"
+  -> firmware: tool air_conditioner {action:"comfort", feeling:"cold"}
+     -> POST http://127.0.0.1:46003/comfort   (header X-AC-Token)
+        -> scripts/jetsona_ac.py -> LG ThinQ Connect API -> điều hòa
+```
+
+Cầu nối nằm trên Jetson chứ không phải trên PC vì Jetson là máy chạy 24/7 —
+PC phần lớn thời gian đang tắt (đó là lý do có Wake-on-LAN), nếu treo điều
+khiển điều hòa vào PC thì đúng lúc cần nhất (nửa đêm, đang nằm trên giường)
+lại không dùng được.
+
+`jetsona_ac.py` là bản port của project `IOT/` (`config.py`, `lge_thinq.py`,
+`ac.py`) sang Python 3.6 có sẵn trên Jetson: `requests`/`Flask`/`dotenv` được
+thay bằng `urllib` + `http.server` nên không cần cài pip. Enum điều khiển
+(`COOL`/`AIR_DRY`/`FAN`, `LOW`/`MID`/`HIGH`/`AUTO`) giữ nguyên theo device
+profile của model RAC_056905_WW — đổi máy thì sửa cả hai nơi.
+
+### Cài đặt
+
+Credential LG đã có sẵn trong `.env` của project `IOT/`, nên cách nhanh nhất là
+chép file đó sang Jetson rồi trỏ script cài vào nó:
+
+```bash
+scp C:/Users/ADMIN/workspace/IOT/.env ekkohuynh@192.168.50.96:~/iot-lge.env
+```
+
+```bash
+sudo bash scripts/jetsona_ac_install.sh ~/iot-lge.env
+```
+
+Script đọc `LGE_ACCESS_TOKEN`/`LGE_REGION`/`LGE_COUNTRY`/`LGE_CLIENT_ID`/
+`LGE_DEVICE_ID` từ file đó. Nếu muốn nhập tay (hoặc PAT mới, lấy tại
+<https://smartsolution.developer.lge.com> → Cloud Developer → ThinQ Connect →
+PAT, scope: view devices, view statuses, control devices):
+
+```bash
+sudo LGE_ACCESS_TOKEN=<PAT-cua-ban> bash scripts/jetsona_ac_install.sh
+```
+
+Script cài `/usr/local/lib/jetsona/jetsona_ac.py`, ghi `/etc/jetsona-ac.env`
+(chmod 600, chứa PAT), bật `jetsona-ac.service`, rồi tự thử `/status` một lần.
+Lần đầu chạy nó sinh và **in ra** `JETSON_AC_TOKEN` — chép vào `.env` của
+firmware (`~/jetsona/.env` và `/opt/jetson-fw/.env`) rồi
+`sudo systemctl restart jetson-fw`. Chạy lại script (không cần tham số) sẽ tái
+dùng cả PAT lẫn token cũ nên không làm lệch secret hai bên.
+
+Xoá file `~/iot-lge.env` sau khi cài xong — PAT đã nằm trong
+`/etc/jetsona-ac.env` với quyền 600, không cần bản thứ hai để lộ ra.
+
+Kiểm tra bằng tay:
+
+```bash
+curl -s -H "X-AC-Token: $JETSON_AC_TOKEN" http://127.0.0.1:46003/status
+```
+
+```bash
+curl -s -X POST -H "X-AC-Token: $JETSON_AC_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"feeling":"cold","intensity":"normal"}' http://127.0.0.1:46003/comfort
+```
+
+Log: `journalctl -u jetsona-ac -f`.
+
+### Vì sao "thấy lạnh" được xử lý ở cầu nối
+
+"Tôi thấy lạnh" không phải một con số. Muốn dịch nó thành lệnh phải biết máy
+đang ở chế độ gì, đặt bao nhiêu độ, quạt mức nào — nên `/comfort` tự
+đọc-quyết-định-ghi trong một lượt thay vì bắt model gọi `status` rồi tự suy
+luận (tốn thêm một vòng và model nhỏ chạy on-device hay suy luận sai).
+
+Máy này **không có sưởi** (chỉ COOL/AIR_DRY/FAN), nên "lạnh quá" nghĩa là *làm
+lạnh ít lại*, theo thang cố định:
+
+| Tình huống | Xử lý |
+|---|---|
+| Đang làm lạnh | Nâng nhiệt độ đặt (+1/+2/+3°C theo `intensity`), quạt đang MID/HIGH thì hạ một nấc |
+| Đã ở 30°C mà vẫn lạnh | Chuyển sang `FAN` — ngừng làm lạnh hẳn |
+| Đang chạy `FAN` | Hạ quạt một nấc; đã ở `LOW` thì tắt máy |
+| Máy đang tắt | Không đổi gì, báo lại là máy đang tắt (không phải nó gây lạnh) |
+
+Chiều ngược lại (`feeling: "hot"`) đối xứng: máy tắt thì bật `COOL` ở 25°C;
+đang chạy thì hạ nhiệt độ đặt; chạm đáy 16°C thì tăng quạt. Ngoài ra có
+`humid` → `AIR_DRY` và `stuffy` → `FAN`.
+
 ## Cấu hình thường dùng
 
 Mọi thiết lập không nhạy cảm nằm trong `config.yaml`; `.env` chỉ chứa API key,
@@ -202,6 +291,8 @@ token, password và credential. Biến môi trường truyền trực tiếp khi
 | `JETSON_MUSIC_PLAYER` | Binary phát nhạc, mặc định `mpv` |
 | `JETSON_MUSIC_ALBUMS_FILE` | File lưu album nhạc của người dùng |
 | `JETSON_WEATHER_LAT/LON/NAME` | Toạ độ + tên hiển thị cho dòng thời tiết standby (open-meteo, mặc định TP.HCM) |
+| `JETSON_AC_URL` | Base URL của cầu nối điều hòa, mặc định `http://127.0.0.1:46003` |
+| `JETSON_AC_TOKEN` | Secret gửi kèm header `X-AC-Token` (trong `.env`, phải khớp `/etc/jetsona-ac.env`) |
 
 Ví dụ ép touch và thư mục Home:
 
@@ -312,6 +403,8 @@ scripts/build.sh        cấu hình và build (gọi fetch_assets.sh trước)
 scripts/fetch_assets.sh tải assets từ MinIO, bỏ qua file đã có
 scripts/s3_assets.py    S3 client thuần stdlib (fetch/upload/list)
 scripts/install.sh      cài systemd service
+scripts/jetsona_ac.py   cầu nối HTTP tới điều hòa LG ThinQ (port 46003)
+scripts/jetsona_ac_install.sh  cài jetsona-ac.service + /etc/jetsona-ac.env
 src/display/            giao diện LVGL
 src/net/                Wi-Fi và Bluetooth
 src/platform/           runtime LVGL/Linux

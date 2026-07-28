@@ -1,0 +1,24 @@
+[Unit]
+Description=Jetsona air conditioner HTTP endpoint (LG ThinQ)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Unprivileged: the bridge only opens a loopback socket and talks to LG's
+# cloud over HTTPS. It needs no raw sockets (unlike jetsona-wol, which
+# broadcasts magic packets) and no device access.
+User=nobody
+Group=nogroup
+EnvironmentFile=/etc/jetsona-ac.env
+ExecStart=/usr/bin/python3 /usr/local/lib/jetsona/jetsona_ac.py
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

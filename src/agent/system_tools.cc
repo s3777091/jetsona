@@ -673,6 +673,229 @@ std::string PcPowerTool::Execute(const std::string & /*arguments_json*/) {
            (resp.empty() ? "" : ": " + resp);
 }
 
+// ---- air_conditioner -----------------------------------------------------
+
+namespace {
+
+/* JETSON_AC_URL is the bridge's base ("http://127.0.0.1:46003"), not a single
+ * endpoint like JETSON_WOL_URL: this tool talks to several routes. */
+std::string AcBaseUrl() {
+    const char *url = std::getenv("JETSON_AC_URL");
+    std::string base = (url && *url) ? url : "";
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    return base;
+}
+
+/* One request to the AC bridge; empty `body` means GET. On success fills
+ * out_json; on failure fills out_err with a ready-to-return "ERROR: ..."
+ * string. The bridge answers JSON even for failures, and writes its "error"
+ * text to be spoken, so it is passed through rather than reworded here. */
+bool AcRequest(const std::string &path, const std::string &body,
+               json &out_json, std::string &out_err) {
+    const std::string base = AcBaseUrl();
+    if (base.empty()) {
+        out_err = "ERROR: chua cau hinh JETSON_AC_URL (vi du http://127.0.0.1:46003)";
+        return false;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) { out_err = "ERROR: khoi tao curl that bai"; return false; }
+
+    struct curl_slist *hdr = nullptr;
+    hdr = curl_slist_append(hdr, "Content-Type: application/json");
+    const char *token = std::getenv("JETSON_AC_TOKEN");
+    if (token && *token) {
+        std::string t = std::string("X-AC-Token: ") + token;
+        hdr = curl_slist_append(hdr, t.c_str());
+    }
+
+    const std::string url = base + path;
+    std::string resp;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    if (!body.empty()) {
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    }
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdr);
+    /* Generous next to the 5s WoL timeout: every call round-trips to LG's
+     * cloud, and /comfort does a read, up to three writes, and a read back. */
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,
+                     +[](char *p, size_t s, size_t n, void *u) {
+                         static_cast<std::string *>(u)->append(p, s * n);
+                         return s * n;
+                     });
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+
+    CURLcode rc = curl_easy_perform(curl);
+    long code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+    curl_slist_free_all(hdr);
+    curl_easy_cleanup(curl);
+
+    if (rc != CURLE_OK) {
+        out_err = "ERROR: khong goi duoc dich vu dieu hoa: " +
+                  std::string(curl_easy_strerror(rc)) +
+                  " (kiem tra systemctl status jetsona-ac)";
+        return false;
+    }
+
+    json parsed = json::parse(resp, nullptr, false);
+    if (parsed.is_discarded()) parsed = json::object();
+
+    if (code < 200 || code >= 300) {
+        std::string message = parsed.value("error", std::string());
+        out_err = "ERROR: " + (message.empty()
+                                   ? "dich vu dieu hoa tra ma " + std::to_string(code)
+                                   : message);
+        return false;
+    }
+    out_json = std::move(parsed);
+    return true;
+}
+
+/* Pull the spoken sentence out of a bridge reply. Every route sets "summary";
+ * falling back to the raw body only matters if the two drift apart. */
+std::string AcSummary(const json &j) {
+    std::string summary = j.value("summary", std::string());
+    return summary.empty() ? std::string("Da thuc hien.") : summary;
+}
+
+std::string Upper(std::string s) {
+    for (auto &c : s) c = (char)std::toupper((unsigned char)c);
+    return s;
+}
+
+/* The model does not reliably emit the enum spellings, and the transcript it
+ * works from is itself lossy, so map the obvious synonyms instead of failing. */
+std::string NormalizeJobMode(const std::string &raw) {
+    const std::string v = Lower(Trim(raw));
+    if (v == "cool" || v == "lanh" || v == "lam lanh" || v == "cooling") return "COOL";
+    if (v == "air_dry" || v == "dry" || v == "hut am" || v == "am") return "AIR_DRY";
+    if (v == "fan" || v == "quat" || v == "quat gio") return "FAN";
+    return Upper(Trim(raw));
+}
+
+std::string NormalizeFanSpeed(const std::string &raw) {
+    const std::string v = Lower(Trim(raw));
+    if (v == "low" || v == "thap" || v == "nhe" || v == "yeu") return "LOW";
+    if (v == "mid" || v == "medium" || v == "vua" || v == "trung binh") return "MID";
+    if (v == "high" || v == "cao" || v == "manh") return "HIGH";
+    if (v == "auto" || v == "tu dong") return "AUTO";
+    return Upper(Trim(raw));
+}
+
+/* Accepts the number under any of the keys the model reaches for. */
+bool ReadCelsius(const json &args, double &out) {
+    for (const char *key : {"celsius", "temperature", "temp", "value"}) {
+        if (!args.contains(key)) continue;
+        const json &v = args[key];
+        if (v.is_number()) { out = v.get<double>(); return true; }
+        if (v.is_string()) {
+            try { out = std::stod(v.get<std::string>()); return true; } catch (...) {}
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+AirConditionerTool::AirConditionerTool()
+    : Tool("air_conditioner",
+           "Dieu khien dieu hoa trong phong. Dung action='comfort' kem "
+           "feeling khi nguoi dung noi CAM GIAC thay vi con so -- 'lanh qua' "
+           "-> feeling='cold', 'nong qua' -> 'hot', 'nom/am qua' -> 'humid', "
+           "'bi qua, ngot ngat' -> 'stuffy'; them intensity='very' neu ho nhan "
+           "manh (rat lanh, lanh cong), 'slight' neu hoi hoi. Comfort tu doc "
+           "trang thai may roi chinh cho hop ly, KHONG can goi status truoc. "
+           "Cac action khac: 'status' xem trang thai, 'on'/'off' bat tat, "
+           "'set_temp' voi celsius 16-30 khi nguoi dung noi ro so, 'mode' "
+           "(COOL/AIR_DRY/FAN), 'fan' (LOW/MID/HIGH/AUTO).",
+           R"({"type":"object","properties":{"action":{"type":"string","enum":["comfort","status","on","off","set_temp","mode","fan"],"description":"Viec can lam"},"feeling":{"type":"string","enum":["cold","hot","humid","stuffy","ok"],"description":"Cam giac cua nguoi dung, bat buoc khi action='comfort'"},"intensity":{"type":"string","enum":["slight","normal","very"],"description":"Muc do cam giac, mac dinh 'normal'"},"celsius":{"type":"number","description":"Nhiet do muc tieu 16-30, dung voi action='set_temp'"},"mode":{"type":"string","enum":["COOL","AIR_DRY","FAN"],"description":"Che do, dung voi action='mode'"},"fan_speed":{"type":"string","enum":["LOW","MID","HIGH","AUTO"],"description":"Toc do quat, dung voi action='fan'"}},"required":["action"]})") {}
+
+std::string AirConditionerTool::Execute(const std::string &arguments_json) {
+    const json args = ParseArgs(arguments_json);
+    std::string action = Lower(Trim(Str(args, "action")));
+
+    /* A feeling with no action (or a made-up one) is still unambiguously a
+     * comfort request; treating it as such beats bouncing an error back. */
+    const bool has_feeling = !Trim(Str(args, "feeling")).empty();
+    if (action.empty()) action = has_feeling ? "comfort" : "status";
+    if (action == "feel" || action == "adjust" || action == "auto") action = "comfort";
+    if (action == "temp" || action == "temperature" || action == "set_temperature")
+        action = "set_temp";
+    if (action == "turn_on" || action == "power_on") action = "on";
+    if (action == "turn_off" || action == "power_off") action = "off";
+    if (action == "fan_speed" || action == "wind") action = "fan";
+
+    json reply;
+    std::string err;
+
+    if (action == "status") {
+        if (!AcRequest("/status", "", reply, err)) return err;
+        return AcSummary(reply);
+    }
+
+    if (action == "on" || action == "off") {
+        json body;
+        body["on"] = (action == "on");
+        if (!AcRequest("/power", body.dump(), reply, err)) return err;
+        return AcSummary(reply);
+    }
+
+    if (action == "comfort") {
+        std::string feeling = Lower(Trim(Str(args, "feeling")));
+        if (feeling.empty())
+            return "ERROR: thieu 'feeling' (cold/hot/humid/stuffy/ok)";
+        json body;
+        body["feeling"] = feeling;
+        const std::string intensity = Lower(Trim(Str(args, "intensity")));
+        if (!intensity.empty()) body["intensity"] = intensity;
+        if (!AcRequest("/comfort", body.dump(), reply, err)) return err;
+        /* State after the change, so the model can answer a follow-up
+         * ("giờ bao nhiêu độ?") without another call. Diacritics here, unlike
+         * the ASCII error strings above: this text is glued onto the bridge's
+         * own Vietnamese and ends up spoken. */
+        std::string out = AcSummary(reply);
+        const std::string state = reply.value("state_summary", std::string());
+        if (!state.empty()) out += " Hiện tại: " + state + ".";
+        return out;
+    }
+
+    if (action == "set_temp") {
+        double celsius = 0.0;
+        if (!ReadCelsius(args, celsius))
+            return "ERROR: thieu 'celsius' (so tu 16 den 30)";
+        json body;
+        body["celsius"] = celsius;
+        if (!AcRequest("/temperature", body.dump(), reply, err)) return err;
+        return AcSummary(reply);
+    }
+
+    if (action == "mode") {
+        const std::string mode = NormalizeJobMode(Str(args, "mode"));
+        if (mode.empty()) return "ERROR: thieu 'mode' (COOL/AIR_DRY/FAN)";
+        json body;
+        body["mode"] = mode;
+        if (!AcRequest("/mode", body.dump(), reply, err)) return err;
+        return AcSummary(reply);
+    }
+
+    if (action == "fan") {
+        std::string speed = NormalizeFanSpeed(Str(args, "fan_speed"));
+        if (speed.empty()) speed = NormalizeFanSpeed(Str(args, "speed"));
+        if (speed.empty()) return "ERROR: thieu 'fan_speed' (LOW/MID/HIGH/AUTO)";
+        json body;
+        body["speed"] = speed;
+        if (!AcRequest("/fan", body.dump(), reply, err)) return err;
+        return AcSummary(reply);
+    }
+
+    return "ERROR: action khong hop le: " + action +
+           " (comfort/status/on/off/set_temp/mode/fan)";
+}
+
 // ---- weather -------------------------------------------------------------
 
 WeatherTool::WeatherTool()

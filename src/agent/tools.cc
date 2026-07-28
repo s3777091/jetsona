@@ -451,6 +451,7 @@ std::shared_ptr<ToolRegistry> BuildDefaultToolRegistry() {
     reg->Register(std::make_unique<DeviceStatusTool>());
     reg->Register(std::make_unique<VolumeTool>());
     reg->Register(std::make_unique<PcPowerTool>());
+    reg->Register(std::make_unique<AirConditionerTool>());
     reg->Register(std::make_unique<WeatherTool>());
     reg->Register(std::make_unique<RingtoneTool>());
     reg->Register(std::make_unique<MusicTool>());

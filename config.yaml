@@ -43,6 +43,14 @@ JETSON_WEATHER_NAME: "Đà Nẵng"
 # browser app first. JETSON_WOL_TOKEN (the matching X-WoL-Token) lives in .env.
 JETSON_WOL_URL: "http://127.0.0.1:8080/api/wol/wake"
 
+# Room air conditioner (LG ThinQ), through the local bridge service
+# scripts/jetsona_ac.py installed by scripts/jetsona_ac_install.sh. This is the
+# service BASE url -- the agent appends /status, /power, /comfort and friends --
+# unlike JETSON_WOL_URL, which is one complete endpoint. The LG Personal Access
+# Token stays on the bridge side in /etc/jetsona-ac.env and is never read by the
+# firmware; only JETSON_AC_TOKEN (the matching X-AC-Token) lives in .env.
+JETSON_AC_URL: "http://127.0.0.1:46003"
+
 # Voice loop (reSpeaker USB v3 + sherpa-onnx). ALSA pcm names for the mic and
 # speaker. Pin the microphone by ALSA card name so it does not silently switch
 # to the Jetson onboard codec when card indexes or the system default change

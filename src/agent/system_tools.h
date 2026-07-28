@@ -86,6 +86,21 @@ public:
     std::string Execute(const std::string &arguments_json) override;
 };
 
+/* The room air conditioner (LG ThinQ), reached through the local bridge
+ * service scripts/jetsona_ac.py at JETSON_AC_URL with an X-AC-Token header.
+ *
+ * Besides the obvious on/off/setpoint actions it exposes 'comfort', which
+ * takes how the user *feels* ("lạnh quá", "nóng quá") rather than a number.
+ * That path deliberately does its own read-decide-write inside the bridge:
+ * the right answer to "I'm cold" depends on the current mode, setpoint and
+ * fan, and making the model fetch status and reason about it first costs a
+ * round trip and gets it wrong more often than a fixed ladder does. */
+class AirConditionerTool : public Tool {
+public:
+    AirConditionerTool();
+    std::string Execute(const std::string &arguments_json) override;
+};
+
 /* Current weather at the device location (pinned to Đà Nẵng in config.yaml).
  * Used by the morning alarm briefing and any "thời tiết hôm nay" question. */
 class WeatherTool : public Tool {
