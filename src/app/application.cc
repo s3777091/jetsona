@@ -77,10 +77,16 @@ Application::~Application() {
 bool Application::Initialize() {
     SetDeviceState(kDeviceStateStarting);
 
-    // Balanced thermal profile: the fan curve self-adjusts to CPU+GPU temp.
-    // Ekko Lite is a light AI load, so Balanced (not Cool) keeps it quiet.
+    /* Quiet thermal profile: the fan curve self-adjusts to CPU+GPU temp, so the
+     * profile only sets how hard it idles and how early it ramps. Balanced
+     * holds a PWM 45 floor -- measured at 2660 rpm with the board sitting at
+     * 30 C, audible across the room for a load that is nowhere near warm.
+     * Quiet's floor is PWM 25 (~1450 rpm) and does not ramp until 50 C, twenty
+     * degrees above idle here. The curve script's own measurements put the cost
+     * at about one degree. On a device that listens for a wake word in a quiet
+     * room, that degree is worth buying. */
     jetson::fan::SetMode(jetson::fan::Mode::Auto);
-    jetson::fan::SetProfile(jetson::fan::Profile::Balanced);
+    jetson::fan::SetProfile(jetson::fan::Profile::Quiet);
 
     // ---- Headless AI core ------------------------------------------------
     // Same three lines the old home display used, now driven without a UI.

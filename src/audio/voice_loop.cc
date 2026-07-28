@@ -241,6 +241,13 @@ void VoiceLoop::Speak(const std::string &text) {
 }
 
 void VoiceLoop::NotifyToolStarted() {
+    /* A live session synthesises its own speech and fills its own gaps, so the
+     * filler here buys nothing and costs a full Edge TTS trip (~3 s) in a
+     * different voice. The journal shows both landing on dmix together: Aoede
+     * saying "Đã bật điều hòa." while vi-VN-HoaiMyNeural says "Để mình xem."
+     * The filler belongs to the slow path it was written for -- capture,
+     * transcribe, think, think again, synthesise -- where the silence is real. */
+    if (realtime_ && realtime_->running()) return;
     if (filler_spoken_.exchange(true)) return;   // only the turn's first tool
     Speak(NextWorkingFiller());
 }
