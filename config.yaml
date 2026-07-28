@@ -89,10 +89,9 @@ OPENWAKEWORD_MIN_FRAMES: "2"
 OPENWAKEWORD_SPEEX: "0"
 
 # Realtime voice. One streaming Gemini Live session replaces the four serial
-# stages below (transcribe, think, think again, synthesise), which is what made
-# the device impossible to interrupt: the microphone had to be muted while it
-# spoke. Measured on this box: 3.4 s from the end of a question to the first
-# word of the answer, against roughly fourteen.
+# stages below (transcribe, think, think again, synthesise). Measured on this
+# box: 3.4 s from the end of a question to the first word of the answer,
+# against roughly fourteen.
 #
 # The session is opened by the local wake word and closed after
 # GEMINI_LIVE_IDLE_SEC of quiet, so it is billed per conversation, not per day.
@@ -118,15 +117,13 @@ GEMINI_LIVE_IDLE_SEC: "20"
 GEMINI_LIVE_DAILY_MINUTES: "60"
 
 # Echo handling for a board whose canceller does nothing: measured here, the
-# microphone hears the speaker at ~1.2x the level it was played at. Playback is
-# attenuated so a person can be heard over it at all, and the microphone is only
-# forwarded while Nova speaks once it beats the expected echo by the margin.
-# These describe this room and this enclosure, so tune them by ear:
-# quieter Nova -> lower the gain; Nova answering herself -> lower it further;
-# interruptions not registering -> lower the margin.
+# microphone hears the speaker louder than it was played. An amplitude gate was
+# not reliable enough—the changing room coupling let Nova's own words cross it
+# and interrupt her. Realtime voice is therefore strict half duplex: microphone
+# capture continues locally, but nothing is sent to Gemini while Nova is
+# audible or during the short room tail after ALSA finishes draining.
 JETSON_VOICE_OUT_GAIN: "0.35"
-JETSON_ECHO_COUPLING: "1.2"
-JETSON_ECHO_MARGIN: "2.2"
+JETSON_ECHO_TAIL_MS: "650"
 
 OPENAI_TRANSCRIBE_BASE_URL: "https://api.openai.com/v1"
 OPENAI_TRANSCRIBE_MODEL: "gpt-4o-mini-transcribe"

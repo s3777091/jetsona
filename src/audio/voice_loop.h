@@ -74,9 +74,9 @@ private:
                    std::string &cmd);
 
     // Opens a streaming Gemini Live session on a wake word and closes it when
-    // the conversation goes quiet. While it is open the mic keeps feeding it,
-    // including while Nova is talking -- that is what allows interrupting her.
-    // Null when JETSON_VOICE_REALTIME is off, which leaves the older
+    // the conversation goes quiet. The mic feeds it between replies; playback
+    // is strict half duplex because this enclosure has no usable echo
+    // canceller. Null when JETSON_VOICE_REALTIME is off, which leaves the older
     // STT/LLM/TTS path in charge.
     bool StartRealtime();
 

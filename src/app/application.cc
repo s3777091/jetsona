@@ -14,13 +14,52 @@
 #include "settings.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
+#include <dirent.h>
 #include <fstream>
 #include <thread>
+#include <vector>
 
 #define TAG "App"
+
+namespace {
+
+bool HasAlarmAudioExtension(const std::string &name) {
+    const size_t dot = name.rfind('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = name.substr(dot);
+    for (char &c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".mp3" || ext == ".wav" || ext == ".ogg" || ext == ".m4a";
+}
+
+std::string DefaultRingtonePath() {
+    const std::string dir = std::string(JETSON_ASSETS_DIR) + "/ringtones";
+    DIR *handle = opendir(dir.c_str());
+    if (!handle) return "";
+
+    std::vector<std::string> names;
+    while (dirent *entry = readdir(handle)) {
+        const std::string name = entry->d_name;
+        if (HasAlarmAudioExtension(name)) names.push_back(name);
+    }
+    closedir(handle);
+    if (names.empty()) return "";
+    std::sort(names.begin(), names.end());
+    return dir + "/" + names.front();
+}
+
+std::string AlarmAudioDevice() {
+    const char *device = std::getenv("JETSON_MUSIC_DEVICE");
+    if (!device || !*device) device = std::getenv("JETSON_VOICE_OUT");
+    return device && *device ? device : "";
+}
+
+} // namespace
 
 static constexpr EventBits_t kAllEvents =
     MAIN_EVENT_SCHEDULE | MAIN_EVENT_CLOCK_TICK | MAIN_EVENT_STATE_CHANGED |
@@ -171,6 +210,11 @@ void Application::Alert(const char *status, const char *message, const char * /*
 }
 
 void Application::TickClock() {
+    // Alarm scheduling is independent of battery state. This must happen
+    // before the charging fast-path below: the old order returned here every
+    // second while plugged in, silently disabling all alarms overnight.
+    CheckAlarm();
+
     // ---- Low-battery alert: 50 / 30 / 10 %, once each, never silent --------
     // Ekko Lite has no screen, so a dying battery must be spoken, not shown.
     // Three alerts total (one per threshold); flags reset the moment the
@@ -199,11 +243,6 @@ void Application::TickClock() {
     }
     last_battery_level_ = level;
 
-    // ---- Morning alarm -----------------------------------------------------
-    // Arming lives in the AlarmTool (Settings("alarm","time"/"enabled")); the
-    // fire happens here because it needs the main-loop Speak() path plus the
-    // ringtone + weather + notes. Fires once per day per armed time.
-    CheckAlarm();
 }
 
 void Application::CheckAlarm() {
@@ -225,30 +264,42 @@ void Application::CheckAlarm() {
     // Persist last_fired so a reboot the same morning doesn't re-fire.
     if (a.GetString("last_fired_date", "") == today) return;
     Settings("alarm", true).SetString("last_fired_date", today);
+    ESP_LOGI(TAG, "alarm firing at %s on %s", target.c_str(), today);
     FireAlarm();
 }
 
 void Application::FireAlarm() {
     // 1) Ringtone: loop the active ringtone in the background, pid to file so
-    // AlarmTool 'stop' can kill it. Falls back to a short beep if no ringtone
-    // is set or the file is missing, so the alarm is never silent.
+    // AlarmTool 'stop' can kill it. Falls back to a repeating tone if no
+    // ringtone is set or synced, so the alarm is never silent.
     Settings a("alarm", false);
     std::string ring = a.GetString("ringtone", "");
     std::string path;
     if (!ring.empty()) path = std::string(JETSON_ASSETS_DIR) + "/ringtones/" + ring;
     std::ifstream probe(path);
-    if (path.empty() || !probe) {
-        // No ringtone chosen / synced: a single low beep is better than silence.
-        jetson::platform::RunShellCommand(
-            "(play -q -n synth 1 sine 880 2>/dev/null "
-            "|| speaker-test -t sine -f 880 -l 1 >/dev/null 2>&1) "
-            "& echo $! > " + jetson::AlarmPidFile());
-    } else {
+    if (path.empty() || !probe) path = DefaultRingtonePath();
+
+    const std::string device = AlarmAudioDevice();
+    if (!path.empty()) {
         std::string cmd = "mpv --no-video --really-quiet --no-terminal "
-                          "--force-window=no --loop-file=inf " +
-                          jetson::platform::QuoteShellArgument(path) +
+                          "--force-window=no --loop-file=inf";
+        if (!device.empty())
+            cmd += " " + jetson::platform::QuoteShellArgument(
+                               "--audio-device=alsa/" + device);
+        cmd += " -- " + jetson::platform::QuoteShellArgument(path) +
                           " >/dev/null 2>&1 & echo $! > " + jetson::AlarmPidFile();
         jetson::platform::RunShellCommand(cmd);
+        ESP_LOGI(TAG, "alarm ringtone started: %s", path.c_str());
+    } else {
+        // Keep ringing until the user says "stop", on the physical reSpeaker
+        // rather than ALSA's inaudible Tegra default.
+        std::string cmd = "speaker-test";
+        if (!device.empty())
+            cmd += " -D " + jetson::platform::QuoteShellArgument(device);
+        cmd += " -c 2 -t sine -f 880 -l 0 >/dev/null 2>&1 & echo $! > " +
+               jetson::AlarmPidFile();
+        jetson::platform::RunShellCommand(cmd);
+        ESP_LOGW(TAG, "no ringtone asset available; started fallback alarm tone");
     }
 
     // 2) Da Nang weather briefing.

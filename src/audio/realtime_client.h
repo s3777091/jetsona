@@ -16,10 +16,10 @@ class AudioOutput;
 /* Firmware end of the Gemini Live session (see scripts/gemini_live_runtime.py).
  *
  * The old path was four serial network stages -- transcribe, think, think
- * again, synthesise -- with the microphone switched off for the last of them.
- * That is why the device could not be interrupted and why anything said while
- * it worked was lost. Here the microphone keeps running the whole time, audio
- * goes up as it is captured, and the reply plays as it arrives.
+ * again, synthesise. Here audio goes up as it is captured and the reply plays
+ * as it arrives. The capture device stays open throughout the session, though
+ * microphone frames are withheld while reply audio is physically audible
+ * because this enclosure has no usable acoustic echo canceller.
  *
  * A session lasts exactly as long as the socket connection: Start() when the
  * wake word fires, Stop() when the conversation goes quiet. Nothing is billed
@@ -83,29 +83,26 @@ private:
     bool playing_ = false;
 
     /* Echo control. This board has no working canceller: measured on the
-     * device, the microphone hears the speaker at 1.2x the level it was played
-     * at, because the two sit centimetres apart. Sending that back up made the
-     * model transcribe Nova's own words as the user's, answer itself, and
-     * interrupt itself. So playback is attenuated, and while it is audible the
-     * microphone is only forwarded when it clearly beats the echo -- which is
-     * what still lets a real interruption through.
+     * device, the microphone hears the speaker louder than it was played,
+     * because the two sit centimetres apart. An amplitude gate proved unsafe:
+     * room coupling varies enough that Nova's own voice regularly crossed the
+     * "user is louder" threshold and interrupted her.
      *
-     * echo_rms_ decays rather than dropping to zero, because audio handed to
-     * ALSA is still on its way out of the speaker for another buffer's worth
-     * of time. */
+     * Use strict half duplex instead. The microphone remains captured locally,
+     * but no samples leave the device while assistant audio is playing or
+     * during the short acoustic tail after ALSA has drained. This deliberately
+     * trades barge-in for the invariant that Nova can never hear herself. */
     bool EchoActive() const;
+    void FinishPlayback(bool drain);
 
     double out_gain_ = 0.35;
-    double echo_coupling_ = 1.2;
-    double echo_margin_ = 2.2;
-    std::atomic<double> echo_rms_{0.0};
+    double echo_tail_sec_ = 0.65;
+    std::atomic<bool> assistant_audio_active_{false};
     double echo_until_ = 0.0;          // guarded by activity_mtx_
-    int barge_chunks_ = 0;             // capture thread only
 
-    /* Set when the user cuts in, cleared when the turn ends. The model keeps
-     * generating for a moment after an interruption, and without this the next
-     * audio frame would reopen the speaker and resume the abandoned sentence
-     * halfway through. */
+    /* Set when Gemini reports an interruption, cleared when the turn ends. The
+     * model can keep generating briefly after it, and without this the next
+     * audio frame would resume the abandoned sentence halfway through. */
     std::atomic<bool> turn_muted_{false};
 
     // Transcripts arrive a word or two at a time. Held here and logged as whole

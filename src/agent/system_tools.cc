@@ -765,8 +765,15 @@ std::string RingtoneTool::Execute(const std::string &arguments_json) {
             return "ERROR: chua chon ringtone, hoac ten khong ton tai. Goi action=list.";
         std::string path = RingtoneDir() + "/" + name;
         // Fire-and-forget so the tool returns immediately while mpv plays.
-        std::string cmd = "mpv --no-video --really-quiet --no-terminal --force-window=no " +
-                          jetson::platform::QuoteShellArgument(path) + " >/dev/null 2>&1 &";
+        const char *device = std::getenv("JETSON_MUSIC_DEVICE");
+        if (!device || !*device) device = std::getenv("JETSON_VOICE_OUT");
+        std::string cmd =
+            "mpv --no-video --really-quiet --no-terminal --force-window=no";
+        if (device && *device)
+            cmd += " " + jetson::platform::QuoteShellArgument(
+                               std::string("--audio-device=alsa/") + device);
+        cmd += " -- " + jetson::platform::QuoteShellArgument(path) +
+               " >/dev/null 2>&1 &";
         jetson::platform::RunShellCommand(cmd);
         return "Dang phat thu: " + name;
     }

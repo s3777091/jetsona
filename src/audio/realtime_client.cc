@@ -8,7 +8,6 @@
 
 #include <cerrno>
 #include <chrono>
-#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -48,23 +47,6 @@ double EnvDouble(const char *key, double fallback) {
     char *end = nullptr;
     const double parsed = std::strtod(value, &end);
     return (end && *end == '\0') ? parsed : fallback;
-}
-
-/* How long after the last write the speaker is still audible: the ALSA buffer
- * plus the room. Slightly generous, because letting one echo frame through is
- * worse than swallowing one frame of the user. */
-constexpr double kEchoTailSec = 0.45;
-
-// Consecutive loud chunks (32 ms each) before the reply is cut short. Long
-// enough that a cough or a door does not stop Nova mid-sentence.
-constexpr int kBargeInChunks = 5;
-
-double RmsOf(const int16_t *samples, size_t n) {
-    if (!samples || n == 0) return 0.0;
-    double sum = 0.0;
-    for (size_t i = 0; i < n; ++i)
-        sum += static_cast<double>(samples[i]) * samples[i];
-    return std::sqrt(sum / static_cast<double>(n));
 }
 
 double NowSeconds() {
@@ -184,12 +166,17 @@ bool RealtimeClient::Start(const std::string &system_prompt,
     fd_ = fd;
     out_ = out;
     out_gain_ = std::max(0.05, std::min(1.0, EnvDouble("JETSON_VOICE_OUT_GAIN", 0.35)));
-    echo_coupling_ = std::max(0.1, EnvDouble("JETSON_ECHO_COUPLING", 1.2));
-    echo_margin_ = std::max(1.1, EnvDouble("JETSON_ECHO_MARGIN", 2.2));
-    echo_rms_.store(0.0);
+    echo_tail_sec_ = std::max(
+        0.1, std::min(2.0, EnvDouble("JETSON_ECHO_TAIL_MS", 650.0) / 1000.0));
+    assistant_audio_active_.store(false);
+    {
+        std::lock_guard<std::mutex> lk(activity_mtx_);
+        echo_until_ = 0.0;
+    }
     executor_ = std::move(executor);
     on_turn_done_ = std::move(on_turn_done);
     playing_ = false;
+    turn_muted_.store(false);
     MarkActivity();
 
     nlohmann::json config;
@@ -225,10 +212,7 @@ void RealtimeClient::Stop() {
         close(fd_);
         fd_ = -1;
     }
-    if (out_ && playing_) {
-        out_->EndStream();
-        playing_ = false;
-    }
+    FinishPlayback(true);
 
     const double elapsed = NowSeconds() - session_started_;
     RecordSeconds(elapsed);
@@ -240,38 +224,39 @@ void RealtimeClient::Stop() {
 void RealtimeClient::SendAudio(const int16_t *samples, size_t n) {
     if (!running_.load() || !samples || n == 0) return;
 
-    /* While Nova is audible the microphone mostly hears Nova, and this board
-     * has no canceller to remove her. What must not happen is forwarding some
-     * frames and dropping others: an earlier attempt at that fed the model a
-     * chopped stream, which it transcribed as fragments of Thai and then acted
-     * on -- it reached for pc_power because a burst of echo looked like a
-     * request. Send a whole stream or none of it.
-     *
-     * So: stay silent while she speaks, and watch the level. Speech close to
-     * the microphone beats the echo, and when it does for long enough this
-     * stops the playback outright -- which both answers the interruption and
-     * removes the echo, so everything forwarded from then on is clean. */
-    if (EchoActive()) {
-        if (RmsOf(samples, n) < echo_rms_.load() * echo_margin_) {
-            barge_chunks_ = 0;
-            return;
-        }
-        if (++barge_chunks_ < kBargeInChunks) return;
-        barge_chunks_ = 0;
-        ESP_LOGI(TAG, "barge-in: user spoke over the reply; stopping playback");
-        if (out_) out_->AbortStream();
-        playing_ = false;
-        turn_muted_.store(true);
-        echo_rms_.store(0.0);
-        // Fall through: from here the room is quiet and the user has the floor.
-    }
+    // No acoustic echo canceller is available on this hardware. Never send
+    // speaker output back to Gemini; a level-based exception is precisely what
+    // caused Nova to transcribe and interrupt her own replies.
+    if (EchoActive()) return;
 
     SendFrame(kMsgAudioIn, samples, n * sizeof(int16_t));
 }
 
 bool RealtimeClient::EchoActive() const {
+    if (assistant_audio_active_.load()) return true;
     std::lock_guard<std::mutex> lk(activity_mtx_);
-    return NowSeconds() < echo_until_ && echo_rms_.load() > 1.0;
+    return NowSeconds() < echo_until_;
+}
+
+void RealtimeClient::FinishPlayback(bool drain) {
+    const bool had_playback = playing_;
+    if (out_ && playing_) {
+        if (drain)
+            out_->EndStream();
+        else
+            out_->AbortStream();
+        playing_ = false;
+    }
+
+    // EndStream() blocks until ALSA has played every queued frame. Only after
+    // it returns does the room-tail timer begin. Keeping the active flag set
+    // during the drain closes the leak that previously fed the last words of
+    // every reply back into Gemini.
+    if (had_playback) {
+        std::lock_guard<std::mutex> lk(activity_mtx_);
+        echo_until_ = NowSeconds() + echo_tail_sec_;
+    }
+    assistant_audio_active_.store(false);
 }
 
 double RealtimeClient::IdleSeconds() const {
@@ -344,12 +329,13 @@ void RealtimeClient::ReaderThread() {
                     EnvOr("JETSON_VOICE_OUT", "plughw:CARD=Lite,DEV=0");
                 playing_ = out_->BeginStream(kReplySampleRate, device);
                 if (!playing_) break;
+                assistant_audio_active_.store(true);
             }
             const auto *pcm = reinterpret_cast<const int16_t *>(payload.data());
             const size_t count = payload.size() / sizeof(int16_t);
 
-            // Attenuate before playing: at full level the echo swamps anything
-            // the user could say over it, and barge-in stops being possible.
+            // Attenuate before playing so Nova remains comfortable at the
+            // close listening distance this enclosure is designed for.
             gain_buffer_.resize(count);
             for (size_t i = 0; i < count; ++i) {
                 const double scaled = pcm[i] * out_gain_;
@@ -358,31 +344,14 @@ void RealtimeClient::ReaderThread() {
                                      : (scaled < -32768.0 ? -32768.0 : scaled));
             }
 
-            /* What the microphone is about to hear. Peak-hold with a deadline
-             * rather than a per-write decay: the audio handed to ALSA does not
-             * reach the speaker for another buffer's worth of time, so a decay
-             * applied per chunk had collapsed the estimate to near zero by the
-             * moment the echo actually arrived -- which is how the gate came to
-             * pass everything it was meant to block. */
-            const double expected = RmsOf(gain_buffer_.data(), count) *
-                                    echo_coupling_;
-            echo_rms_.store(std::max(expected, echo_rms_.load()));
-            {
-                std::lock_guard<std::mutex> lk(activity_mtx_);
-                echo_until_ = NowSeconds() + kEchoTailSec;
-            }
-
             out_->WriteStream(gain_buffer_.data(), count);
             break;
         }
         case kMsgInterrupted:
-            echo_rms_.store(0.0);
             // The user spoke over the reply. Everything already handed to ALSA
             // is stale; playing it out would be the device talking over them.
-            if (out_ && playing_) {
-                out_->AbortStream();
-                playing_ = false;
-            }
+            FinishPlayback(false);
+            turn_muted_.store(true);
             ESP_LOGI(TAG, "barge-in: playback dropped");
             MarkActivity();
             break;
@@ -391,12 +360,8 @@ void RealtimeClient::ReaderThread() {
             HandleToolCall(std::string(payload.begin(), payload.end()));
             break;
         case kMsgTurnComplete:
-            echo_rms_.store(0.0);
             turn_muted_.store(false);
-            if (out_ && playing_) {
-                out_->EndStream();
-                playing_ = false;
-            }
+            FinishPlayback(true);
             if (!user_line_.empty()) {
                 ESP_LOGI(TAG, "nghe: %s", user_line_.c_str());
                 user_line_.clear();
