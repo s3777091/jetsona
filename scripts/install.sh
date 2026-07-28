@@ -109,7 +109,13 @@ sudo cp "$JETSON_DIR/scripts/gemini_live_runtime.py" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/gemini_live_probe.py" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/jetsona_live_run.sh" /opt/jetson-fw/scripts/
 sudo cp "$JETSON_DIR/scripts/edge_tts_synthesize.sh" /opt/jetson-fw/scripts/
-sudo chmod +x /opt/jetson-fw/scripts/s3_assets.py
+# Wake-verifier enrollment. Not part of the running system -- it is run by hand
+# once per owner -- but it lives here so it picks up the same config.yaml and
+# the same runtime image as the sidecar it trains for.
+sudo cp "$JETSON_DIR/scripts/enroll_wake_verifier.sh" /opt/jetson-fw/scripts/
+sudo cp "$JETSON_DIR/scripts/train_wake_verifier.py" /opt/jetson-fw/scripts/
+sudo chmod +x /opt/jetson-fw/scripts/s3_assets.py \
+    /opt/jetson-fw/scripts/enroll_wake_verifier.sh
 # Supervisor: restarts the firmware if it ever exits.
 sudo cp "$JETSON_DIR/scripts/jetson_fw_run.sh" /opt/jetson-fw/scripts/
 sudo chmod +x \

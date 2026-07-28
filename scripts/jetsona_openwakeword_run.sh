@@ -19,6 +19,10 @@ SOCKET="${OPENWAKEWORD_SOCKET:-/run/jetsona-voice/openwakeword.sock}"
 SOCKET_DIR="$(dirname "$SOCKET")"
 MODEL_NAME="${OPENWAKEWORD_MODEL:-hey_nova.onnx}"
 VERIFIER_THRESHOLD="${OPENWAKEWORD_VERIFIER_THRESHOLD:-0.30}"
+# Frames below this score are never printed, which makes a phrase that scores
+# 0.04 indistinguishable from one that was never spoken. Measuring a new wake
+# phrase means dropping this well under the accept threshold for the duration.
+LOG_SCORE_ABOVE="${OPENWAKEWORD_LOG_SCORE_ABOVE:-0.10}"
 
 mkdir -p "$SOCKET_DIR"
 # A socket left behind by a killed container makes bind() fail with EADDRINUSE.
@@ -37,4 +41,5 @@ exec /usr/bin/docker run --rm --name jetsona-openwakeword \
     --socket "$SOCKET" \
     --model "/models/$MODEL_NAME" \
     --verifier /state/hey_nova_verifier.pkl \
-    --verifier-threshold "$VERIFIER_THRESHOLD"
+    --verifier-threshold "$VERIFIER_THRESHOLD" \
+    --log-score-above "$LOG_SCORE_ABOVE"

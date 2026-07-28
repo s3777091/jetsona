@@ -96,6 +96,20 @@ OPENWAKEWORD_THRESHOLD: "0.10"
 OPENWAKEWORD_MIN_FRAMES: "2"
 OPENWAKEWORD_SPEEX: "0"
 
+# Score floor for the sidecar's per-frame log line. At the default the journal
+# only shows frames that would already be accepted, so a phrase the model hears
+# faintly leaves no trace and looks identical to silence. Drop it to 0.01 while
+# measuring a new phrase, then put it back -- at 0.01 every frame of ordinary
+# speech prints a line.
+OPENWAKEWORD_LOG_SCORE_ABOVE: "0.10"
+
+# Second-stage check on top of the wake model: a small classifier trained on
+# this device owner's own voice, so a lower accept threshold does not have to be
+# paid for in false wakes. Absent by default -- the sidecar logs "verifier
+# disabled" and runs on the wake model alone. Enroll with
+# scripts/enroll_wake_verifier.sh, which writes the .pkl the launcher mounts.
+OPENWAKEWORD_VERIFIER_THRESHOLD: "0.30"
+
 # Realtime voice. One streaming Gemini Live session replaces the four serial
 # stages below (transcribe, think, think again, synthesise). Measured on this
 # box: 3.4 s from the end of a question to the first word of the answer,
