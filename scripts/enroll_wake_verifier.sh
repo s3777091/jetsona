@@ -21,6 +21,13 @@
 # because someone pressed Ctrl-C is not an acceptable failure mode.
 set -euo pipefail
 
+# sudo leaves HOME pointing at the invoking user, and ALSA then probes it for
+# an .asoundrc it is not allowed to read, printing "Home directory not
+# accessible: Permission denied" over the recording prompts. Harmless, but it
+# lands exactly where the cue text needs to be read. Point HOME somewhere root
+# genuinely owns and the noise goes away.
+export HOME=/root
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck disable=SC1091
@@ -70,19 +77,31 @@ TONE_DIR="$(mktemp -d /tmp/wake-tones-XXXXXX)"
 make_tone() {  # freq_a freq_b outfile
     if [ -n "$2" ]; then
         ffmpeg -loglevel error -y \
-            -f lavfi -i "sine=frequency=$1:duration=0.12" \
-            -f lavfi -i "sine=frequency=$2:duration=0.12" \
-            -filter_complex "[0:a][1:a]concat=n=2:v=0:a=1,volume=0.5" \
+            -f lavfi -i "sine=frequency=$1:duration=0.15" \
+            -f lavfi -i "sine=frequency=$2:duration=0.15" \
+            -filter_complex "[0:a][1:a]concat=n=2:v=0:a=1,volume=0.9" \
             -ar 48000 -ac 1 "$3"
     else
         ffmpeg -loglevel error -y \
-            -f lavfi -i "sine=frequency=$1:duration=0.22" \
-            -af "volume=0.5" -ar 48000 -ac 1 "$3"
+            -f lavfi -i "sine=frequency=$1:duration=0.25" \
+            -af "volume=0.9" -ar 48000 -ac 1 "$3"
     fi
 }
 make_tone 880 1320 "$TONE_DIR/start.wav"   # rising pair: capture is open
 make_tone 520 ""    "$TONE_DIR/stop.wav"   # single low tone: capture closed
-play_tone() { aplay -D "$OUT" -q "$TONE_DIR/$1.wav" 2>/dev/null || true; }
+
+# A failed cue is worse than no cue: recording still runs, so the phrase lands
+# in silence the speaker never asked for and twelve takes are wasted before
+# anyone notices. Report the failure once instead of swallowing it.
+tone_broken=0
+play_tone() {
+    [ "$tone_broken" -eq 1 ] && return 0
+    if ! aplay -D "$OUT" -q "$TONE_DIR/$1.wav" >/dev/null 2>&1; then
+        echo "    (không phát được tiếng bíp trên '$OUT' -- vẫn thu bình thường)" >&2
+        tone_broken=1
+    fi
+    return 0
+}
 
 # arecord takes the ReSpeaker's two channels; the firmware listens to channel 0
 # only (the XU316 puts its processed output there), so clips must come from the
@@ -103,6 +122,31 @@ if [ "$DO_RECORD" -eq 1 ]; then
         systemctl stop jetson-fw
         sleep 1
     fi
+
+    # Prove the cue is audible before spending twelve takes on it. The whole
+    # point of a tone is that the speaker can stand across the room and not
+    # watch the terminal; if it never reaches them, every clip after this is
+    # recorded into a silence they were still waiting through.
+    echo
+    echo "==> Thử tiếng bíp trước. Sắp phát: bíp đôi (bắt đầu), rồi bíp trầm (kết thúc)."
+    printf '    Enter để nghe thử: '
+    read -r _
+    play_tone start
+    sleep 0.4
+    play_tone stop
+    printf '    Nghe thấy cả hai tiếng chứ? [y/N] '
+    read -r heard
+    case "$heard" in
+        [yY]*) ;;
+        *)
+            echo
+            echo "    Dừng lại ở đây thay vì thu 12 mẫu mà bạn không nghe được nhịp."
+            echo "    Kiểm tra: loa có đang mở không, và thử tay:"
+            echo "        aplay -D \"$OUT\" /usr/share/sounds/alsa/Front_Center.wav"
+            echo "    Hoặc chỉ định loa khác: JETSON_VOICE_OUT=... sudo -E bash $0"
+            exit 1
+            ;;
+    esac
 
     rm -f "$CLIP_DIR/positive"/*.wav "$CLIP_DIR/negative"/*.wav
 
