@@ -11,6 +11,12 @@
 # spoken from across the room without watching the terminal. Say the phrase
 # right after the rising pair.
 #
+# Negatives come in two batches. The ordinary ones are the room as it normally
+# sounds; the second batch is recorded with the fan forced to its loudest
+# profile, so the verifier sees the noise floor at its worst rather than at the
+# quiet profile the device actually rests in. The fan is restored afterwards,
+# including on Ctrl-C -- nothing else on the box would ever put it back.
+#
 # Clips are kept under $CLIP_DIR rather than deleted, because the scores they
 # produce are the evidence for whatever threshold gets chosen, and a threshold
 # argued from clips nobody can re-score is just a guess with a decimal point.
@@ -41,9 +47,16 @@ STATE_DIR="/var/lib/jetson-fw"
 CLIP_DIR="${CLIP_DIR:-$STATE_DIR/wake-clips}"
 MIC="${JETSON_VOICE_MIC:-plughw:CARD=Lite,DEV=0}"
 OUT="${JETSON_VOICE_OUT:-default}"
-PHRASE="${WAKE_PHRASE:-Nova}"
-POSITIVE_CLIPS="${POSITIVE_CLIPS:-12}"
-NEGATIVE_CLIPS="${NEGATIVE_CLIPS:-6}"
+PHRASE="${WAKE_PHRASE:-Hey Nova}"
+POSITIVE_CLIPS="${POSITIVE_CLIPS:-30}"
+NEGATIVE_CLIPS="${NEGATIVE_CLIPS:-20}"
+# Negatives recorded with the fan deliberately loud. At the quiet profile the
+# fan sits near silence, so "fan negatives" taken as-is would be duplicates of
+# the ordinary ones and teach the verifier nothing. These are recorded with the
+# fan forced to its noisiest profile instead, which is the case worth covering.
+FAN_NEGATIVE_CLIPS="${FAN_NEGATIVE_CLIPS:-10}"
+FAN_NEGATIVE_PROFILE="${FAN_NEGATIVE_PROFILE:-cool}"
+FAN_CONF="/etc/jetson-fan.conf"
 CLIP_SECONDS="${CLIP_SECONDS:-2}"
 
 DO_TRAIN=0
@@ -61,7 +74,15 @@ esac
 mkdir -p "$CLIP_DIR/positive" "$CLIP_DIR/negative"
 
 fw_was_running=0
+fan_profile_saved=""
 cleanup() {
+    # The fan is left loud if this exits between forcing it and restoring it,
+    # and nothing else on the box would ever put it back.
+    if [ -n "$fan_profile_saved" ]; then
+        echo "==> Trả quạt về profile '$fan_profile_saved'"
+        sed -i "s|^PROFILE=.*|PROFILE=$fan_profile_saved|" "$FAN_CONF" || true
+        fan_profile_saved=""
+    fi
     if [ "$fw_was_running" -eq 1 ]; then
         echo
         echo "==> Khởi động lại jetson-fw"
@@ -69,6 +90,13 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+set_fan_profile() {  # profile
+    [ -f "$FAN_CONF" ] || return 0
+    sed -i "s|^PROFILE=.*|PROFILE=$1|" "$FAN_CONF"
+    # jetson-fan-curve re-reads the file every 2 s; give it that plus spin-up.
+    sleep 5
+}
 
 # --- tones ----------------------------------------------------------------
 # Generated once into tmpfs rather than shipped as assets: two sine bursts are
@@ -162,12 +190,36 @@ if [ "$DO_RECORD" -eq 1 ]; then
 
     echo
     echo "==> Thu $NEGATIVE_CLIPS mẫu ÂM NỀN: KHÔNG nói \"$PHRASE\"."
-    echo "    Nói câu bình thường, hoặc để yên cho quạt/phòng kêu."
+    echo "    Nói câu bình thường, hoặc để yên cho phòng kêu."
     for i in $(seq 1 "$NEGATIVE_CLIPS"); do
         printf '    [%2d/%2d] Enter để bắt đầu: ' "$i" "$NEGATIVE_CLIPS"
         read -r _
         record_clip "$(printf '%s/negative/neg-%02d.wav' "$CLIP_DIR" "$i")"
     done
+
+    if [ "$FAN_NEGATIVE_CLIPS" -gt 0 ] && [ -f "$FAN_CONF" ]; then
+        fan_profile_saved="$(sed -n 's|^PROFILE=||p' "$FAN_CONF" | head -1)"
+        [ -n "$fan_profile_saved" ] || fan_profile_saved="quiet"
+        echo
+        echo "==> Đẩy quạt lên profile '$FAN_NEGATIVE_PROFILE' cho nhóm mẫu tiếng quạt"
+        echo "    (sẽ tự trả về '$fan_profile_saved' khi xong, kể cả nếu bạn Ctrl-C)"
+        set_fan_profile "$FAN_NEGATIVE_PROFILE"
+        [ -r /run/jetson-fan.state ] && echo "    $(cat /run/jetson-fan.state)"
+
+        echo
+        echo "==> Thu $FAN_NEGATIVE_CLIPS mẫu TIẾNG QUẠT: KHÔNG nói \"$PHRASE\"."
+        echo "    Để yên cho quạt kêu là đủ; vài mẫu nói chuyện đè lên tiếng quạt cũng tốt."
+        for i in $(seq 1 "$FAN_NEGATIVE_CLIPS"); do
+            printf '    [%2d/%2d] Enter để bắt đầu: ' "$i" "$FAN_NEGATIVE_CLIPS"
+            read -r _
+            record_clip "$(printf '%s/negative/negfan-%02d.wav' "$CLIP_DIR" "$i")"
+        done
+
+        echo
+        echo "==> Trả quạt về profile '$fan_profile_saved'"
+        sed -i "s|^PROFILE=.*|PROFILE=$fan_profile_saved|" "$FAN_CONF"
+        fan_profile_saved=""
+    fi
 fi
 
 rm -rf -- "$TONE_DIR"
