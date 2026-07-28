@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -229,6 +230,15 @@ void VoiceLoop::Stop() {
     if (mic_) mic_->Stop();
     if (realtime_) realtime_->Stop();
     if (speaker_thread_.joinable()) speaker_thread_.join();
+
+    /* Release the ONNX-backed engine here, with the capture and speaker threads
+     * already joined and the process still fully alive. This singleton is a
+     * function-local static, so leaving it to its own destructor runs the
+     * teardown after main returns, and onnxruntime's globals are gone by then:
+     * the journal showed "shutdown complete" followed by Ort::Exception
+     * "GetElementType is not implemented" escaping a destructor into
+     * std::terminate, and systemd collecting a core dump on every stop. */
+    engine_.reset();
 }
 
 void VoiceLoop::Speak(const std::string &text) {
@@ -782,6 +792,30 @@ void VoiceLoop::SpeakerThread() {
         std::string text = speech_.front();
         speech_.pop();
         lk.unlock();
+
+        /* Alarms, timers and battery warnings are queued from anywhere, at any
+         * moment -- including the middle of a live session, where Gemini is
+         * already speaking in a different voice on the same ALSA device. Both
+         * streams reach dmix and the user hears them stacked.
+         *
+         * Waiting for the gap is right where dropping is not: none of these
+         * lines may be silently discarded, and a countdown that fires is not
+         * urgent to the second. The cap exists because a wedged session must
+         * never be able to swallow a low-battery warning outright -- past it,
+         * talking over the session beats never warning at all. */
+        constexpr double kRealtimeYieldCapSec = 10.0;
+        const auto yield_started = std::chrono::steady_clock::now();
+        while (running_.load() && realtime_ && realtime_->running() &&
+               realtime_->assistant_speaking()) {
+            const double waited = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - yield_started).count();
+            if (waited >= kRealtimeYieldCapSec) {
+                ESP_LOGW(TAG, "speaking over a live session after %.0f s: %s",
+                         waited, text.c_str());
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
 
         speaking_.store(true);
         SynthResult res;

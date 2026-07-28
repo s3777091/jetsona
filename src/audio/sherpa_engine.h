@@ -12,16 +12,18 @@ namespace jetson::audio {
 
 /* sherpa-onnx (v1.10.30) backed VoiceEngine for the Jetson Nano + reSpeaker.
  *
- * All three sub-models are config-driven: paths come from Settings("voice")
- * (with sensible defaults under JETSON_ASSETS_DIR/models/{kws,stt,tts}/), so a
- * model swap is a config change, not a rebuild. The execution provider is
- * configurable per sub-model and defaults to CPU for JetPack compatibility. */
+ * Only Silero VAD still runs in-process here. Wake detection moved to a
+ * network-disabled openWakeWord sidecar, transcription to OpenAI, and synthesis
+ * to Edge TTS. What remains is config-driven: paths come from Settings("voice")
+ * with defaults under JETSON_ASSETS_DIR/models/, so a model swap is a config
+ * change, not a rebuild, and the execution provider defaults to CPU for JetPack
+ * compatibility. */
 class SherpaVoiceEngine : public VoiceEngine {
 public:
     SherpaVoiceEngine() = default;
     ~SherpaVoiceEngine() override;
 
-    /* Lazily constructs the KWS / STT / TTS handles from Settings on first use,
+    /* Lazily constructs the remaining model handles from Settings on first use,
      * so a missing/broken model only disables that one stage instead of
      * crashing boot. Returns true once STT is ready. */
     bool Ready() const override;
@@ -38,7 +40,6 @@ private:
     bool EnsureKws();
     bool EnsureVad();
     bool EnsureStt();
-    bool EnsureTts();
 
     // sherpa-onnx opaque handles (void* so the C API header stays out of the
     // public header; cast back in the .cc).
@@ -46,7 +47,6 @@ private:
     void *kws_stream_ = nullptr; // SherpaOnnxOnlineStream*
     void *vad_ = nullptr;     // SherpaOnnxVoiceActivityDetector*
     const void *stt_ = nullptr; // SherpaOnnxOfflineRecognizer* (API returns const)
-    void *tts_ = nullptr;     // SherpaOnnxOfflineTts*
 
     // openWakeWord runs in a network-disabled sidecar. Audio is accumulated
     // into its native 80 ms / 1280-sample frames and exchanged over a local
@@ -67,7 +67,6 @@ private:
     bool kws_tried_ = false;
     bool vad_tried_ = false;
     bool stt_tried_ = false;
-    bool tts_tried_ = false;
 };
 
 } // namespace jetson::audio

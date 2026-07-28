@@ -56,6 +56,11 @@ public:
 
     bool running() const { return running_.load(); }
 
+    /* True while reply audio is physically coming out of the speaker. Local
+     * TTS (alarms, timers, battery warnings) checks this so it waits for a gap
+     * instead of landing on top of the session in a different voice. */
+    bool assistant_speaking() const { return assistant_audio_active_.load(); }
+
     /* Microphone audio, 16 kHz mono S16LE. Called from the capture thread. */
     void SendAudio(const int16_t *samples, size_t n);
 

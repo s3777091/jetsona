@@ -185,17 +185,29 @@ bool LooksLikePromptEcho(const std::string &text, const std::string &prompt) {
 SherpaVoiceEngine::~SherpaVoiceEngine() {
     if (oww_fd_ >= 0) close(oww_fd_);
 #if JETSON_HAVE_SHERPA
-    if (vad_) SherpaOnnxDestroyVoiceActivityDetector(
-        reinterpret_cast<SherpaOnnxVoiceActivityDetector *>(vad_));
-    if (kws_stream_) SherpaOnnxDestroyOnlineStream(
-        reinterpret_cast<SherpaOnnxOnlineStream *>(kws_stream_));
-    if (kws_) SherpaOnnxDestroyKeywordSpotter(
-        reinterpret_cast<SherpaOnnxKeywordSpotter *>(kws_));
-    if (stt_) SherpaOnnxDestroyOfflineRecognizer(
-        reinterpret_cast<const SherpaOnnxOfflineRecognizer *>(stt_));
-    if (tts_) SherpaOnnxDestroyOfflineTts(
-        reinterpret_cast<SherpaOnnxOfflineTts *>(tts_));
+    /* onnxruntime throws, and a throw that escapes a destructor is an
+     * immediate std::terminate -- which is how a clean systemd stop used to
+     * end in "Aborted (core dumped)". Destruction is expected to happen while
+     * the process is alive (VoiceLoop::Stop drives it), so nothing here should
+     * throw; catching is what keeps a surprise from taking the process with
+     * it, since a handle we cannot free at exit costs nothing anyway. */
+    try {
+        if (vad_) SherpaOnnxDestroyVoiceActivityDetector(
+            reinterpret_cast<SherpaOnnxVoiceActivityDetector *>(vad_));
+        if (kws_stream_) SherpaOnnxDestroyOnlineStream(
+            reinterpret_cast<SherpaOnnxOnlineStream *>(kws_stream_));
+        if (kws_) SherpaOnnxDestroyKeywordSpotter(
+            reinterpret_cast<SherpaOnnxKeywordSpotter *>(kws_));
+        if (stt_) SherpaOnnxDestroyOfflineRecognizer(
+            reinterpret_cast<const SherpaOnnxOfflineRecognizer *>(stt_));
+    } catch (const std::exception &e) {
+        ESP_LOGW(TAG, "voice engine teardown threw: %s", e.what());
+    } catch (...) {
+        ESP_LOGW(TAG, "voice engine teardown threw");
+    }
 #endif
+    vad_ = kws_stream_ = kws_ = nullptr;
+    stt_ = nullptr;
 }
 
 // Only Silero remains in-process. openWakeWord is isolated in an offline
@@ -624,46 +636,13 @@ std::string SherpaVoiceEngine::Recognize(const int16_t *samples, size_t n) {
 }
 
 // ---- TTS -----------------------------------------------------------------
-
-bool SherpaVoiceEngine::EnsureTts() {
-#if JETSON_HAVE_SHERPA
-    if (tts_ || tts_tried_) return tts_ != nullptr;
-    tts_tried_ = true;
-    const std::string base = ModelsDir() + "/tts/";
-    std::string model = S("tts_model", base + "vi_VN-vivos-x_low.onnx");
-    std::string tokens = S("tts_tokens", base + "tokens.txt");
-    std::string lexicon = S("tts_lexicon", "");
-    std::string data_dir = S("tts_data_dir", base + "espeak-ng-data");
-    std::string dict_dir = S("tts_dict_dir", "");
-    std::string prov = S("tts_provider", "cpu");
-
-    SherpaOnnxOfflineTtsConfig cfg{};
-    cfg.model.vits.model = model.c_str();
-    cfg.model.vits.lexicon = lexicon.c_str();
-    cfg.model.vits.tokens = tokens.c_str();
-    cfg.model.vits.data_dir = data_dir.c_str();
-    cfg.model.vits.dict_dir = dict_dir.c_str();
-    cfg.model.vits.noise_scale = F("tts_noise", 0.667f);
-    cfg.model.vits.noise_scale_w = F("tts_noise_w", 0.8f);
-    cfg.model.vits.length_scale = F("tts_length", 1.0f);
-    cfg.model.num_threads = I("tts_num_threads", 2);
-    cfg.model.debug = 0;
-    cfg.model.provider = prov.c_str();
-    cfg.max_num_sentences = I("tts_max_sentences", 2);
-
-    tts_ = SherpaOnnxCreateOfflineTts(&cfg);
-    if (!tts_) {
-        ESP_LOGE(TAG, "TTS create failed (model=%s)", model.c_str());
-        return false;
-    }
-    ESP_LOGI(TAG, "TTS ready (provider=%s, sr=%d)", prov.c_str(),
-             SherpaOnnxOfflineTtsSampleRate(
-                 reinterpret_cast<SherpaOnnxOfflineTts *>(tts_)));
-    return true;
-#else
-    return false;
-#endif
-}
+//
+// Synthesis is Edge TTS, below. The in-process VITS path that used to live here
+// was never wired up -- nothing called its initialiser, so its handle stayed
+// null for the whole life of the process and the model it named was never even
+// fetched onto the device. Removed rather than left to look like a fallback
+// that exists. Bringing local synthesis back means adding it to Synthesize(),
+// not just constructing it.
 
 bool SherpaVoiceEngine::Synthesize(const std::string &text, SynthResult &out) {
     if (text.empty()) return false;

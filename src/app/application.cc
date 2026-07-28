@@ -163,6 +163,11 @@ void Application::Run() {
         }
     }
     ESP_LOGI(TAG, "Leaving main event loop");
+
+    // Tear the voice loop down while the process is still whole. Its engine
+    // holds onnxruntime handles that cannot be destroyed once static teardown
+    // has started -- see the note in VoiceLoop::Stop().
+    jetson::audio::VoiceLoop::Instance().Stop();
 }
 
 void Application::RequestStop() {
