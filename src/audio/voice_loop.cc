@@ -1,5 +1,6 @@
 #include "audio/voice_loop.h"
 
+#include "agent/system_tools.h"
 #include "audio/audio_output.h"
 #include "audio/mic_capture.h"
 #include "audio/realtime_client.h"
@@ -755,6 +756,16 @@ void VoiceLoop::RecognizeAndSend(const std::vector<int16_t> &utterance,
                        std::chrono::seconds(kAwakeWindowSec);
         onset_chunks_ = 0;
         state_ = kIdle;
+        return;
+    }
+
+    // The slow STT/LLM/TTS path gets the same deterministic alarm shortcut as
+    // Gemini Live. It is only active while the alarm pid is alive, so a generic
+    // "tắt đi" in any other conversation cannot stop an unrelated service.
+    if (jetson::StopAlarmIfRequested(cmd)) {
+        speaking_.store(true);
+        Speak("Đã tắt báo thức.");
+        go_idle();
         return;
     }
 

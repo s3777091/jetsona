@@ -22,6 +22,15 @@ namespace jetson {
  * alarm. Fixed path on a single-user device. */
 inline std::string AlarmPidFile() { return "/tmp/ekko-alarm.pid"; }
 
+/** True only when the pidfile still points at the alarm mpv/speaker-test. */
+bool AlarmIsRinging();
+
+/** Stop the current alarm safely and remove its pidfile. */
+bool StopAlarmRingtone();
+
+/** Deterministic voice shortcut used before either cloud model gets a vote. */
+bool StopAlarmIfRequested(const std::string &transcript);
+
 /* Read-only snapshot the model needs constantly: date/time, battery,
  * volume, current track. Cheap enough to be the model's first move. */
 class DeviceStatusTool : public Tool {

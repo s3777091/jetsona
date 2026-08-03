@@ -280,9 +280,9 @@ void Application::CheckAlarm() {
 }
 
 void Application::FireAlarm() {
-    // 1) Ringtone: loop the active ringtone in the background, pid to file so
-    // AlarmTool 'stop' can kill it. Falls back to a repeating tone if no
-    // ringtone is set or synced, so the alarm is never silent.
+    // 1) Ringtone: play twice, then stop on its own. The pidfile still lets a
+    // spoken "tắt đi" cut either pass short. mpv's loop-file value is the
+    // number of repeats after the initial play, hence 1 = exactly two passes.
     Settings a("alarm", false);
     std::string ring = a.GetString("ringtone", "");
     std::string path;
@@ -292,25 +292,31 @@ void Application::FireAlarm() {
 
     const std::string device = AlarmAudioDevice();
     if (!path.empty()) {
-        std::string cmd = "mpv --no-video --really-quiet --no-terminal "
-                          "--force-window=no --loop-file=inf";
+        std::string player = "mpv --no-video --really-quiet --no-terminal "
+                             "--force-window=no --loop-file=1";
         if (!device.empty())
-            cmd += " " + jetson::platform::QuoteShellArgument(
-                               "--audio-device=alsa/" + device);
-        cmd += " -- " + jetson::platform::QuoteShellArgument(path) +
-                          " >/dev/null 2>&1 & echo $! > " + jetson::AlarmPidFile();
+            player += " " + jetson::platform::QuoteShellArgument(
+                                  "--audio-device=alsa/" + device);
+        player += " -- " + jetson::platform::QuoteShellArgument(path);
+        const std::string pidfile = jetson::AlarmPidFile();
+        const std::string cmd = "(" + player +
+            " & alarm_pid=$!; echo $alarm_pid > " + pidfile +
+            "; wait $alarm_pid; rm -f " + pidfile + ") >/dev/null 2>&1 &";
         jetson::platform::RunShellCommand(cmd);
-        ESP_LOGI(TAG, "alarm ringtone started: %s", path.c_str());
+        ESP_LOGI(TAG, "alarm ringtone started (2 plays): %s", path.c_str());
     } else {
-        // Keep ringing until the user says "stop", on the physical reSpeaker
-        // rather than ALSA's inaudible Tegra default.
-        std::string cmd = "speaker-test";
+        // Same two-pass policy for the emergency tone, on the physical
+        // reSpeaker rather than ALSA's inaudible Tegra default.
+        std::string player = "speaker-test";
         if (!device.empty())
-            cmd += " -D " + jetson::platform::QuoteShellArgument(device);
-        cmd += " -c 2 -t sine -f 880 -l 0 >/dev/null 2>&1 & echo $! > " +
-               jetson::AlarmPidFile();
+            player += " -D " + jetson::platform::QuoteShellArgument(device);
+        player += " -c 2 -t sine -f 880 -l 2";
+        const std::string pidfile = jetson::AlarmPidFile();
+        const std::string cmd = "(" + player +
+            " & alarm_pid=$!; echo $alarm_pid > " + pidfile +
+            "; wait $alarm_pid; rm -f " + pidfile + ") >/dev/null 2>&1 &";
         jetson::platform::RunShellCommand(cmd);
-        ESP_LOGW(TAG, "no ringtone asset available; started fallback alarm tone");
+        ESP_LOGW(TAG, "no ringtone asset available; started 2-pass fallback tone");
     }
 
     // 2) Da Nang weather briefing.

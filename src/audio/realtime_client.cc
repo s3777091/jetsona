@@ -1,5 +1,6 @@
 #include "audio/realtime_client.h"
 
+#include "agent/system_tools.h"
 #include "audio/audio_output.h"
 #include "esp_log.h"
 #include "settings.h"
@@ -379,8 +380,17 @@ void RealtimeClient::ReaderThread() {
             if (!item.is_discarded()) {
                 MarkActivity();
                 // Accumulate; whole sentences are logged when the turn ends.
-                (item.value("role", "") == "user" ? user_line_ : assistant_line_)
-                    += item.value("text", "");
+                const std::string piece = item.value("text", "");
+                if (item.value("role", "") == "user") {
+                    user_line_ += piece;
+                    // Do not wait for a cloud model to choose the obvious tool
+                    // while a physical alarm is sounding in the room.
+                    if (jetson::StopAlarmIfRequested(user_line_)) {
+                        ESP_LOGI(TAG, "alarm stopped directly from transcript");
+                    }
+                } else {
+                    assistant_line_ += piece;
+                }
             }
             break;
         }

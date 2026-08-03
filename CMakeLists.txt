@@ -28,7 +28,7 @@ find_package(Threads REQUIRED)
 # "no FindDL.cmake" warning and leaves the link line empty when not needed.
 find_library(DL_LIBRARY dl)
 
-# libcurl: HTTP client for the in-process LLM (Ollama cloud chat completions),
+# libcurl: HTTP client for the in-process LLM (Gemini chat completions),
 # Exa web search, the open-meteo weather client and Zing artwork downloads.
 find_package(CURL REQUIRED)
 

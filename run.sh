@@ -37,5 +37,5 @@ fi
 
 WEBSEARCH=off
 [ -n "${EXA_API_KEY:-}" ] && WEBSEARCH="exa:${EXA_SEARCH_TYPE:-fast}"
-echo "run.sh: launching $BIN (model=${OLLAMA_MODEL:-unset}, websearch=$WEBSEARCH)"
+echo "run.sh: launching $BIN (provider=${LLM_PROVIDER:-gemini}, model=${LLM_MODEL:-${GEMINI_MODEL:-unset}}, websearch=$WEBSEARCH)"
 exec "$BIN" "$@"

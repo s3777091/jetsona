@@ -1,13 +1,13 @@
-# Ekko agent LLM. LLM_PROVIDER picks which credential set below is used:
-#   ollama      -> OLLAMA_* here + OLLAMA_API_KEY in .env      (production)
-#   openrouter  -> OPENROUTER_* here + OPENROUTER_API_KEY in .env
-# Switch to openrouter only to exercise the agent while the Ollama token is
-# out; switch back afterwards. The model must support tool calling either way.
-LLM_PROVIDER: "ollama"
+# Ekko agent fallback LLM. Reuse the Gemini credential already required by the
+# realtime voice path; there is no second Ollama Cloud account/model to manage.
+# This endpoint is Google's official OpenAI-compatible chat surface, so the
+# existing tool-calling client and schemas stay unchanged.
+LLM_PROVIDER: "gemini"
 
-OLLAMA_BASE_URL: "https://ollama.com/v1"
-OLLAMA_MODEL: "gemma4:31b"
+GEMINI_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/openai"
+GEMINI_MODEL: "gemini-3.6-flash"
 
+# Optional manual fallback for provider experiments.
 OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1"
 OPENROUTER_MODEL: "google/gemini-2.5-flash"
 

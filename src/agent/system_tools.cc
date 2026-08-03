@@ -16,7 +16,9 @@
 #include <curl/curl.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -24,6 +26,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #define TAG "SystemTools"
@@ -249,6 +252,62 @@ std::string CreatedNow() {
 }
 
 } // namespace
+
+namespace {
+
+bool ReadAlarmPid(pid_t &pid) {
+    std::ifstream file(AlarmPidFile());
+    std::string raw;
+    if (!file || !std::getline(file, raw) || raw.empty()) return false;
+    char *end = nullptr;
+    errno = 0;
+    const long value = std::strtol(raw.c_str(), &end, 10);
+    if (errno != 0 || !end || *end != '\0' || value <= 1) return false;
+    pid = static_cast<pid_t>(value);
+    return true;
+}
+
+bool IsAlarmProcess(pid_t pid) {
+    std::ifstream comm("/proc/" + std::to_string(pid) + "/comm");
+    std::string name;
+    if (!comm || !std::getline(comm, name)) return false;
+    return name == "mpv" || name == "speaker-test";
+}
+
+} // namespace
+
+bool AlarmIsRinging() {
+    pid_t pid = 0;
+    if (!ReadAlarmPid(pid)) return false;
+    if (::kill(pid, 0) == 0 && IsAlarmProcess(pid)) return true;
+    std::remove(AlarmPidFile().c_str());
+    return false;
+}
+
+bool StopAlarmRingtone() {
+    pid_t pid = 0;
+    if (!ReadAlarmPid(pid) || !AlarmIsRinging()) return false;
+    const bool stopped = (::kill(pid, SIGTERM) == 0);
+    std::remove(AlarmPidFile().c_str());
+    return stopped;
+}
+
+bool StopAlarmIfRequested(const std::string &transcript) {
+    if (!AlarmIsRinging()) return false;
+    const std::string text = Lower(transcript);
+    static const char *const intents[] = {
+        "tắt báo thức", "dừng báo thức", "tắt chuông", "dừng chuông",
+        "tắt đi", "dừng lại", "im đi", "thôi reo",
+        "tat bao thuc", "dung bao thuc", "tat chuong", "dung chuong",
+        "tat di", "dung lai", "im di", "thoi reo",
+    };
+    for (const char *intent : intents) {
+        if (text.find(intent) != std::string::npos) {
+            return StopAlarmRingtone();
+        }
+    }
+    return false;
+}
 
 // ---- device_status -------------------------------------------------------
 
@@ -1147,15 +1206,7 @@ std::string AlarmTool::Execute(const std::string &arguments_json) {
         return out + ".";
     }
     if (action == "stop") {
-        // Kill the ringing alarm ringtone (pidfile written by the scheduler).
-        const std::string pidfile = AlarmPidFile();
-        std::ifstream pf(pidfile);
-        std::string pid;
-        if (pf) std::getline(pf, pid);
-        if (!pid.empty()) {
-            jetson::platform::RunShellCommand("kill " + pid + " 2>/dev/null");
-            std::remove(pidfile.c_str());
-        }
+        StopAlarmRingtone();
         return "Da tat bao thuc. Chuc ngay moi tot lanh.";
     }
     return "ERROR: action khong hop le: " + action;

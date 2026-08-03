@@ -112,24 +112,31 @@ LlmClient::~LlmClient() = default;
 
 void LlmClient::ConfigureFromSettings() {
     Settings s("llm", false);
-    provider_ = EnvOr("LLM_PROVIDER", s.GetString("provider", "ollama"));
+    provider_ = EnvOr("LLM_PROVIDER", s.GetString("provider", "gemini"));
     for (auto &c : provider_) c = (char)std::tolower((unsigned char)c);
 
     // Per-provider defaults, then the provider's own env vars, then a
     // provider-agnostic LLM_* override for one-off experiments.
     const bool openrouter = (provider_ == "openrouter");
-    const char *base_env  = openrouter ? "OPENROUTER_BASE_URL" : "OLLAMA_BASE_URL";
-    const char *key_env   = openrouter ? "OPENROUTER_API_KEY"  : "OLLAMA_API_KEY";
-    const char *model_env = openrouter ? "OPENROUTER_MODEL"    : "OLLAMA_MODEL";
-    const char *base_def  = openrouter ? "https://openrouter.ai/api/v1" : "https://ollama.com/v1";
-    const char *model_def = openrouter ? "google/gemini-2.5-flash" : "qwen2.5:7b";
+    const bool ollama = (provider_ == "ollama");
+    const char *base_env = openrouter ? "OPENROUTER_BASE_URL"
+                                      : ollama ? "OLLAMA_BASE_URL" : "GEMINI_BASE_URL";
+    const char *key_env = openrouter ? "OPENROUTER_API_KEY"
+                                     : ollama ? "OLLAMA_API_KEY" : "GEMINI_API_KEY";
+    const char *model_env = openrouter ? "OPENROUTER_MODEL"
+                                       : ollama ? "OLLAMA_MODEL" : "GEMINI_MODEL";
+    const char *base_def = openrouter ? "https://openrouter.ai/api/v1"
+        : ollama ? "https://ollama.com/v1"
+                 : "https://generativelanguage.googleapis.com/v1beta/openai";
+    const char *model_def = openrouter ? "google/gemini-2.5-flash"
+                                       : ollama ? "qwen2.5:7b" : "gemini-3.6-flash";
 
     base_url_ = EnvOr("LLM_BASE_URL", EnvOr(base_env,  s.GetString("base_url", base_def)));
     api_key_  = EnvOr("LLM_API_KEY",  EnvOr(key_env,   s.GetString("api_key", "")));
     model_    = EnvOr("LLM_MODEL",    EnvOr(model_env, s.GetString("model", model_def)));
-    // A stale Settings base_url/model from the other provider would silently
-    // point OpenRouter at ollama.com; fall back to this provider's default.
-    if (openrouter && base_url_.find("ollama.com") != std::string::npos) base_url_ = base_def;
+    // A stale Settings base_url from another provider must not silently route
+    // a Gemini/OpenRouter selection through the retired Ollama account.
+    if (!ollama && base_url_.find("ollama.com") != std::string::npos) base_url_ = base_def;
     while (!base_url_.empty() && base_url_.back() == '/') base_url_.pop_back();
 
     system_prompt_ = s.GetString("system_prompt", kDefaultSystemPrompt);
@@ -210,9 +217,10 @@ ChatResult LlmClient::ChatWithTools(const std::vector<ChatMessage> &messages,
         return r;
     }
     if (api_key_.empty()) {
+        const char *expected_key = provider_ == "openrouter" ? "OPENROUTER_API_KEY"
+            : provider_ == "ollama" ? "OLLAMA_API_KEY" : "GEMINI_API_KEY";
         r.error = "Thieu API key cho provider '" + provider_ + "' — dat " +
-                  (provider_ == "openrouter" ? "OPENROUTER_API_KEY" : "OLLAMA_API_KEY") +
-                  " trong .env";
+                  expected_key + " trong .env";
         return r;
     }
 

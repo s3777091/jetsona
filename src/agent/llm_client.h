@@ -45,8 +45,8 @@ struct ChatResult {
     bool HasToolCalls() const { return !tool_calls.empty(); }
 };
 
-/* Minimal OpenAI-compatible chat-completions client. Targets Ollama Cloud
- * (https://ollama.com/v1) but works with any endpoint that accepts
+/* Minimal OpenAI-compatible chat-completions client. Targets Gemini's official
+ * compatibility endpoint but works with any endpoint that accepts
  * POST {base_url}/chat/completions with a Bearer token. Supports tool calling
  * (function calling) for models that expose it (qwen2.5, gpt-oss, llama3.1+).
  *
@@ -55,16 +55,18 @@ struct ChatResult {
  *
  * ---- Providers ----
  * LLM_PROVIDER (env, or Settings "llm"/provider) selects which credential set
- * is read. Ollama Cloud stays the default; "openrouter" exists so the agent can
- * be exercised while the Ollama token is exhausted, without touching the
- * production path:
+ * is read. Gemini is the default so realtime voice and fallback chat share one
+ * credential; OpenRouter and Ollama remain supported only as explicit manual
+ * overrides:
  *
+ *   gemini      base GEMINI_BASE_URL      key GEMINI_API_KEY      model GEMINI_MODEL
  *   ollama      base OLLAMA_BASE_URL     key OLLAMA_API_KEY     model OLLAMA_MODEL
  *   openrouter  base OPENROUTER_BASE_URL key OPENROUTER_API_KEY model OPENROUTER_MODEL
  *
  * Whatever the provider, per-provider env vars win over the Settings values,
  * and both lose to an explicit LLM_BASE_URL / LLM_API_KEY / LLM_MODEL override.
- * Defaults: ollama -> https://ollama.com/v1 + qwen2.5:7b,
+ * Defaults: gemini -> Google OpenAI-compatible v1beta endpoint + gemini-3.6-flash,
+ *           ollama -> https://ollama.com/v1 + qwen2.5:7b,
  *           openrouter -> https://openrouter.ai/api/v1 + google/gemini-2.5-flash */
 class LlmClient {
 public:
@@ -90,7 +92,7 @@ public:
                              const std::vector<ToolDef> &tools);
 
 private:
-    std::string provider_ = "ollama";
+    std::string provider_ = "gemini";
     std::string base_url_;
     std::string api_key_;
     std::string model_;
